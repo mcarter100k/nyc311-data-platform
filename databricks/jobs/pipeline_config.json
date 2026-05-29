@@ -1,0 +1,53 @@
+{
+  "_comment": "Databricks Jobs API 2.1 job definition for the NYC 311 pipeline. Deploy via 'databricks jobs create --json @pipeline_config.json' or Terraform databricks_job resource.",
+  "name": "nyc311-pipeline",
+  "max_concurrent_runs": 1,
+  "schedule": {
+    "quartz_cron_expression": "0 0 6 * * ?",
+    "timezone_id": "America/New_York",
+    "pause_status": "UNPAUSED"
+  },
+  "job_clusters": [
+    {
+      "job_cluster_key": "main_cluster",
+      "new_cluster": {
+        "spark_version": "14.3.x-scala2.12",
+        "node_type_id": "Standard_DS3_v2",
+        "num_workers": 2,
+        "spark_conf": {
+          "spark.databricks.delta.preview.enabled": "true"
+        }
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "task_key": "ingest_raw",
+      "job_cluster_key": "main_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/nyc311-data-platform/databricks/notebooks/01_ingest_raw",
+        "base_parameters": {
+          "start_date": "{{start_date}}",
+          "end_date": "{{end_date}}",
+          "force_reload": "false"
+        }
+      }
+    },
+    {
+      "task_key": "bronze",
+      "depends_on": [{"task_key": "ingest_raw"}],
+      "job_cluster_key": "main_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/nyc311-data-platform/databricks/notebooks/02_bronze"
+      }
+    },
+    {
+      "task_key": "silver",
+      "depends_on": [{"task_key": "bronze"}],
+      "job_cluster_key": "main_cluster",
+      "notebook_task": {
+        "notebook_path": "/Repos/nyc311-data-platform/databricks/notebooks/03_silver"
+      }
+    }
+  ]
+}

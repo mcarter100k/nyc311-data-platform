@@ -1,0 +1,73 @@
+version: 2
+
+sources:
+  - name: silver
+    description: >
+      Cleaned and typed Silver layer produced by the Databricks Bronze→Silver PySpark
+      pipeline. Tables in this schema are deduplicated, fully typed, and partitioned
+      by ingestion date in ADLS before being synced to Snowflake via Snowpipe or
+      the Databricks Snowflake connector.
+    database: "{{ env_var('SNOWFLAKE_DATABASE', 'NYC311_DB') }}"
+    schema: SILVER
+
+    tables:
+      - name: service_requests
+        description: >
+          One row per NYC 311 service request after deduplication on unique_key.
+          Covers the full historical dataset from 2010-01-01 to present.
+          Schema mirrors the NYC Open Data Socrata export with Databricks type inference
+          applied: strings remain VARCHAR, timestamps are TIMESTAMP_NTZ.
+        loaded_at_field: _silver_timestamp
+        freshness:
+          warn_after:  {count: 24, period: hour}
+          error_after: {count: 48, period: hour}
+        columns:
+          - name: unique_key
+            description: "Natural key from NYC Open Data. Numeric string, unique per service request."
+            tests:
+              - unique
+              - not_null
+          - name: created_date
+            description: "Timestamp when the service request was submitted to 311."
+            tests:
+              - not_null
+          - name: closed_date
+            description: "Timestamp when the request was resolved. NULL for open/pending requests."
+          - name: agency
+            description: "Agency abbreviation (e.g. NYPD, DOT, DSNY, DEP)."
+            tests:
+              - not_null
+          - name: agency_name
+            description: "Full agency name corresponding to the abbreviation."
+          - name: complaint_type
+            description: "Primary category of the complaint as classified by the 311 operator."
+            tests:
+              - not_null
+          - name: descriptor
+            description: "Sub-category providing additional complaint detail."
+          - name: location_type
+            description: "Type of location (e.g. Residential Building/House, Street/Sidewalk)."
+          - name: incident_zip
+            description: "5-digit ZIP code of the incident address."
+          - name: incident_address
+            description: "Street address of the incident."
+          - name: street_name
+            description: "Street name component of the incident address."
+          - name: city
+            description: "City component of the incident address (often the borough name)."
+          - name: borough
+            description: "NYC borough. Raw string — may contain variants (BROOKLYN, Brooklyn, BK)."
+          - name: community_board
+            description: "Community board number in 'NN BOROUGH' format (e.g. '01 BROOKLYN')."
+          - name: latitude
+            description: "WGS84 latitude. NULL for ~15% of records with no geocodable address."
+          - name: longitude
+            description: "WGS84 longitude. NULL where latitude is NULL."
+          - name: status
+            description: "Current status of the service request."
+          - name: resolution_description
+            description: "Free-text description of how the request was resolved."
+          - name: resolution_action_updated_date
+            description: "Last timestamp at which the resolution action was updated."
+          - name: open_data_channel_type
+            description: "Submission channel (PHONE, ONLINE, MOBILE, OTHER)."

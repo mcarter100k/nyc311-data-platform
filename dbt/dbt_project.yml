@@ -1,0 +1,43 @@
+name: 'nyc311'
+version: '1.0.0'
+config-version: 2
+
+profile: 'nyc311'
+
+model-paths:    ["models"]
+test-paths:     ["tests"]
+macro-paths:    ["macros"]
+analysis-paths: ["analyses"]
+seed-paths:     ["seeds"]
+snapshot-paths: ["snapshots"]
+
+target-path:   "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  nyc311:
+    staging:
+      +materialized: view
+      +tags: ["staging"]
+      # No +schema: staging views land in target.schema (GOLD).
+      # To route staging to a dedicated STAGING schema, provision it in
+      # terraform/modules/snowflake-foundation/main.tf with TRANSFORMER grants,
+      # then re-add +schema: staging here.
+
+    intermediate:
+      +materialized: view
+      # No +schema: intermediate views land in target.schema (GOLD).
+
+    marts:
+      +materialized: table
+      +schema: gold
+      +tags: ["gold"]
+      # generate_schema_name macro (macros/generate_schema_name.sql) returns
+      # 'gold' as-is. Without the macro, this would produce 'gold_gold'.
+
+# Project-level variable defaults.
+# Override at runtime:  dbt run --vars '{"min_date": "2020-01-01"}'
+# Override in CI:       dbt run --vars '{"max_date": "{{ run_started_at.strftime(\"%%Y-%%m-%%d\") }}"}'
+vars:
+  min_date: '2010-01-01'
+  max_date: '2030-12-31'

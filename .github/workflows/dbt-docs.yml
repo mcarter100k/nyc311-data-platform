@@ -1,0 +1,280 @@
+name: Deploy dbt Docs to GitHub Pages
+
+# Triggers on every push to main that touches dbt models, macros, or this
+# workflow file. The workflow_dispatch trigger allows a manual run from the
+# GitHub Actions UI without a code push (useful after enabling Pages for the
+# first time or after changing the profiles.yml mock).
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'dbt/**'
+      - '.github/workflows/dbt-docs.yml'
+  workflow_dispatch:
+
+# ── Permissions ───────────────────────────────────────────────────────────────
+# pages: write   — allows the deploy job to publish to GitHub Pages
+# id-token: write — required for OIDC-based authentication with the Pages API
+# contents: read  — required for actions/checkout
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Prevent concurrent Pages deployments. If a second push arrives while a
+# deploy is in progress, cancel the in-progress run rather than queueing.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+# ── Jobs ──────────────────────────────────────────────────────────────────────
+# Two-job structure (build + deploy) matches the GitHub Pages deployment model:
+# the artifact upload must complete before the Pages deployment can start, and
+# the deploy job has its own environment context (github-pages) for audit trails.
+
+jobs:
+
+  # ── build ──────────────────────────────────────────────────────────────────
+  build:
+    name: Build dbt docs site
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          # Cache pip dependencies keyed on requirements to speed up re-runs.
+          cache: pip
+
+      # Pin to the same minor version range as the project's dbt_project.yml
+      # (dbt-core 1.7.x). Installing dbt-snowflake pulls in dbt-core as a
+      # transitive dependency; specifying both pins ensures version alignment.
+      - name: Install dbt-core and dbt-snowflake
+        run: |
+          pip install \
+            "dbt-core>=1.7.0,<2.0.0" \
+            "dbt-snowflake>=1.7.0,<2.0.0"
+
+      # ── IMPORTANT: why --no-compile does not skip catalog generation ─────────
+      # `dbt docs generate --no-compile` skips Jinja/SQL compilation (reading
+      # model files and resolving ref()/source() references) but STILL attempts
+      # to connect to the data warehouse to query information_schema for the
+      # catalog (column names, data types, row counts).
+      #
+      # In CI without live Snowflake credentials, running `dbt docs generate`
+      # in any form will fail at the catalog step and exit non-zero before
+      # writing index.html. The correct CI approach is:
+      #
+      #   1. `dbt compile`   — validates all model SQL and Jinja, resolves the
+      #                        full DAG, and writes manifest.json to target/.
+      #                        Zero network connections required.
+      #   2. Stub catalog.json — a structurally valid JSON file that the dbt
+      #                          docs UI accepts; omits warehouse column
+      #                          statistics but preserves full lineage, model
+      #                          descriptions, and test coverage from the manifest.
+      #   3. Copy index.html — dbt docs generate would copy this static asset
+      #                        from the installed dbt-core package; we do the
+      #                        same without a DB connection.
+      #
+      # The resulting GitHub Pages site shows the full model lineage graph,
+      # column-level documentation, and declared tests — everything sourced
+      # from the version-controlled dbt project rather than from live data.
+
+      # Write a CI-only profiles.yml into the dbt/ directory.
+      # The Snowflake credentials here are intentionally dummy values — they
+      # satisfy the dbt profile schema validator but are never used to open a
+      # connection (dbt compile does not connect to the database).
+      #
+      # This file is written at CI runtime and is never committed to the repo
+      # (profiles.yml is in .gitignore; dbt/profiles.yml.example documents
+      # the real structure for local development).
+      - name: Write mock CI profiles.yml
+        run: |
+          cat > dbt/profiles.yml << 'EOF'
+          nyc311:
+            target: ci
+            outputs:
+              ci:
+                type: snowflake
+                # Placeholder values — dbt compile validates the schema but
+                # does not open a Snowflake connection. Replace with real
+                # credentials (via GitHub Secrets) only if live catalog
+                # generation is required.
+                account: "placeholder.us-east-1"
+                user: ci_user
+                password: ci_password
+                role: NYC311_TRANSFORMER
+                database: NYC311_DB
+                warehouse: NYC311_WH
+                schema: gold
+                threads: 1
+                client_session_keep_alive: false
+          EOF
+
+      - name: Install dbt packages (dbt deps)
+        working-directory: dbt
+        run: |
+          dbt deps \
+            --profiles-dir . \
+            --project-dir .
+
+      # dbt compile resolves the full model DAG (ref(), source(), macros, Jinja)
+      # and writes two artifacts to target/:
+      #   manifest.json  — full DAG, model SQL, node metadata, test definitions
+      #   run_results.json — empty for compile runs
+      #
+      # No Snowflake connection is opened. Snowflake-specific SQL syntax in
+      # model files (DATEDIFF, TIMESTAMP_NTZ, ZORDER) is treated as opaque
+      # SQL strings — dbt compile validates template structure, not SQL dialect.
+      - name: Compile dbt project (generates manifest.json)
+        working-directory: dbt
+        run: |
+          dbt compile \
+            --profiles-dir . \
+            --project-dir . \
+            --target ci
+
+      # Assemble the three files that make up the dbt docs static site:
+      #   manifest.json  — already in target/ from the compile step above
+      #   catalog.json   — stub (no warehouse column stats; full lineage preserved)
+      #   index.html     — copied from the dbt-core package's bundled static asset
+      - name: Assemble dbt docs site
+        working-directory: dbt
+        run: |
+          python3 << 'PYEOF'
+          import datetime, glob, json, os, shutil, sys
+
+          target_dir = "target"
+          os.makedirs(target_dir, exist_ok=True)
+
+          # ── 1. Verify manifest.json from compile step ─────────────────────────
+          manifest_path = os.path.join(target_dir, "manifest.json")
+          if not os.path.exists(manifest_path):
+              print("ERROR: target/manifest.json not found — did dbt compile succeed?",
+                    file=sys.stderr)
+              sys.exit(1)
+          with open(manifest_path) as fh:
+              manifest = json.load(fh)
+          node_count = len(manifest.get("nodes", {}))
+          source_count = len(manifest.get("sources", {}))
+          print(f"manifest.json: {node_count} nodes, {source_count} sources")
+
+          # ── 2. Write stub catalog.json ─────────────────────────────────────────
+          # Full catalog generation queries the warehouse's information_schema
+          # (column names, data types, row counts). An empty nodes/sources dict
+          # is a valid catalog — the dbt docs UI renders the lineage graph,
+          # model descriptions, and test coverage from manifest.json; it
+          # displays 'N/A' for column statistics when catalog entries are absent.
+          catalog = {
+              "metadata": {
+                  "dbt_schema_version":
+                      "https://schemas.getdbt.com/dbt/catalog/v1/updated.json",
+                  "dbt_version": manifest.get("metadata", {}).get("dbt_version", "1.7.0"),
+                  "generated_at": datetime.datetime.utcnow().strftime(
+                      "%Y-%m-%dT%H:%M:%S.%fZ"
+                  ),
+                  "errors": None,
+              },
+              "nodes": {},
+              "sources": {},
+          }
+          catalog_path = os.path.join(target_dir, "catalog.json")
+          with open(catalog_path, "w") as fh:
+              json.dump(catalog, fh, indent=2)
+          print(f"catalog.json: wrote stub ({os.path.getsize(catalog_path):,} bytes)")
+
+          # ── 3. Copy the bundled index.html from the dbt-core package ───────────
+          # `dbt docs generate` copies this file from the installed dbt-core package
+          # to target/index.html. We replicate that step without the DB connection.
+          import dbt
+          dbt_pkg_dir = os.path.dirname(dbt.__file__)
+
+          # Search recursively under the dbt package directory. In dbt-core 1.x the
+          # file lives at dbt/include/index.html; the glob handles minor variations
+          # across patch versions without hard-coding the exact path.
+          candidates = sorted(
+              glob.glob(
+                  os.path.join(dbt_pkg_dir, "**", "index.html"),
+                  recursive=True,
+              )
+          )
+          if not candidates:
+              print(
+                  f"ERROR: Could not find bundled index.html under {dbt_pkg_dir}.\n"
+                  f"Contents of {dbt_pkg_dir}:",
+                  file=sys.stderr,
+              )
+              for entry in os.listdir(dbt_pkg_dir):
+                  print(f"  {entry}", file=sys.stderr)
+              sys.exit(1)
+
+          index_src = candidates[0]
+          index_dst = os.path.join(target_dir, "index.html")
+          shutil.copy(index_src, index_dst)
+          print(f"index.html: copied from {index_src} ({os.path.getsize(index_dst):,} bytes)")
+
+          # ── 4. Verify the complete artifact set ────────────────────────────────
+          print("\nArtifact summary:")
+          required = ["manifest.json", "catalog.json", "index.html"]
+          all_ok = True
+          for fname in required:
+              path  = os.path.join(target_dir, fname)
+              size  = os.path.getsize(path) if os.path.exists(path) else -1
+              ok    = size > 0
+              mark  = "✓" if ok else "✗"
+              print(f"  {mark}  target/{fname}  ({size:,} bytes)")
+              if not ok:
+                  all_ok = False
+
+          if not all_ok:
+              print("\nERROR: One or more required artifacts are missing.", file=sys.stderr)
+              sys.exit(1)
+
+          print("\nDocs site ready for GitHub Pages deployment.")
+          PYEOF
+
+      # Configure the Pages upload context. Must run before upload-pages-artifact.
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v4
+
+      # Upload dbt/target/ as the Pages artifact. The deploy job picks this up.
+      # The artifact name is always 'github-pages' (fixed by the Pages API).
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # Path is relative to the repository root.
+          path: dbt/target
+
+  # ── deploy ─────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+
+    # The github-pages environment records every deployment in the repository's
+    # Environments tab and provides the published URL as a deployment status.
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      # Print the published URL to the Actions summary for quick access.
+      - name: Print published URL
+        run: |
+          echo "### dbt Docs Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**URL:** ${{ steps.deployment.outputs.page_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The lineage graph, model descriptions, and test coverage are live." >> $GITHUB_STEP_SUMMARY
+          echo "Column-level statistics (row counts, data types) are omitted in CI docs" >> $GITHUB_STEP_SUMMARY
+          echo "because catalog generation requires a live Snowflake connection." >> $GITHUB_STEP_SUMMARY
+          echo "Run \`dbt docs generate\` locally with real credentials to include them." >> $GITHUB_STEP_SUMMARY

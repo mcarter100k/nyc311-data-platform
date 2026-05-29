@@ -1,0 +1,17 @@
+# dbt.yml
+# Purpose: CI workflow for dbt — runs dbt compile, test, and docs generation on PRs
+# targeting main that touch the dbt/ directory. Uses Snowflake credentials from secrets.
+
+name: dbt CI
+
+on:
+  pull_request:
+    paths:
+      - 'dbt/**'
+  push:
+    branches:
+      - main
+    paths:
+      - 'dbt/**'
+
+# stub — implementation follows dbt layer build

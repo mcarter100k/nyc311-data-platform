@@ -1,0 +1,80 @@
+version: 2
+
+models:
+  - name: int_service_requests_cleaned
+    description: >
+      Cleaned and enriched service requests. Applies borough standardization,
+      computes resolution_days, classifies complaint_category, and filters out
+      records where closed_date precedes created_date. This is the single source
+      of truth for all mart models — all business logic lives here.
+    columns:
+
+      - name: service_request_id
+        description: "MD5 surrogate key inherited from staging. Unique per service request."
+        tests:
+          - not_null
+          - unique
+
+      - name: unique_key
+        description: "Natural key from NYC Open Data."
+        tests:
+          - not_null
+          - unique
+
+      - name: borough_clean
+        description: >
+          Standardized borough name. All raw variants (BK, Bklyn, KINGS, etc.)
+          are mapped to one of five canonical values. Unrecognized values become
+          UNSPECIFIED. This column is the join key for dim_location.
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - 'BROOKLYN'
+                - 'MANHATTAN'
+                - 'QUEENS'
+                - 'BRONX'
+                - 'STATEN ISLAND'
+                - 'UNSPECIFIED'
+
+      - name: complaint_category
+        description: >
+          Grouped complaint category derived from complaint_type via CASE WHEN
+          pattern matching. Used for dashboard filtering and aggregate reporting.
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - 'Noise'
+                - 'Heat & Hot Water'
+                - 'Street Light'
+                - 'Rodent'
+                - 'Illegal Parking'
+                - 'Sanitation'
+                - 'Water'
+                - 'Graffiti'
+                - 'Homeless Services'
+                - 'Street Condition'
+                - 'Parks & Trees'
+                - 'Other'
+
+      - name: resolution_days
+        description: >
+          Integer days between created_date and closed_date. NULL for open
+          requests. Negative values are filtered out by the quality filter in
+          this model and should never appear here.
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+              config:
+                where: "resolution_days is not null"
+
+      - name: created_date
+        description: "Timestamp when the service request was submitted. Never null."
+        tests:
+          - not_null
+
+      - name: agency_abbreviation
+        description: "Short agency code. UNKNOWN sentinel applied by Silver for null/empty values."
+        tests:
+          - not_null
