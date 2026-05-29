@@ -1,0 +1,17 @@
+# terraform.yml
+# Purpose: CI/CD workflow for Terraform plan/apply on push to main or PRs targeting main.
+# Runs fmt check, validate, plan on PRs; applies on merge to main with manual approval gate.
+
+name: Terraform
+
+on:
+  pull_request:
+    paths:
+      - 'terraform/**'
+  push:
+    branches:
+      - main
+    paths:
+      - 'terraform/**'
+
+# stub — implementation follows Terraform layer build

@@ -1,0 +1,13 @@
+PLACEHOLDER — replace this file with the actual architecture diagram PNG.
+
+Suggested tool: draw.io, Lucidchart, or Excalidraw.
+
+Diagram should show:
+  NYC Open Data API
+    └─► Azure Data Lake Storage Gen2 (Bronze)
+          └─► Databricks (Silver ETL — PySpark Delta)
+                └─► Snowflake (Gold — dbt dimensional models)
+                      └─► BI / Reporting
+
+Orchestration layer: Apache Airflow (horizontal, spanning all stages)
+CI/CD layer: GitHub Actions (Terraform + dbt workflows)

@@ -1,0 +1,232 @@
+version: 2
+
+models:
+
+  # ── dim_agency ──────────────────────────────────────────────────────────────
+
+  - name: dim_agency
+    description: >
+      Agency dimension. One row per NYC agency that has handled at least one 311
+      service request. Type 1 SCD — no history tracking; agency names overwrite
+      on refresh. Approximately 60 distinct agencies in the full dataset.
+    columns:
+      - name: agency_id
+        description: "MD5 surrogate key on agency_abbreviation."
+        tests:
+          - unique
+          - not_null
+      - name: agency_abbreviation
+        description: "Short code identifying the agency (e.g. NYPD, DOT, DSNY)."
+        tests:
+          - unique
+          - not_null
+      - name: agency_name
+        description: "Full agency name, initcap-normalized."
+        tests:
+          - not_null
+
+  # ── dim_date ────────────────────────────────────────────────────────────────
+
+  - name: dim_date
+    description: >
+      Calendar date dimension spanning 2010-01-01 through 2030-12-31 (controlled
+      by project variables min_date / max_date). One row per calendar day.
+      Contains calendar hierarchy attributes, weekend flag, and US federal
+      holiday flag. No dependency on service request data — populated entirely
+      from the generate_date_spine macro.
+    columns:
+      - name: date_id
+        description: "Integer surrogate key in YYYYMMDD format. Sortable and human-readable."
+        tests:
+          - unique
+          - not_null
+      - name: full_date
+        description: "Calendar date (DATE type). Join target for fct_service_requests.created_date_id."
+        tests:
+          - unique
+          - not_null
+      - name: year
+        description: "4-digit calendar year."
+        tests:
+          - not_null
+      - name: quarter
+        description: "Calendar quarter (1–4)."
+        tests:
+          - not_null
+      - name: month
+        description: "Month number (1–12)."
+        tests:
+          - not_null
+      - name: month_name
+        description: "Full month name (e.g. January)."
+        tests:
+          - not_null
+      - name: day_of_week
+        description: "Snowflake dayofweek value: 0=Sunday, 1=Monday … 6=Saturday."
+        tests:
+          - not_null
+      - name: is_weekend
+        description: "TRUE for Saturday (6) and Sunday (0). Used in volume trend analysis."
+        tests:
+          - not_null
+      - name: is_federal_holiday
+        description: "TRUE for the 11 US federal holidays. See model SQL for rule logic."
+        tests:
+          - not_null
+
+  # ── dim_location ────────────────────────────────────────────────────────────
+
+  - name: dim_location
+    description: >
+      Location dimension. One row per unique (borough, community_board, incident_zip)
+      combination observed in the service request dataset. Borough values are the
+      standardized forms from int_service_requests_cleaned (five canonical names
+      plus UNSPECIFIED). Null community boards and ZIP codes are coalesced to 'UNKNOWN'.
+    columns:
+      - name: location_id
+        description: "MD5 surrogate key on (borough, community_board, incident_zip)."
+        tests:
+          - unique
+          - not_null
+      - name: borough
+        description: "Standardized borough name (BROOKLYN, MANHATTAN, QUEENS, BRONX, STATEN ISLAND, UNSPECIFIED)."
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['BROOKLYN', 'MANHATTAN', 'QUEENS', 'BRONX', 'STATEN ISLAND', 'UNSPECIFIED']
+      - name: community_board
+        description: "Community board designation or 'UNKNOWN' when absent."
+        tests:
+          - not_null
+      - name: incident_zip
+        description: "5-digit ZIP code or 'UNKNOWN' when absent."
+        tests:
+          - not_null
+
+  # ── fct_service_requests ────────────────────────────────────────────────────
+
+  - name: fct_service_requests
+    description: >
+      Atomic fact table. One row per NYC 311 service request. Grain: unique_key.
+      Clustered on created_date_id for time-range query performance in Snowflake.
+      Foreign keys to dim_agency, dim_date, and dim_location. All dimension joins
+      are LEFT joins to avoid losing records with null location or unrecognized agency.
+    columns:
+      - name: service_request_id
+        description: "MD5 surrogate key on unique_key."
+        tests:
+          - unique
+          - not_null
+
+      - name: unique_key
+        description: "Natural key from NYC Open Data."
+        tests:
+          - unique
+          - not_null
+
+      - name: agency_id
+        description: "Foreign key to dim_agency."
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_agency')
+              field: agency_id
+
+      - name: created_date_id
+        description: "Foreign key to dim_date (YYYYMMDD integer)."
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_date')
+              field: date_id
+
+      - name: location_id
+        description: "Foreign key to dim_location. NULL for records with no borough and no ZIP."
+        tests:
+          - relationships:
+              to: ref('dim_location')
+              field: location_id
+
+      - name: complaint_type
+        description: "Raw complaint type (degenerate dimension — too high-cardinality for a standalone dim)."
+        tests:
+          - not_null
+
+      - name: complaint_category
+        description: "Grouped complaint category from the intermediate classification CASE WHEN."
+        tests:
+          - not_null
+
+      - name: resolution_days
+        description: "Integer days between created_date and closed_date. NULL for open requests."
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+              config:
+                where: "resolution_days is not null"
+
+      - name: is_resolved
+        description: "TRUE when status = 'Closed'."
+        tests:
+          - not_null
+
+      - name: is_overdue
+        description: "TRUE when resolution_days > 30. NULL for open requests."
+
+      - name: _loaded_at
+        description: "Model run timestamp carried forward from the staging layer."
+        tests:
+          - not_null
+
+  # ── fct_daily_volume ────────────────────────────────────────────────────────
+
+  - name: fct_daily_volume
+    description: >
+      Pre-aggregated daily volume fact. Grain: one row per (full_date, borough,
+      complaint_category). Derived from fct_service_requests to avoid repeated
+      large aggregations in BI queries. Suitable for time-series dashboards,
+      complaint category trend analysis, and borough-level performance reporting.
+    columns:
+      - name: daily_volume_id
+        description: "MD5 surrogate key on (full_date, borough, complaint_category)."
+        tests:
+          - unique
+          - not_null
+
+      - name: full_date
+        description: "Calendar date of the service requests being counted."
+        tests:
+          - not_null
+
+      - name: borough
+        description: "Standardized borough name."
+        tests:
+          - not_null
+
+      - name: complaint_category
+        description: "Grouped complaint category."
+        tests:
+          - not_null
+
+      - name: total_requests
+        description: "Count of service requests opened on full_date in this borough and category."
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "> 0"
+
+      - name: avg_resolution_days
+        description: "Average resolution days for closed requests in this group. NULL if no requests were closed."
+
+      - name: pct_resolved
+        description: "Fraction of requests at Closed status (0.0–1.0)."
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "between 0 and 1"
+              config:
+                where: "pct_resolved is not null"
+
+      - name: overdue_requests
+        description: "Count of requests in this group where resolution_days > 30."
+        tests:
+          - not_null

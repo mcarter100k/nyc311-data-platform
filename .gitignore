@@ -1,0 +1,53 @@
+# ── dbt ───────────────────────────────────────────────────────────────────────
+dbt/target/
+dbt/logs/
+dbt/.user.yml
+dbt/profiles.yml        # use dbt/profiles.yml.example as the template
+
+# dbt_packages are restored by `dbt deps` — no need to commit vendored copies
+dbt/dbt_packages/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs/
+*.log
+
+# ── Terraform ─────────────────────────────────────────────────────────────────
+# Provider binaries — restored by `terraform init`
+terraform/.terraform/
+
+# .terraform.lock.hcl is intentionally committed — it pins provider versions
+# for reproducible runs across machines and CI.
+
+# Local override files — never commit these
+*.tfvars
+*.tfvars.json
+terraform.tfstate
+terraform.tfstate.backup
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# ── OS / editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# ── Secrets / credentials ─────────────────────────────────────────────────────
+*.pem
+*.key
+*.p8
+.env
+.env.*

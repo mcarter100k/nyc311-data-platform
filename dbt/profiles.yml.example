@@ -1,0 +1,65 @@
+# profiles.yml.example
+#
+# Copy this file to ~/.dbt/profiles.yml and fill in your Snowflake account.
+# Never commit the real profiles.yml — it contains credentials.
+#
+# Environment variable conventions used here:
+#   SNOWFLAKE_ACCOUNT          — account identifier in org-account format
+#                                (e.g. MYORG-MYACCOUNT, not the legacy xy12345.us-east-1 format)
+#   SNOWFLAKE_USER             — Snowflake username for the service account
+#   SNOWFLAKE_PASSWORD         — password (dev only; use key-pair in prod — see below)
+#   SNOWFLAKE_PRIVATE_KEY_PATH — path to RSA private key PEM file (prod only)
+#   SNOWFLAKE_PRIVATE_KEY_PASSPHRASE — passphrase protecting the PEM, if encrypted (prod only)
+#   SNOWFLAKE_DATABASE         — database name (e.g. NYC311_DB_DEV or NYC311_DB)
+#   SNOWFLAKE_WAREHOUSE        — warehouse name (e.g. NYC311_WH_DEV or NYC311_WH)
+#
+# The TRANSFORMER role is used for all dbt runs — it has the minimum privileges
+# required: read BRONZE/SILVER, write GOLD. Never run dbt under SYSADMIN.
+
+nyc311:
+  target: dev
+
+  outputs:
+
+    # ── Development target ────────────────────────────────────────────────────
+    # Runs against the _DEV database with a single XS warehouse.
+    # Use password auth locally; rotate to key-pair before sharing credentials.
+    dev:
+      type: snowflake
+      account:   "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user:      "{{ env_var('SNOWFLAKE_USER') }}"
+      password:  "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+
+      role:      NYC311_TRANSFORMER_DEV   # least-privilege role; see terraform/modules/snowflake-foundation
+      database:  "{{ env_var('SNOWFLAKE_DATABASE', 'NYC311_DB_DEV') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', 'NYC311_WH_DEV') }}"
+
+      # dbt writes to <database>.<target_schema>_<model_schema>.
+      # With schema: gold, a marts model lands in NYC311_DB_DEV.GOLD.
+      schema: gold
+
+      threads: 4                    # parallelism; 4 is safe for XS warehouse
+      client_session_keep_alive: false
+      query_tag: "dbt-dev"
+
+    # ── Production target ─────────────────────────────────────────────────────
+    # Invoked by the Airflow BashOperator:  dbt run --target prod
+    # Uses RSA key-pair authentication — no password in CI environment.
+    prod:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user:    "{{ env_var('SNOWFLAKE_USER') }}"
+
+      # Key-pair auth: generate with `openssl genrsa -out rsa_key.pem 2048`
+      # then register the public key on the Snowflake user object.
+      private_key_path:       "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH') }}"
+      private_key_passphrase: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', '') }}"
+
+      role:      NYC311_TRANSFORMER        # production role; no _DEV suffix
+      database:  "{{ env_var('SNOWFLAKE_DATABASE', 'NYC311_DB') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', 'NYC311_WH') }}"
+      schema: gold
+
+      threads: 8                    # higher parallelism on scheduled runs
+      client_session_keep_alive: false
+      query_tag: "dbt-prod"
