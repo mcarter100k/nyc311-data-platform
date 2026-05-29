@@ -298,10 +298,10 @@ cd .. && ./run_tests.sh
 
 ## Contact
 
-**Marcus Carter**
+**Marquis Carter**
 Data Engineer · Principal Architect
 marq.dcarter@gmail.com
-[LinkedIn](https://linkedin.com/in/marcuscarter) · [GitHub](https://github.com/mcarter100k)
+[LinkedIn](https://www.linkedin.com/in/marquis-c-45132325b/) · [GitHub](https://github.com/mcarter100k)
 
 ---
 
