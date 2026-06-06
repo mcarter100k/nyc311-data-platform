@@ -1,0 +1,14 @@
+nyc311:
+  target: ci
+  outputs:
+    ci:
+      type: snowflake
+      account: "placeholder.us-east-1"
+      user: ci_user
+      password: ci_password
+      role: NYC311_TRANSFORMER
+      database: NYC311_DB
+      warehouse: NYC311_WH
+      schema: gold
+      threads: 1
+      client_session_keep_alive: false
