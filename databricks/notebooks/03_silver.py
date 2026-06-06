@@ -289,6 +289,10 @@ if not dq_warnings:
 # COMMAND ----------
 
 # ── Step 8: Quarantine records failing critical checks ────────────────────────
+# The quarantine table is intentionally outside the dbt lineage graph. It is an
+# operational table for data quality investigation, not an analyst-facing dataset.
+# Engineers query it directly via Snowflake when investigating DQ failures.
+#
 # Records that fail critical checks are written to a quarantine table with a
 # quarantine_reason column rather than being silently dropped.
 #

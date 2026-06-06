@@ -163,6 +163,10 @@ backfilling or comparing historical data.
 
 **Negative / accepted risks:**
 
+- The `service_requests_quarantine` table written by Silver is intentionally excluded from
+  the dbt lineage graph. It is an operational surface for DQ investigation, not an
+  analyst-facing dataset. Engineers query it directly in Snowflake; it has no dbt source
+  definition and no Gold consumer.
 - New API columns are stranded in Silver until explicitly promoted to Gold. A column that
   becomes analytically interesting requires a PR. This is a deliberate speed bump — it is
   the mechanism by which Gold schema stability is enforced.

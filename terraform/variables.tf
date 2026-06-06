@@ -30,26 +30,6 @@ variable "environment" {
 # Snowflake
 # ---------------------------------------------------------------------------
 
-variable "snowflake_account" {
-  description = "Snowflake account identifier in org-account format (e.g. MYORG-MYACCOUNT). Prefer the SNOWFLAKE_ACCOUNT environment variable so this value is never written to plan files."
-  type        = string
-  default     = null
-  sensitive   = true
-}
-
-variable "snowflake_username" {
-  description = "Snowflake user with SYSADMIN role used by Terraform for provisioning. Prefer the SNOWFLAKE_USER environment variable."
-  type        = string
-  default     = null
-  sensitive   = true
-}
-
-variable "snowflake_region" {
-  description = "Snowflake deployment region (e.g. us-east-1, eu-west-1). Required when the account identifier does not include the region segment."
-  type        = string
-  default     = "us-east-1"
-}
-
 variable "snowflake_role" {
   description = "Snowflake role assumed by Terraform during provisioning. Must have SYSADMIN or ACCOUNTADMIN privileges to create databases, warehouses, and roles."
   type        = string

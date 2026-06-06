@@ -78,10 +78,6 @@ sources:
           before the Silver MERGE so a MERGE failure still preserves the quality snapshot.
           Consumed by fct_data_quality in Gold to surface 7-day rolling trends and
           threshold breaches across all pipeline runs.
-        loaded_at_field: run_date
-        freshness:
-          warn_after:  {count: 24, period: hour}
-          error_after: {count: 48, period: hour}
         columns:
           - name: run_date
             description: "Pipeline run date (YYYY-MM-DD string matching the Silver widget value)."
@@ -95,17 +91,3 @@ sources:
             description: "records_failed / records_checked. Range 0.0–1.0."
           - name: pipeline_stage
             description: "Always 'silver' for records written by 03_silver.py."
-
-      - name: service_requests_quarantine
-        description: >
-          Records from the Silver pipeline that failed a critical data quality check
-          and were routed here instead of the Silver MERGE. Each row carries a
-          quarantine_reason column identifying why it was excluded. Operations teams
-          should review this table daily and decide whether records should be corrected
-          and reprocessed. Quarantine is idempotent per run_date — re-running Silver
-          replaces the quarantine snapshot for that date.
-        columns:
-          - name: unique_key
-            description: "Natural key from NYC Open Data. NULL for null_unique_key quarantine records."
-          - name: quarantine_reason
-            description: "Why the record was quarantined: null_unique_key or negative_resolution_days."
