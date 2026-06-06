@@ -1,4 +1,5 @@
 # terraform/variables.tf
+# Last validated: 2026-06-05 (terraform fmt + validate pass clean)
 #
 # Root-level input variable declarations for the NYC 311 Data Platform.
 #
