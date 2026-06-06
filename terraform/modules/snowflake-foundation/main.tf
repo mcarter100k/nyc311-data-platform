@@ -221,7 +221,7 @@ resource "snowflake_grant_privileges_to_account_role" "loader_bronze_future_tabl
   on_schema_object {
     future {
       object_type_plural = "TABLES"
-      in_schema = local.fq_bronze
+      in_schema          = local.fq_bronze
     }
   }
   depends_on = [snowflake_schema.bronze]
@@ -237,7 +237,7 @@ resource "snowflake_grant_privileges_to_account_role" "loader_bronze_future_stag
   on_schema_object {
     future {
       object_type_plural = "STAGES"
-      in_schema = local.fq_bronze
+      in_schema          = local.fq_bronze
     }
   }
   depends_on = [snowflake_schema.bronze]
@@ -281,7 +281,7 @@ resource "snowflake_grant_privileges_to_account_role" "transformer_bronze_future
   on_schema_object {
     future {
       object_type_plural = "TABLES"
-      in_schema = local.fq_bronze
+      in_schema          = local.fq_bronze
     }
   }
   depends_on = [snowflake_schema.bronze]
@@ -303,7 +303,7 @@ resource "snowflake_grant_privileges_to_account_role" "transformer_silver_future
   on_schema_object {
     future {
       object_type_plural = "TABLES"
-      in_schema = local.fq_silver
+      in_schema          = local.fq_silver
     }
   }
   depends_on = [snowflake_schema.silver]
@@ -315,7 +315,7 @@ resource "snowflake_grant_privileges_to_account_role" "transformer_silver_future
   on_schema_object {
     future {
       object_type_plural = "VIEWS"
-      in_schema = local.fq_silver
+      in_schema          = local.fq_silver
     }
   }
   depends_on = [snowflake_schema.silver]
@@ -337,7 +337,7 @@ resource "snowflake_grant_privileges_to_account_role" "transformer_gold_future_t
   on_schema_object {
     future {
       object_type_plural = "TABLES"
-      in_schema = local.fq_gold
+      in_schema          = local.fq_gold
     }
   }
   depends_on = [snowflake_schema.gold]
@@ -349,7 +349,7 @@ resource "snowflake_grant_privileges_to_account_role" "transformer_gold_future_v
   on_schema_object {
     future {
       object_type_plural = "VIEWS"
-      in_schema = local.fq_gold
+      in_schema          = local.fq_gold
     }
   }
   depends_on = [snowflake_schema.gold]
@@ -392,7 +392,7 @@ resource "snowflake_grant_privileges_to_account_role" "reporter_gold_future_tabl
   on_schema_object {
     future {
       object_type_plural = "TABLES"
-      in_schema = local.fq_gold
+      in_schema          = local.fq_gold
     }
   }
   depends_on = [snowflake_schema.gold]
@@ -404,7 +404,7 @@ resource "snowflake_grant_privileges_to_account_role" "reporter_gold_future_view
   on_schema_object {
     future {
       object_type_plural = "VIEWS"
-      in_schema = local.fq_gold
+      in_schema          = local.fq_gold
     }
   }
   depends_on = [snowflake_schema.gold]

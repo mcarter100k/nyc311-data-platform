@@ -28,7 +28,7 @@ variable "warehouse_size" {
   validation {
     condition = contains(
       ["X-SMALL", "SMALL", "MEDIUM", "LARGE", "X-LARGE",
-       "2X-LARGE", "3X-LARGE", "4X-LARGE", "5X-LARGE", "6X-LARGE"],
+      "2X-LARGE", "3X-LARGE", "4X-LARGE", "5X-LARGE", "6X-LARGE"],
       var.warehouse_size
     )
     error_message = "warehouse_size must be a valid Snowflake warehouse size (X-SMALL through 6X-LARGE)."
