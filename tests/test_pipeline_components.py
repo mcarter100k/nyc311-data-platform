@@ -222,6 +222,7 @@ EXPECTED_TASKS = [
     "ingest_raw",
     "load_bronze",
     "load_silver",
+    "snapshot_agency",
     "dbt_run",
     "dbt_test",
     "notify_success",
@@ -231,7 +232,8 @@ EXPECTED_DEPENDENCY_CHAIN = [
     ("check_api_availability", "ingest_raw"),
     ("ingest_raw",             "load_bronze"),
     ("load_bronze",            "load_silver"),
-    ("load_silver",            "dbt_run"),
+    ("load_silver",            "snapshot_agency"),
+    ("snapshot_agency",        "dbt_run"),
     ("dbt_run",                "dbt_test"),
     ("dbt_test",               "notify_success"),
 ]

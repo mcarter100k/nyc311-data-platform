@@ -37,6 +37,13 @@ Pipeline architecture
    └───────┬──────────────────────────────────────────────┘
            │
    ┌───────▼──────────────────────────────────────────────┐
+   │  snapshot_agency  (BashOperator)                      │
+   │  dbt snapshot for agency_snapshot (SCD Type 2).       │
+   │  Must precede dbt_run — dim_agency reads from it.     │
+   │  Opens new versions when agency names change.         │
+   └───────┬──────────────────────────────────────────────┘
+           │
+   ┌───────▼──────────────────────────────────────────────┐
    │  dbt_run  (BashOperator)                              │
    │  Builds all dbt models (staging → intermediate →      │
    │  marts) against the Snowflake SILVER schema.          │
@@ -82,7 +89,6 @@ from datetime import datetime, timedelta
 
 # ── Airflow core ──────────────────────────────────────────────────────────────
 from airflow import DAG
-from airflow.hooks.base import BaseHook
 from airflow.models import Variable
 from airflow.utils.trigger_rule import TriggerRule
 
@@ -290,8 +296,7 @@ Host: `data.cityofnewyork.us`, Schema: `https`
         # Execution date is passed as notebook parameters so the job processes
         # exactly the correct day and the run is idempotent on retry.
         notebook_params        = {
-            "start_date":   "{{ ds }}",
-            "end_date":     "{{ ds }}",
+            "run_date":     "{{ ds }}",
             "force_reload": "false",
         },
         polling_period_seconds = 30,
@@ -363,7 +368,28 @@ or a Snowflake sync failure. Investigate the Databricks run log.
 """,
     )
 
-    # ── Task 5: dbt model run ─────────────────────────────────────────────────
+    # ── Task 5: dbt agency snapshot (SCD Type 2) ─────────────────────────────
+    # Must run before dbt_run. dim_agency reads from agency_snapshot; without
+    # a preceding snapshot run it reflects the previous state. ADR 007.
+
+    snapshot_agency = BashOperator(
+        task_id      = "snapshot_agency",
+        bash_command = f"dbt snapshot --select agency_snapshot {_DBT_FLAGS}",
+        doc_md       = """\
+## snapshot_agency
+
+Runs `dbt snapshot` for `agency_snapshot` (SCD Type 2 for the agency dimension).
+Opens a new version row whenever an agency's name changes in the Silver source.
+
+**Must precede `dbt_run`** — `dim_agency` reads from the snapshot table.
+If this task is skipped and an agency name changed since the last snapshot,
+`dim_agency` will show the old name until the next snapshot run.
+
+See ADR 007 for the full SCD Type 2 decision and fan-out risk analysis.
+""",
+    )
+
+    # ── Task 6: dbt model run ─────────────────────────────────────────────────
     # dbt_run and dbt_test are deliberately separate tasks so that the Airflow
     # UI can distinguish a model build failure from a data test failure.
     # These are operationally different: a build failure means broken SQL;
@@ -393,7 +419,7 @@ separate `dbt_test` task to make failure modes distinguishable in the UI.
 """,
     )
 
-    # ── Task 6: dbt test ──────────────────────────────────────────────────────
+    # ── Task 7: dbt test ──────────────────────────────────────────────────────
 
     dbt_test = BashOperator(
         task_id      = "dbt_test",
@@ -401,9 +427,9 @@ separate `dbt_test` task to make failure modes distinguishable in the UI.
         doc_md       = """\
 ## dbt_test
 
-Runs all dbt schema tests (59 declarations across `not_null`, `unique`,
-`relationships`, `accepted_values`, `dbt_utils.expression_is_true`)
-and the singular test (`assert_resolution_days_nonnegative`).
+Runs all dbt schema tests (`not_null`, `unique`, `relationships`,
+`accepted_values`, `dbt_utils.expression_is_true`) and singular tests
+(`assert_resolution_days_nonnegative`, `assert_one_current_agency_per_abbreviation`).
 
 A passing run means the Gold dimensional model satisfies all data
 contracts declared in `stg_service_requests.yml` and `marts.yml`.
@@ -420,7 +446,7 @@ this task for retry.
 """,
     )
 
-    # ── Task 7: Success notification ──────────────────────────────────────────
+    # ── Task 8: Success notification ──────────────────────────────────────────
 
     notify_success = BashOperator(
         task_id      = "notify_success",
@@ -465,6 +491,7 @@ email) by replacing the echo with a curl call or by adding a
         >> ingest_raw
         >> load_bronze
         >> load_silver
+        >> snapshot_agency
         >> dbt_run
         >> dbt_test
         >> notify_success

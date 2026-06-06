@@ -2,7 +2,7 @@
 
 > A production-grade data engineering platform that transforms 35 million raw city service
 > complaints into a clean, queryable dimensional model — updated automatically every morning,
-> validated by 86 automated tests, and deployable to real cloud infrastructure with a single command.
+> validated by 92 automated tests, and deployable to real cloud infrastructure with a single command.
 
 ---
 
@@ -28,7 +28,7 @@ This project was built to show what a senior data engineer / principal architect
 | **Infrastructure as Code** | Terraform provisions 30+ Snowflake objects with least-privilege role grants enforced as code, not documentation |
 | **Pipeline Engineering** | Idempotent, paginated API ingestion with Airflow orchestration, HTTP availability gating, and retry-safe Delta MERGE |
 | **Dimensional Modeling** | Star schema with two fact tables, three dimension tables, and a 20-year calendar spine — built and tested in dbt |
-| **Data Quality** | 86 automated tests that validate architecture correctness and pipeline robustness without requiring live cloud credentials |
+| **Data Quality** | 92 automated tests that validate architecture correctness and pipeline robustness without requiring live cloud credentials |
 | **Security** | Zero hardcoded credentials — Databricks secret scopes, Airflow Connections, dbt env_var(), RSA key-pair auth for prod |
 | **CI/CD** | GitHub Actions runs `terraform plan` on every PR and `dbt run + dbt test` on every merge to main |
 
@@ -68,7 +68,7 @@ This project was built to show what a senior data engineer / principal architect
 │  Snowflake — GOLD Schema                             │
 │  dim_agency · dim_date · dim_location                │
 │  fct_service_requests · fct_daily_volume             │
-│  86 tests · zero silent failures                     │
+│  92 tests · zero silent failures                     │
 └──────────────────────────────┬───────────────────────┘
                                │
                                ▼
@@ -140,13 +140,13 @@ dbt builds the full star schema from Silver:
 ---
 
 ### Orchestration — Airflow DAG
-Seven tasks in a linear dependency chain:
+Eight tasks in a linear dependency chain:
 
 ```
-check_api_availability → ingest_raw → load_bronze → load_silver → dbt_run → dbt_test → notify_success
+check_api_availability → ingest_raw → load_bronze → load_silver → snapshot_agency → dbt_run → dbt_test → notify_success
 ```
 
-The `HttpSensor` at the front validates both HTTP 200 and a non-empty response body before any Databricks cluster starts. `dbt_run` and `dbt_test` are separate tasks — a model build failure and a data quality failure look identical in a combined step but require completely different remediation.
+The `HttpSensor` at the front validates both HTTP 200 and a non-empty response body before any Databricks cluster starts. `snapshot_agency` runs `dbt snapshot` for the agency SCD Type 2 dimension before `dbt_run` — ADR 007 requires this ordering. `dbt_run` and `dbt_test` are separate tasks — a model build failure and a data quality failure look identical in a combined step but require completely different remediation.
 
 **Outcome:** No wasted Databricks compute on a broken source. Clear failure attribution in the Airflow UI — you know instantly whether the problem is in ingestion, transformation, or data quality.
 
@@ -164,12 +164,12 @@ Provisions the complete Snowflake hierarchy from scratch:
 
 ---
 
-## Test Suite — 86 Tests, Zero Live Credentials Required
+## Test Suite — 92 Tests, Zero Live Credentials Required
 
 The test suite validates architecture correctness and pipeline robustness without connecting to Snowflake, Databricks, or Azure. It runs in under 5 seconds on any machine.
 
 ```bash
-./run_tests.sh          # all 86 tests
+./run_tests.sh          # all 92 tests
 ./run_tests.sh dbt      # dbt architecture tests only
 ./run_tests.sh pipeline # pipeline component tests only
 ```
@@ -223,15 +223,12 @@ nyc311-data-platform/
 
 ## Architecture Decision Records
 
-Five full ADRs document the reasoning behind every major technology choice — written to be defensible in a principal-level interview.
+ADRs document the reasoning behind major technology choices — written to be defensible in a principal-level interview.
 
 | ADR | Decision | Outcome |
 |---|---|---|
-| [001](docs/adr/001-warehouse-selection.md) | Snowflake over Databricks SQL and Synapse | Auto-suspend eliminates idle compute cost; best dbt adapter; clean ETL/BI separation |
-| [002](docs/adr/002-transformation-tool.md) | dbt Core over custom Python | Version-controlled SQL; lineage graph publishable to GitHub Pages; tests as a quality gate |
-| [003](docs/adr/003-iac-approach.md) | Terraform over manual provisioning | Drift detection; least-privilege enforced as code; reproducible environments |
-| [004](docs/adr/004-medallion-vs-elt.md) | Medallion lakehouse over single ELT step | Each layer has one failure mode — bisect a pipeline bug in two queries, not a full debug |
-| [005](docs/adr/005-orchestration-strategy.md) | Airflow over cron or Step Functions | Code-defined DAGs; DatabricksRunNowOperator; industry standard for data engineering roles |
+| [006](docs/adr/006-schema-evolution-contract.md) | Schema version stamp over runtime column detection | Breaking changes are explicit and auditable; additive changes are free |
+| [007](docs/adr/007-scd-type-2-dim-agency.md) | dbt snapshot (check strategy) over manual MERGE for agency SCD Type 2 | Change detection is declarative; no custom MERGE code; full version history auditable |
 
 ---
 
@@ -307,4 +304,4 @@ marq.dcarter@gmail.com
 
 *All code in this repository is production-standard and fully defensible in a technical interview.
 Terraform passes `terraform validate` against the real Snowflake provider. dbt models compile
-against a real manifest. The 86-test suite runs clean on every machine without cloud credentials.*
+against a real manifest. The 92-test suite runs clean on every machine without cloud credentials.*

@@ -1,17 +1,38 @@
-# dbt.yml
-# Purpose: CI workflow for dbt — runs dbt compile, test, and docs generation on PRs
-# targeting main that touch the dbt/ directory. Uses Snowflake credentials from secrets.
-
 name: dbt CI
 
 on:
-  pull_request:
-    paths:
-      - 'dbt/**'
   push:
     branches:
       - main
-    paths:
-      - 'dbt/**'
+  pull_request:
 
-# stub — implementation follows dbt layer build
+jobs:
+  test:
+    name: Compile and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dbt
+        run: pip install -r dbt/requirements.txt
+
+      - name: dbt deps
+        run: dbt deps --profiles-dir . --project-dir . --no-version-check
+        working-directory: dbt
+
+      - name: dbt compile
+        run: dbt compile --profiles-dir . --project-dir . --target ci --no-version-check
+        working-directory: dbt
+
+      - name: Install test dependencies
+        run: |
+          pip install pytest pyyaml
+          pip install pytest-github-actions-annotate-failures || true
+
+      - name: Run pytest (excluding PySpark unit tests)
+        run: pytest tests/ --ignore=tests/unit -v
