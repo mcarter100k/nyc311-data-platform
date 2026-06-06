@@ -1,5 +1,8 @@
 # NYC 311 Data Platform
 
+[![dbt CI](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/dbt.yml/badge.svg)](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/dbt.yml)
+[![Terraform](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/terraform.yml/badge.svg)](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/terraform.yml)
+
 > A production-grade data engineering platform that transforms 35 million raw city service
 > complaints into a clean, queryable dimensional model — updated automatically every morning,
 > validated by 92 automated tests, and deployable to real cloud infrastructure with a single command.
