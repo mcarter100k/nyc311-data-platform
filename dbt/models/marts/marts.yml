@@ -6,22 +6,45 @@ models:
 
   - name: dim_agency
     description: >
-      Agency dimension. One row per NYC agency that has handled at least one 311
-      service request. Type 1 SCD — no history tracking; agency names overwrite
-      on refresh. Approximately 60 distinct agencies in the full dataset.
+      Agency dimension. SCD Type 2 — one row per version of each agency record.
+      A new version is opened whenever agency_name changes for a given
+      agency_abbreviation. Abbreviation changes are not versioned; a new
+      abbreviation is treated as a new agency. Multiple rows per agency are
+      normal (one current, zero or more expired). Populated from agency_snapshot,
+      which runs the dbt check strategy on agency_name. See ADR 007.
     columns:
-      - name: agency_id
-        description: "MD5 surrogate key on agency_abbreviation."
+      - name: agency_key
+        description: >
+          MD5 surrogate key on (agency_abbreviation, effective_date). Unique per
+          version. Old agency_key values are retained when a new version opens,
+          so historical fact rows continue to resolve their FK.
         tests:
           - unique
           - not_null
       - name: agency_abbreviation
-        description: "Short code identifying the agency (e.g. NYPD, DOT, DSNY)."
+        description: >
+          Short code identifying the agency (e.g. NYPD, DOT, DSNY). Natural key —
+          stable across name-change versions. Not unique in this table because
+          multiple versions of the same agency coexist.
         tests:
-          - unique
           - not_null
       - name: agency_name
-        description: "Full agency name, initcap-normalized."
+        description: "Full agency name, initcap-normalized. The tracked changing attribute."
+        tests:
+          - not_null
+      - name: effective_date
+        description: "Date this version of the agency record became active."
+        tests:
+          - not_null
+      - name: expiry_date
+        description: >
+          Date this version was superseded by a newer name. NULL for the current
+          version. Cast from dbt_valid_to (snapshot timestamp) to DATE.
+      - name: is_current
+        description: >
+          TRUE for exactly one row per agency_abbreviation — the version with
+          NULL expiry_date. The singular test assert_one_current_agency_per_
+          abbreviation.sql enforces this constraint.
         tests:
           - not_null
 
@@ -125,12 +148,16 @@ models:
           - not_null
 
       - name: agency_id
-        description: "Foreign key to dim_agency."
+        description: >
+          Foreign key to dim_agency.agency_key. Carries the agency_key of the
+          version that was current when this fact row was last merged by Silver.
+          Historical rows point to expired versions (is_current=FALSE) — the FK
+          still resolves because SCD2 never deletes old dim_agency rows.
         tests:
           - not_null
           - relationships:
               to: ref('dim_agency')
-              field: agency_id
+              field: agency_key
 
       - name: created_date_id
         description: "Foreign key to dim_date (YYYYMMDD integer)."
@@ -230,3 +257,4 @@ models:
         description: "Count of requests in this group where resolution_days > 30."
         tests:
           - not_null
+

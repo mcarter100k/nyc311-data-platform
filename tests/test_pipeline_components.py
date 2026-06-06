@@ -127,13 +127,23 @@ def test_bronze_notebook_asserts_nonzero_row_count():
 
 def test_silver_notebook_deduplicates_on_unique_key():
     """
-    Silver must deduplicate on unique_key — the natural key from NYC Open Data.
+    Silver must call deduplicate_on_unique_key — the function that keeps the
+    most recent _ingest_timestamp row per unique_key. The implementation lives
+    in silver_transformations.py; the notebook must import and call it.
     Without deduplication, API pagination overlap creates duplicate records that
     propagate into every Gold mart table.
     """
     path = NOTEBOOKS["03_silver"]
-    assert file_contains(path, "dropDuplicates", "unique_key"), (
-        "03_silver.py does not deduplicate on unique_key."
+    assert file_contains(path, "deduplicate_on_unique_key"), (
+        "03_silver.py does not call deduplicate_on_unique_key. "
+        "Deduplication logic must be imported from silver_transformations.py."
+    )
+    transformations_path = os.path.join(
+        ROOT, "databricks", "notebooks", "silver_transformations.py"
+    )
+    assert file_contains(transformations_path, "unique_key", "row_number"), (
+        "silver_transformations.py does not implement Window-based deduplication "
+        "on unique_key — dropDuplicates gives no deterministic row selection guarantee."
     )
 
 
@@ -142,10 +152,18 @@ def test_silver_notebook_uses_delta_merge():
     Silver must use Delta MERGE (not overwrite) for idempotency. MERGE on
     unique_key means re-running the notebook for the same date updates existing
     rows and inserts new ones — no duplicates, safe for Airflow retry.
+    The MERGE clause is built dynamically from the runtime schema so new Bronze
+    columns flow into Silver without code changes — verified by checking that
+    schema.autoMerge is enabled and that explicit update/insert expressions
+    are constructed rather than using the static UpdateAll/InsertAll shortcuts.
     """
     path = NOTEBOOKS["03_silver"]
-    assert file_contains(path, "DeltaTable", "whenMatchedUpdateAll", "whenNotMatchedInsertAll"), (
+    assert file_contains(path, "DeltaTable", "whenMatchedUpdate", "whenNotMatchedInsert"), (
         "03_silver.py does not use Delta MERGE — it may overwrite data on retry."
+    )
+    assert file_contains(path, "autoMerge"), (
+        "03_silver.py does not enable schema.autoMerge. New Bronze columns will "
+        "cause the MERGE to fail with a schema mismatch error."
     )
 
 
@@ -172,6 +190,26 @@ def test_silver_notebook_writes_silver_timestamp():
     assert file_contains(path, "_silver_timestamp"), (
         "03_silver.py does not write _silver_timestamp — "
         "the dbt incremental watermark will have no data to filter on."
+    )
+
+
+def test_silver_transformation_checksum_uses_sort_array():
+    """
+    compute_unique_key_checksum must apply sort_array before sha2. Without the
+    explicit sort, Spark's non-deterministic row ordering produces different hashes
+    across runs of identical data — causing false DATA CONTRACT VIOLATION alerts
+    on legitimate replays. The function must also be wired into 03_silver.py.
+    """
+    transformations_path = os.path.join(
+        ROOT, "databricks", "notebooks", "silver_transformations.py"
+    )
+    assert file_contains(transformations_path, "sort_array", "compute_unique_key_checksum"), (
+        "silver_transformations.py is missing sort_array or compute_unique_key_checksum. "
+        "Without sort_array the checksum is not order-independent across Spark runs."
+    )
+    path = NOTEBOOKS["03_silver"]
+    assert file_contains(path, "compute_unique_key_checksum", "CHECKSUMS_TABLE"), (
+        "03_silver.py does not call compute_unique_key_checksum or define CHECKSUMS_TABLE."
     )
 
 

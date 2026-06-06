@@ -18,22 +18,32 @@
 # MAGIC
 # MAGIC **Audit columns** added here (`_ingest_timestamp`, `_source_file`, `_run_date`) are
 # MAGIC the only Bronze-layer transformations. They exist to make lineage queries possible.
+# MAGIC
+# MAGIC **Schema registry** (`BRONZE.schema_registry`): after each successful write, the
+# MAGIC notebook compares the current Bronze table schema against the registry and logs any
+# MAGIC new columns. This gives operations teams a queryable record of when each field was
+# MAGIC first observed — critical for understanding Silver/Gold downstream impact when the
+# MAGIC NYC Open Data Socrata API introduces new fields.
 
 """
 02_bronze.py
 Bronze layer: raw ADLS JSON → Delta table with audit columns and structural type casts.
 Append-only. Never apply business logic here — Bronze is a raw record, not a clean one.
+After each write, compares the current schema against BRONZE.schema_registry and logs
+any new columns detected. New columns do not fail the job — they are expected.
 """
 
 # ── Standard library ──────────────────────────────────────────────────────────
 import json
 
 # ── PySpark ───────────────────────────────────────────────────────────────────
-from pyspark.sql import functions as F
+from pyspark.sql import Row, functions as F
 from pyspark.sql.types import (
-    TimestampType,
     DoubleType,
     StringType,
+    StructField,
+    StructType,
+    TimestampType,
 )
 
 # COMMAND ----------
@@ -76,7 +86,8 @@ STREAM_CHECKPOINT = (
     f"/nyc311/_checkpoints/bronze_stream"
 )
 
-BRONZE_TABLE = "bronze.service_requests"
+BRONZE_TABLE          = "bronze.service_requests"
+SCHEMA_REGISTRY_TABLE = "bronze.schema_registry"
 
 print(f"Reading from : {RAW_PATH}")
 print(f"Writing to   : {BRONZE_TABLE}")
@@ -201,6 +212,87 @@ print(f"Row count assertion passed: {row_count:,} rows in Bronze for run_date={r
 
 # COMMAND ----------
 
+# ── Schema registry — detect and log new columns ──────────────────────────────
+# After a successful write, compare the current Bronze table schema against the
+# schema_registry Delta table and append any new columns that were not previously
+# observed. This gives the team a queryable, auditable record of when each
+# Socrata API field first appeared.
+#
+# Design decisions:
+#   - Source-only columns tracked: Bronze audit columns (_ingest_timestamp,
+#     _source_file, _run_date) are filtered out. They are always intentional
+#     and known; logging them adds noise without signal.
+#   - Never fail on new columns: a new API field is normal Socrata API behavior.
+#     Failing would block ingestion for a schema change that is almost always
+#     backwards-compatible (a new nullable column). Log and continue.
+#   - Idempotent: appending only columns not yet in the registry means rerunning
+#     this notebook for the same run_date does not create duplicate registry rows.
+#   - first_seen_date is the pipeline run_date, not wall-clock time. This matches
+#     the partitioning convention used across the whole pipeline and makes it easy
+#     to cross-reference "when was column X first seen?" with the Bronze partition.
+
+registry_schema = StructType([
+    StructField("column_name",     StringType(), False),
+    StructField("data_type",       StringType(), False),
+    StructField("first_seen_date", StringType(), False),
+    StructField("source_layer",    StringType(), False),
+])
+
+# Current source columns in Bronze (audit columns excluded).
+# simpleString() gives human-readable type names: "string", "timestamp",
+# "double" — the same representation used across Delta schema evolution tooling.
+_AUDIT_COLS = {"_ingest_timestamp", "_source_file", "_run_date"}
+current_schema_cols = {
+    field.name: field.dataType.simpleString()
+    for field in spark.table(BRONZE_TABLE).schema.fields
+    if field.name not in _AUDIT_COLS
+}
+
+# Read already-registered columns. If the registry table does not yet exist
+# (first pipeline run), treat it as empty — all current columns are "new".
+try:
+    registered_col_names = {
+        row["column_name"]
+        for row in spark.table(SCHEMA_REGISTRY_TABLE)
+                        .select("column_name")
+                        .collect()
+    }
+except Exception:
+    registered_col_names = set()
+
+new_cols = {
+    name: dtype
+    for name, dtype in current_schema_cols.items()
+    if name not in registered_col_names
+}
+
+if new_cols:
+    df_new_cols = spark.createDataFrame(
+        [
+            Row(
+                column_name=name,
+                data_type=dtype,
+                first_seen_date=run_date,
+                source_layer="bronze",
+            )
+            for name, dtype in sorted(new_cols.items())
+        ],
+        schema=registry_schema,
+    )
+    (
+        df_new_cols.write
+        .format("delta")
+        .mode("append")
+        .saveAsTable(SCHEMA_REGISTRY_TABLE)
+    )
+    print(f"Schema evolution: {len(new_cols)} new column(s) registered in {SCHEMA_REGISTRY_TABLE}:")
+    for name, dtype in sorted(new_cols.items()):
+        print(f"  + {name}  ({dtype})  first_seen={run_date}")
+else:
+    print(f"Schema stable: no new columns detected. {len(current_schema_cols)} columns registered.")
+
+# COMMAND ----------
+
 # ── OPTIMIZE and ZORDER ───────────────────────────────────────────────────────
 # Run after write, scoped to today's partition.
 # ZORDER BY (unique_key) co-locates files by unique_key so Silver's dedup merge
@@ -221,19 +313,24 @@ print(f"OPTIMIZE complete for run_date={run_date}.")
 # COMMAND ----------
 
 # ── Completion summary ────────────────────────────────────────────────────────
+new_col_count = len(new_cols)
 print(f"Bronze layer complete.")
-print(f"  table     : {BRONZE_TABLE}")
-print(f"  run_date  : {run_date}")
-print(f"  row_count : {row_count:,}")
+print(f"  table          : {BRONZE_TABLE}")
+print(f"  run_date       : {run_date}")
+print(f"  row_count      : {row_count:,}")
+print(f"  new_columns    : {new_col_count}")
 
-dbutils.jobs.taskValues.set(key="bronze_row_count", value=int(row_count))
-dbutils.jobs.taskValues.set(key="status",           value="success")
+dbutils.jobs.taskValues.set(key="bronze_row_count",   value=int(row_count))
+dbutils.jobs.taskValues.set(key="new_schema_columns", value=int(new_col_count))
+dbutils.jobs.taskValues.set(key="status",             value="success")
 
 dbutils.notebook.exit(
     json.dumps({
-        "status":     "success",
-        "table":      BRONZE_TABLE,
-        "run_date":   run_date,
-        "row_count":  row_count,
+        "status":          "success",
+        "table":           BRONZE_TABLE,
+        "run_date":        run_date,
+        "row_count":       row_count,
+        "new_columns":     new_col_count,
+        "new_column_names": sorted(new_cols.keys()),
     })
 )

@@ -47,7 +47,10 @@ joined as (
         r.unique_key,
 
         -- ── Foreign keys ──────────────────────────────────────────────────────
-        a.agency_id,
+        -- agency_key is the SCD2 version-specific surrogate from dim_agency.
+        -- The dim_agency join is restricted to is_current=true (see below) so
+        -- this always carries the key of the version active at load time.
+        a.agency_key                                                        as agency_id,
         d.date_id                                                               as created_date_id,
         l.location_id,
 
@@ -86,8 +89,12 @@ joined as (
 
     from requests r
 
+    -- Restrict to the current version so the join returns exactly one dim_agency
+    -- row per agency_abbreviation. Without is_current=true, the SCD2 table would
+    -- fan out the fact: one row per historical name change per service request.
     left join dim_agency a
         on r.agency_abbreviation = a.agency_abbreviation
+       and a.is_current = true
 
     left join dim_date d
         on cast(r.created_date as date) = d.full_date

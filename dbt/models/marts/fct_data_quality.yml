@@ -1,0 +1,68 @@
+version: 2
+
+models:
+
+  - name: fct_data_quality
+    description: >
+      Data quality observability fact table. One row per (run_date, check_name).
+      Reads from SILVER.data_quality_log and adds 7-day rolling averages,
+      first/last failure dates, and a threshold-breach flag. Intended as the
+      data source for a data quality monitoring dashboard. Full table refresh on
+      every dbt run because window functions require the full history and the
+      source table is small (5 checks x pipeline days).
+    columns:
+      - name: run_date
+        description: "Pipeline run date matching the Silver widget value."
+        tests:
+          - not_null
+      - name: check_name
+        description: "Quality check identifier (null_rate_unique_key, duplicate_rate, etc.)."
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - null_rate_unique_key
+                - null_rate_created_date
+                - duplicate_rate
+                - invalid_resolution_days
+                - unrecognized_borough
+      - name: pipeline_stage
+        description: "Always 'silver' for checks written by 03_silver.py."
+        tests:
+          - not_null
+      - name: records_checked
+        description: "Records in scope for this check on this run_date."
+        tests:
+          - not_null
+      - name: records_failed
+        description: "Records that failed this check on this run_date."
+        tests:
+          - not_null
+      - name: failure_rate
+        description: "records_failed / records_checked rounded to 6 decimal places."
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "between 0 and 1"
+      - name: rolling_7d_avg_failure_rate
+        description: "Average failure_rate over the current and preceding 6 run_dates for this check."
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "between 0 and 1"
+      - name: rolling_7d_day_count
+        description: "Number of run_dates included in the rolling window (max 7)."
+        tests:
+          - not_null
+      - name: first_seen
+        description: "Earliest run_date on which this check had at least one failure. NULL if no failures ever."
+      - name: last_seen
+        description: "Most recent run_date on which this check had at least one failure. NULL if no failures ever."
+      - name: total_days_with_failures
+        description: "Total run_dates across all history where records_failed > 0."
+        tests:
+          - not_null
+      - name: is_rolling_threshold_breached
+        description: "TRUE when the 7-day rolling average exceeds the DQ_THRESHOLDS defined in 03_silver.py."
+        tests:
+          - not_null

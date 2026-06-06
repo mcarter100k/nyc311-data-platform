@@ -41,3 +41,18 @@ models:
 vars:
   min_date: '2010-01-01'
   max_date: '2030-12-31'
+
+  # Schema version stamp written into stg_service_requests as a literal column.
+  # Downstream Gold models carry this value so historical rows can be traced to
+  # the schema contract that produced them.
+  #
+  # Increment this integer whenever a BREAKING schema change reaches Gold —
+  # meaning a column is removed, renamed, or its type changes incompatibly.
+  # Additive changes (new Bronze columns flowing through Silver) do NOT require
+  # a version bump because they are invisible to existing Gold consumers until
+  # someone explicitly adds them to a mart .sql file.
+  #
+  # The version is an integer string so it sorts correctly in Snowflake VARCHAR
+  # comparisons and remains legible without a lookup table.
+  # See ADR 006 for the full schema evolution contract.
+  schema_version: '1'
