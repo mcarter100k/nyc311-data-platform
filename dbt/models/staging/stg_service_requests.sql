@@ -45,7 +45,17 @@ renamed as (
         -- _silver_timestamp is written by 03_silver.py on every INSERT and UPDATE,
         -- so it reflects when Silver last touched this row — critical for the
         -- incremental filter in fct_service_requests.
-        _silver_timestamp::timestamp_ntz                                         as _loaded_at
+        _silver_timestamp::timestamp_ntz                                         as _loaded_at,
+
+        -- Schema version stamp. This is the value of the dbt_project.yml var
+        -- `schema_version` at the time this model was compiled and run.
+        -- Gold consumers can join or filter on this column to identify rows
+        -- produced under a given schema contract — useful when a breaking change
+        -- (column removal or rename) requires comparing pre- and post-change data.
+        -- Increment `schema_version` in dbt_project.yml whenever a breaking
+        -- change is deployed. Additive changes (new columns) do not require a bump.
+        -- See ADR 006 for the full schema evolution contract.
+        '{{ var("schema_version") }}'::varchar                                  as schema_version
 
     from source
 

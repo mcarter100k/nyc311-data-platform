@@ -184,18 +184,42 @@ def test_intermediate_depends_on_staging(models):
 
 def test_dims_depend_on_intermediate_not_staging(models):
     """
-    Dimension models must read from the intermediate layer, not from staging.
-    Staging columns are named differently (e.g. agency vs agency_abbreviation)
-    and lack business logic (borough standardization, complaint categories).
+    Dimension models must not read directly from staging — staging columns are
+    named differently and lack business logic (borough standardization, complaint
+    categories).
+
+    dim_location reads directly from int_service_requests_cleaned.
+
+    dim_agency reads from agency_snapshot (SCD Type 2 — see ADR 007). The snapshot
+    itself depends on int_service_requests_cleaned, so the intermediate layer is
+    still the source of record; dim_agency just reaches it one hop indirectly via
+    the snapshot rather than via a direct model ref.
     """
-    for dim in ["dim_agency", "dim_location"]:
-        deps = _dep_names(models[dim])
-        assert "int_service_requests_cleaned" in deps, (
-            f"{dim} does not depend on int_service_requests_cleaned."
-        )
-        assert "stg_service_requests" not in deps, (
-            f"{dim} skips the intermediate layer and reads directly from staging."
-        )
+    # dim_location: direct dependency on the intermediate model
+    deps = _dep_names(models["dim_location"])
+    assert "int_service_requests_cleaned" in deps, (
+        "dim_location does not depend on int_service_requests_cleaned."
+    )
+    assert "stg_service_requests" not in deps, (
+        "dim_location skips the intermediate layer and reads directly from staging."
+    )
+
+    # dim_agency: depends on agency_snapshot (SCD2); must NOT bypass the snapshot
+    # by reading int_service_requests_cleaned directly (that would circumvent the
+    # snapshot's change-detection logic).
+    deps = _dep_names(models["dim_agency"])
+    assert "agency_snapshot" in deps, (
+        "dim_agency does not depend on agency_snapshot. "
+        "The SCD2 implementation requires reading from the snapshot, not from "
+        "int_service_requests_cleaned directly."
+    )
+    assert "stg_service_requests" not in deps, (
+        "dim_agency skips the intermediate layer and reads directly from staging."
+    )
+    assert "int_service_requests_cleaned" not in deps, (
+        "dim_agency reads int_service_requests_cleaned directly instead of going "
+        "through agency_snapshot. This would bypass the SCD2 change-detection logic."
+    )
 
 
 def test_fct_service_requests_depends_on_all_dims_and_intermediate(models):
@@ -232,8 +256,9 @@ def test_no_model_references_source_except_staging(models):
     If a mart calls source() directly, dbt cannot guarantee Silver is ready before
     the mart runs.
     """
+    staging_models = {n for n in models if n.startswith("stg_")}
     for name, model in models.items():
-        if name == "stg_service_requests":
+        if name in staging_models:
             continue
         source_deps = [
             d for d in model.get("depends_on", {}).get("nodes", [])

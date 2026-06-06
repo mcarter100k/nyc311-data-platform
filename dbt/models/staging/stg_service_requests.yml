@@ -110,3 +110,19 @@ models:
           rows where _loaded_at exceeds the previous run's max are merged in.
         tests:
           - not_null
+
+      - name: schema_version
+        description: >
+          Integer string identifying the schema contract version under which this
+          row was produced. Set from the dbt_project.yml var `schema_version` at
+          model compile time. Stays constant until a breaking schema change
+          (column removal, rename, or incompatible type change) is deployed to
+          Gold — at which point the var is incremented in a PR and all rows built
+          from that run forward carry the new version.
+          Additive changes (new Bronze columns flowing through Silver) do not
+          increment the version because existing Gold consumers are unaffected.
+          Use this column to compare pre- and post-breaking-change rows when
+          backfilling or validating a schema migration.
+          See docs/adr/006-schema-evolution.md for the full contract.
+        tests:
+          - not_null
