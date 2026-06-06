@@ -2,7 +2,8 @@
 dbt/target/
 dbt/logs/
 dbt/.user.yml
-dbt/profiles.yml        # use dbt/profiles.yml.example as the template
+# dbt/profiles.yml is committed — it contains only CI placeholder credentials.
+# Real per-developer profiles live in ~/.dbt/profiles.yml (never committed).
 
 # dbt_packages are restored by `dbt deps` — no need to commit vendored copies
 dbt/dbt_packages/
