@@ -1,0 +1,8 @@
+nyc311_local:
+  target: local
+  outputs:
+    local:
+      type: duckdb
+      path: "data/nyc311_local.duckdb"
+      schema: gold
+      threads: 4
