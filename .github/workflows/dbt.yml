@@ -25,8 +25,11 @@ jobs:
         run: dbt deps --profiles-dir . --project-dir . --no-version-check
         working-directory: dbt
 
-      - name: dbt compile
-        run: dbt compile --profiles-dir . --project-dir . --target ci --no-version-check
+      - name: dbt parse (compile without connecting)
+        # dbt compile triggers a Snowflake connection even with placeholder credentials.
+        # dbt parse validates the project and writes the manifest with no DB connection —
+        # the same approach used by run_tests.sh locally.
+        run: dbt parse --profiles-dir . --project-dir . --target ci --no-version-check
         working-directory: dbt
 
       - name: Install test dependencies
