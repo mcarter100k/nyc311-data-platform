@@ -18,7 +18,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
@@ -33,6 +33,15 @@ RAW_FILE    = RAW_DIR / "nyc311_raw.json"
 
 SOCRATA_ENDPOINT = "https://data.cityofnewyork.us/resource/erm2-nwe9.json"
 PAGE_SIZE        = 1_000
+
+# ── Live mode (--live): trailing-window fetch for the scheduled daily run ─────
+# A normal week of NYC 311 is ~60–90k rows including re-fetched updates; the
+# cap is ~2× that. Hitting it is treated as an upstream anomaly (e.g. a
+# dataset-wide metadata touch re-stamping :updated_at) and FAILS the run —
+# a capped fetch would silently undercount and corrupt the completeness SLO.
+# See ADR 010.
+LIVE_DAYS    = 7
+LIVE_ROW_CAP = 150_000
 
 BOROUGH_MAP = {
     "BROOKLYN": "BROOKLYN", "BKLYN": "BROOKLYN", "BK": "BROOKLYN",
@@ -77,6 +86,79 @@ def stage1_ingest(rows: int) -> None:
 
     print(f"\n  total fetched: {len(records):,} rows")
     RAW_FILE.write_text(json.dumps(records, indent=2))
+    print(f"  written: {RAW_FILE.relative_to(LOCAL_DIR)}")
+
+
+def fetch_live_records(days: int = LIVE_DAYS, cap: int = LIVE_ROW_CAP, get=None) -> list:
+    """Fetch rows created-or-updated in the trailing `days` window.
+
+    Query parameters come from the ONE existing param builder
+    (databricks/notebooks/ingest_config.build_page_params), in its
+    created_window mode: :updated_at is mass re-stamped nightly (~540k
+    rows/day measured vs ~53k/week created — ADR 010), so the daily run
+    windows on created_date and re-pulls the whole window, which still
+    captures status updates for rows inside it. `get` is injectable for
+    tests; nothing here retries more than once, caps are hard failures, and
+    zero rows is a failure — the scheduled run must be red or fully green,
+    never partially loaded.
+    """
+    sys.path.insert(0, str(LOCAL_DIR.parent / "databricks" / "notebooks"))
+    from ingest_config import SOCRATA_URL, build_page_params
+
+    if get is None:
+        get = requests.get
+
+    headers = {"Accept": "application/json"}
+    token = os.environ.get("SOCRATA_APP_TOKEN")
+    if token:
+        headers["X-App-Token"] = token
+
+    run_date = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    records: list = []
+    page = 0
+    while True:
+        params = build_page_params("created_window", run_date, page)
+        for attempt in (1, 2):
+            try:
+                resp = get(SOCRATA_URL, params=params, headers=headers, timeout=60)
+                break
+            except Exception as exc:
+                if attempt == 2:
+                    raise RuntimeError(
+                        f"Socrata fetch failed after one retry on page {page}: {exc}"
+                    ) from exc
+        resp.raise_for_status()
+        batch = resp.json()
+        if not batch:
+            break
+        records.extend(batch)
+        page += 1
+        if len(records) > cap:
+            raise RuntimeError(
+                f"Live fetch exceeded the row cap ({len(records):,} > {cap:,} in "
+                f"{days} days). This signals an upstream anomaly (mass re-stamp of "
+                f":updated_at or a volume spike) — investigate before raising "
+                f"LIVE_ROW_CAP in local_runner.py / ADR 010."
+            )
+    if not records:
+        raise RuntimeError(
+            f"Live fetch returned zero rows for the trailing {days} days — the "
+            f"source is not publishing or the window predicate is wrong. "
+            f"Refusing to continue with an empty load."
+        )
+    return records
+
+
+def stage1_live() -> None:
+    _banner(f"Stage 1 — Live ingest  (trailing {LIVE_DAYS} days, cap {LIVE_ROW_CAP:,})")
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    records = fetch_live_records()
+    # Compact JSON, unlike the sample mode's indent=2: a full week is an order
+    # of magnitude larger and this file is a pipeline intermediate, not a
+    # human-reading surface.
+    RAW_FILE.write_text(json.dumps(records))
+    print(f"  fetched {len(records):,} rows created since "
+          f"{(datetime.now(timezone.utc) - timedelta(days=LIVE_DAYS)).date()}")
     print(f"  written: {RAW_FILE.relative_to(LOCAL_DIR)}")
 
 
@@ -357,11 +439,20 @@ def main() -> None:
         metavar="N",
         help="Start from stage N and run through stage 5 (skips earlier stages)",
     )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help=f"Fetch the trailing {LIVE_DAYS} days of live data (row-capped, "
+             f":updated_at watermark) instead of the oldest --rows sample",
+    )
     args = parser.parse_args()
     start = args.stage or 1
 
     if start <= 1:
-        stage1_ingest(args.rows)
+        if args.live:
+            stage1_live()
+        else:
+            stage1_ingest(args.rows)
     if start <= 2:
         stage2_bronze()
     if start <= 3:

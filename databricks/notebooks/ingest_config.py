@@ -23,10 +23,20 @@ PAGE_SIZE = 50_000  # Socrata hard maximum per request
 def build_page_params(load_type: str, run_date: str, page: int) -> dict:
     """Query parameters for one page of the Socrata fetch.
 
-    load_type: 'incremental' fetches rows created OR updated on/after run_date
-               via the :updated_at system field; 'full' fetches everything.
-    run_date:  YYYY-MM-DD execution date.
+    load_type: 'incremental'    — rows created OR updated on/after run_date,
+                                  via the :updated_at system field;
+               'created_window' — rows CREATED on/after run_date;
+               'full'           — everything.
+    run_date:  YYYY-MM-DD execution date / window start.
     page:      zero-based page number; offset = page * PAGE_SIZE.
+
+    Why created_window exists: measured against the live dataset (2026-08-18),
+    :updated_at is dominated by a nightly mass re-stamp — 542,852 rows touched
+    in one day, 623,749 in seven, vs 53,435 actually created in seven. The
+    cloud incremental spec absorbs that volume; a row-capped daily fetch
+    cannot. A trailing created_window re-pulled in full every run still
+    captures status updates within the window; updates to rows older than the
+    window are out of its scope. See ADR 010.
     """
     params = {
         "$limit": PAGE_SIZE,
@@ -35,6 +45,8 @@ def build_page_params(load_type: str, run_date: str, page: int) -> dict:
     }
     if load_type == "incremental":
         params["$where"] = f":updated_at >= '{run_date}T00:00:00'"
+    elif load_type == "created_window":
+        params["$where"] = f"created_date >= '{run_date}T00:00:00'"
     return params
 
 

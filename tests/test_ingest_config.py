@@ -41,6 +41,17 @@ def test_incremental_watermark_is_updated_at_not_created_date():
     assert where == ":updated_at >= '2024-06-01T00:00:00'"
 
 
+def test_created_window_mode_filters_on_created_date():
+    """The daily scheduled run uses a trailing created_date window instead of
+    the :updated_at watermark: measured live, :updated_at is mass re-stamped
+    (~540k rows/day touched vs ~53k/week created), so a row-capped fetch on
+    it is impossible. The window mode must not carry the :updated_at
+    predicate — and 'incremental' must keep it (the cloud spec is unchanged)."""
+    params = build_page_params("created_window", "2026-08-11", page=0)
+    assert params["$where"] == "created_date >= '2026-08-11T00:00:00'"
+    assert ":updated_at" not in params["$where"]
+
+
 def test_full_load_has_no_where_filter():
     """A full load fetches the entire dataset — no watermark predicate."""
     params = build_page_params("full", "2024-06-01", page=0)

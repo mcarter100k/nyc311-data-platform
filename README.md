@@ -2,6 +2,7 @@
 
 [![dbt CI](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/dbt.yml/badge.svg)](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/dbt.yml)
 [![Terraform](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/terraform.yml/badge.svg)](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/terraform.yml)
+[![Daily Live Run](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/daily-run.yml/badge.svg)](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/daily-run.yml)
 
 > A **reference implementation** of a data platform for NYC 311 service requests — a ~35M-row
 > public dataset ([NYC Open Data, erm2-nwe9](https://data.cityofnewyork.us/Social-Services/311-Service-Requests-from-2010-to-Present/erm2-nwe9)).
@@ -15,6 +16,7 @@
 | Real (verifiable in this repo) | Evidence |
 |---|---|
 | End-to-end local pipeline: ingest → bronze → silver → dbt gold → queries, on DuckDB | [local/local_runner.py](local/local_runner.py), [local/README_LOCAL.md](local/README_LOCAL.md) |
+| Scheduled to run daily against the live API, gated by two [SLOs](docs/SLO.md); the Daily Live Run badge above is the live status | [.github/workflows/daily-run.yml](.github/workflows/daily-run.yml), [ADR 010](docs/adr/010-scheduled-operation.md) |
 | dbt project parses and its architecture is pytest-verified in CI on every push to main and PR | [.github/workflows/dbt.yml](.github/workflows/dbt.yml) |
 | Terraform passes `terraform validate` in CI | [.github/workflows/terraform.yml](.github/workflows/terraform.yml), [tests/test_pipeline_components.py:320](tests/test_pipeline_components.py#L320) |
 | Silver transformation logic unit-tested against a local SparkSession | [tests/unit/test_silver_transformations.py](tests/unit/test_silver_transformations.py) |
@@ -22,7 +24,7 @@
 | Deferred (specified, not provisioned) | Where specified |
 |---|---|
 | Azure storage, Databricks workspace, Snowflake account | [terraform/](terraform/) — never applied; azure-infra module is a stub |
-| Scheduled daily runs | [airflow/dags/nyc311_pipeline.py](airflow/dags/nyc311_pipeline.py) — the DAG is the schedule spec, no Airflow deployment exists |
+| Cloud-scheduled runs (Airflow) | [airflow/dags/nyc311_pipeline.py](airflow/dags/nyc311_pipeline.py) — the DAG is the schedule spec, no Airflow deployment exists; the daily GitHub Actions run above operates the *local* pipeline ([ADR 010](docs/adr/010-scheduled-operation.md)) |
 | Databricks Silver → Snowflake SILVER data movement | requirement stated in [sources.yml](dbt/models/staging/sources.yml); mechanism is an open decision ([ADR 008](docs/adr/008-prototype-scope.md)) |
 
 ---
@@ -187,7 +189,7 @@ Provisions the complete Snowflake hierarchy from scratch:
 ---
 
 <a name="test-suite"></a>
-## Test Suite — <!--claim:test_count-->102<!--/claim--> Tests, Zero Live Credentials Required
+## Test Suite — <!--claim:test_count-->109<!--/claim--> Tests, Zero Live Credentials Required
 
 The suite has three tiers, none of which connects to Snowflake, Databricks, or Azure (the total above is recomputed by `scripts/check_claims.py` in CI — the build fails if this section drifts):
 
@@ -242,7 +244,7 @@ nyc311-data-platform/
 ├── airflow/dags/nyc311_pipeline.py    # 7-task orchestration DAG (spec — not deployed)
 ├── tests/                             # structural + PySpark unit suite (count checked in CI)
 ├── scripts/check_claims.py            # CI guard: README counts/links vs the repo
-├── docs/adr/                          # <!--claim:adr_count-->9<!--/claim--> architecture decision records
+├── docs/adr/                          # <!--claim:adr_count-->10<!--/claim--> architecture decision records
 ├── docs/CLAIMS.md                     # claim → enforcing code → verifying test
 ├── architecture/                      # Architecture diagram
 └── .github/workflows/                 # CI/CD: Terraform plan, dbt parse + pytest, docs deploy

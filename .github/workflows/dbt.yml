@@ -76,4 +76,7 @@ jobs:
       - name: Run local-gold behavioral tests (dbt-duckdb)
         run: |
           pip install "dbt-duckdb==1.7.4"
+          # local/requirements.txt: the live-fetch unit tests import
+          # local_runner, which needs pandas/requests to load.
+          pip install -r local/requirements.txt
           pytest tests/local -v
