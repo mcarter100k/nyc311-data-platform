@@ -59,13 +59,15 @@ def test_window_and_params_come_from_the_shared_builder():
     fetch_live_records(get=get)
 
     expected_date = (datetime.now(timezone.utc) - timedelta(days=LIVE_DAYS)).date().isoformat()
-    assert get.calls[0]["params"] == build_page_params("incremental", expected_date, 0), (
+    assert get.calls[0]["params"] == build_page_params("created_window", expected_date, 0), (
         "Live fetch must build its query through ingest_config.build_page_params "
         "for the trailing-{}-day window — not through a private param dict.".format(LIVE_DAYS)
     )
-    assert get.calls[0]["params"]["$where"].startswith(f":updated_at >= '{expected_date}"), (
-        "The window must key on :updated_at so post-creation updates are fetched."
-    )
+    # created_date, NOT :updated_at: the source mass re-stamps :updated_at
+    # nightly (~540k rows/day vs ~53k/week created — ADR 010), so a capped
+    # daily fetch windows on creation and re-pulls the window in full, which
+    # still carries status updates for every row inside it.
+    assert get.calls[0]["params"]["$where"].startswith(f"created_date >= '{expected_date}")
 
 
 def test_pagination_advances_offset_until_empty_page():

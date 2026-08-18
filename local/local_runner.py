@@ -93,11 +93,14 @@ def fetch_live_records(days: int = LIVE_DAYS, cap: int = LIVE_ROW_CAP, get=None)
     """Fetch rows created-or-updated in the trailing `days` window.
 
     Query parameters come from the ONE existing param builder
-    (databricks/notebooks/ingest_config.build_page_params) — same watermark
-    semantics as the cloud ingest spec, so this path and that one cannot
-    drift apart. `get` is injectable for tests; nothing here retries more
-    than once, caps are hard failures, and zero rows is a failure — the
-    scheduled run must be red or fully green, never partially loaded.
+    (databricks/notebooks/ingest_config.build_page_params), in its
+    created_window mode: :updated_at is mass re-stamped nightly (~540k
+    rows/day measured vs ~53k/week created — ADR 010), so the daily run
+    windows on created_date and re-pulls the whole window, which still
+    captures status updates for rows inside it. `get` is injectable for
+    tests; nothing here retries more than once, caps are hard failures, and
+    zero rows is a failure — the scheduled run must be red or fully green,
+    never partially loaded.
     """
     sys.path.insert(0, str(LOCAL_DIR.parent / "databricks" / "notebooks"))
     from ingest_config import SOCRATA_URL, build_page_params
@@ -114,7 +117,7 @@ def fetch_live_records(days: int = LIVE_DAYS, cap: int = LIVE_ROW_CAP, get=None)
     records: list = []
     page = 0
     while True:
-        params = build_page_params("incremental", run_date, page)
+        params = build_page_params("created_window", run_date, page)
         for attempt in (1, 2):
             try:
                 resp = get(SOCRATA_URL, params=params, headers=headers, timeout=60)
@@ -154,7 +157,7 @@ def stage1_live() -> None:
     # of magnitude larger and this file is a pipeline intermediate, not a
     # human-reading surface.
     RAW_FILE.write_text(json.dumps(records))
-    print(f"  fetched {len(records):,} rows updated since "
+    print(f"  fetched {len(records):,} rows created since "
           f"{(datetime.now(timezone.utc) - timedelta(days=LIVE_DAYS)).date()}")
     print(f"  written: {RAW_FILE.relative_to(LOCAL_DIR)}")
 
