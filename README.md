@@ -1,6 +1,6 @@
 # NYC 311 Data Platform
 
-[![dbt CI](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/dbt.yml/badge.svg)](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/dbt.yml)
+[![CI](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/ci.yml)
 [![Terraform](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/terraform.yml/badge.svg)](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/terraform.yml)
 [![Daily Live Run](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/daily-run.yml/badge.svg)](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/daily-run.yml)
 
@@ -17,7 +17,7 @@
 |---|---|
 | End-to-end local pipeline: ingest → bronze → silver → dbt gold → queries, on DuckDB | [local/local_runner.py](local/local_runner.py), [local/README_LOCAL.md](local/README_LOCAL.md) |
 | Scheduled to run daily against the live API, gated by two [SLOs](docs/SLO.md); the Daily Live Run badge above is the live status | [.github/workflows/daily-run.yml](.github/workflows/daily-run.yml), [ADR 010](docs/adr/010-scheduled-operation.md) |
-| dbt project parses and its architecture is pytest-verified in CI on every push to main and PR | [.github/workflows/dbt.yml](.github/workflows/dbt.yml) |
+| dbt project parses and its architecture is pytest-verified in CI on every push to main and PR — three parallel required checks: fast-gate, unit-pyspark, behavioral-duckdb ([ADR 011](docs/adr/011-parallel-ci-tiers.md)) | [.github/workflows/ci.yml](.github/workflows/ci.yml) |
 | Terraform passes `terraform validate` in CI | [.github/workflows/terraform.yml](.github/workflows/terraform.yml), [tests/test_pipeline_components.py:320](tests/test_pipeline_components.py#L320) |
 | Silver transformation logic unit-tested against a local SparkSession | [tests/unit/test_silver_transformations.py](tests/unit/test_silver_transformations.py) |
 
@@ -244,7 +244,7 @@ nyc311-data-platform/
 ├── airflow/dags/nyc311_pipeline.py    # 7-task orchestration DAG (spec — not deployed)
 ├── tests/                             # structural + PySpark unit suite (count checked in CI)
 ├── scripts/check_claims.py            # CI guard: README counts/links vs the repo
-├── docs/adr/                          # <!--claim:adr_count-->10<!--/claim--> architecture decision records
+├── docs/adr/                          # <!--claim:adr_count-->11<!--/claim--> architecture decision records
 ├── docs/CLAIMS.md                     # claim → enforcing code → verifying test
 ├── architecture/                      # Architecture diagram
 └── .github/workflows/                 # CI/CD: Terraform plan, dbt parse + pytest, docs deploy

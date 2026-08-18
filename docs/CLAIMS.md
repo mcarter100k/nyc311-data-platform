@@ -39,9 +39,10 @@ README. Counts and links are additionally checked mechanically in CI by
 | Live fetch is capped, single-retry, and fails on zero rows — red or fully green, never partial | `local/local_runner.py::fetch_live_records` | `tests/local/test_live_fetch.py` (6 mocked tests) |
 | SLO breach or pipeline failure files/updates a GitHub issue with the measured numbers | breach step in `.github/workflows/daily-run.yml` | none until the first real breach — will be observed, not simulated |
 | docs/SLO.md shows byte-identical copies of the executable SLO queries | `scripts/check_claims.py::check_slo_doc_sync` | CI claim check (demonstrated failing on a perturbed doc) |
-| README counts (tests, ADRs, fact models) and links match the repo | marker system in `README.md` | `scripts/check_claims.py` in CI (`.github/workflows/dbt.yml`) |
+| The PySpark unit tier runs in CI with zero skips — a skip or empty collection is a red build | `unit-pyspark` job in `.github/workflows/ci.yml` (junit zero-skip gate) | the job itself; negative-tested red in the restructure PR |
+| README counts (tests, ADRs, fact models) and links match the repo | marker system in `README.md` | `scripts/check_claims.py` in CI (`.github/workflows/ci.yml`) |
 | Gold output agrees with the source, not just with itself: layer conservation, independently recomputed metrics, exact timestamps, live API spot-check | the full transform stack (`local_runner.py` + `local/models/`) | `local/reconcile.py` — run after any local pipeline run; exit 0 = reconciled |
-| The local/ DuckDB mirror tracks the dbt/ models — every intentional dialect divergence is registered; unregistered drift fails the build | `scripts/model_drift_baseline.json` (the divergence register) | `scripts/check_model_drift.py` in CI (`.github/workflows/dbt.yml`) |
+| The local/ DuckDB mirror tracks the dbt/ models — every intentional dialect divergence is registered; unregistered drift fails the build | `scripts/model_drift_baseline.json` (the divergence register) | `scripts/check_model_drift.py` in CI (`.github/workflows/ci.yml`) |
 
 ## Deleted from the README rather than listed here
 
