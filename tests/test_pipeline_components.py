@@ -91,12 +91,18 @@ def test_ingest_notebook_has_idempotency_check():
 
 def test_ingest_notebook_paginates():
     """
-    The Socrata API returns a maximum of 50,000 rows per request. The notebook
-    must paginate using $offset to retrieve the full dataset.
+    The Socrata API returns a maximum of 50,000 rows per request. Pagination
+    parameters are built by ingest_config.build_page_params ($offset stepping),
+    which the notebook must import and call. Behavior of the params themselves
+    is unit-tested in tests/test_ingest_config.py.
     """
-    path = NOTEBOOKS["01_ingest_raw"]
-    assert file_contains(path, "$offset", "PAGE_SIZE"), (
-        "01_ingest_raw.py does not appear to paginate — it may only fetch the first 50k rows."
+    config_path = os.path.join(ROOT, "databricks", "notebooks", "ingest_config.py")
+    assert file_contains(config_path, "$offset", "PAGE_SIZE"), (
+        "ingest_config.py does not implement $offset pagination."
+    )
+    assert file_contains(NOTEBOOKS["01_ingest_raw"], "build_page_params"), (
+        "01_ingest_raw.py does not call build_page_params — it may only fetch "
+        "the first 50k rows."
     )
 
 

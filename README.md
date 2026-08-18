@@ -187,13 +187,13 @@ Provisions the complete Snowflake hierarchy from scratch:
 ---
 
 <a name="test-suite"></a>
-## Test Suite — <!--claim:test_count-->93<!--/claim--> Tests, Zero Live Credentials Required
+## Test Suite — <!--claim:test_count-->98<!--/claim--> Tests, Zero Live Credentials Required
 
 The suite has three tiers, none of which connects to Snowflake, Databricks, or Azure (the total above is recomputed by `scripts/check_claims.py` in CI — the build fails if this section drifts):
 
-- **Structural tests** assert the compiled dbt manifest, DAG, Terraform, and workflow files. They run in a few seconds.
+- **Structural tests** assert the compiled dbt manifest, DAG, Terraform, and workflow files, plus pure-Python unit tests of the ingest request contract ([tests/test_ingest_config.py](tests/test_ingest_config.py)). They run in a few seconds.
 - **PySpark unit tests** execute the Silver transformation functions against a local SparkSession with crafted inputs. They skip automatically when pyspark is not installed ([tests/unit/conftest.py:31](tests/unit/conftest.py#L31)).
-- **Local-gold behavioral tests** build the dbt project twice against a seeded DuckDB database and assert incremental semantics: the `_loaded_at` watermark and its 1-hour lookback boundary, snapshot rename detection, and the SCD2 point-in-time agency join ([tests/local/test_local_gold.py](tests/local/test_local_gold.py)). They skip when dbt-duckdb is not installed.
+- **Local-gold behavioral tests** build the dbt project twice against a seeded DuckDB database and assert incremental semantics: the `_loaded_at` watermark and its 1-hour lookback boundary, snapshot rename detection, the SCD2 point-in-time agency join, and update propagation through the merge ([tests/local/test_local_gold.py](tests/local/test_local_gold.py)). They skip when dbt-duckdb is not installed.
 
 ```bash
 ./run_tests.sh          # full suite (unit tier skips without pyspark)

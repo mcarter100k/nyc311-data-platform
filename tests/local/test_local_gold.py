@@ -60,6 +60,23 @@ def test_scd2_rename_versions_and_point_in_time_assignment(gold_db):
     )
 
 
+def test_upsert_propagates_status_change(gold_db):
+    """r2 closes between the two loads (same natural key, fresh pipeline
+    timestamp). The incremental upsert must UPDATE the existing fact row, not
+    duplicate it or leave it stale. This path only receives data at all
+    because the ingest watermark re-fetches updated rows (ingest_config.py) —
+    it was dead code under the old created_date predicate.
+
+    NOTE: this runs under dbt-duckdb's delete+insert strategy; the Snowflake
+    project's `merge` strategy is spec-level and unverified (no warehouse)."""
+    fct = gold_db["incremental"]["fct"]
+    assert fct["r2"]["status"] == "Closed", (
+        f"r2 status is {fct['r2']['status']!r} after the incremental run — "
+        "the merge update path did not propagate the status change."
+    )
+    assert fct["r2"]["is_resolved"] is True
+
+
 def test_no_fanout_and_full_refresh_idempotent(gold_db):
     """Grain (one row per service request) survives the SCD2 join: row count
     equals the silver population. And idempotency: a --full-refresh assigns

@@ -2,10 +2,11 @@
 # MAGIC %md
 # MAGIC # 01 — Raw Ingestion
 # MAGIC
-# MAGIC Pulls NYC 311 service request records from the NYC Open Data Socrata API and writes
-# MAGIC raw JSON to Azure Data Lake Storage Gen2, partitioned by ingest date. This notebook
-# MAGIC is the first stage of the medallion pipeline: no transformations, no type coercion —
-# MAGIC data is written exactly as received so that any upstream changes are auditable.
+# MAGIC Pulls NYC 311 service request records — created OR updated since the run date —
+# MAGIC from the NYC Open Data Socrata API and writes raw JSON to Azure Data Lake Storage
+# MAGIC Gen2, partitioned by ingest date. This notebook is the first stage of the medallion
+# MAGIC pipeline: no transformations, no type coercion — data is written exactly as
+# MAGIC received so that any upstream changes are auditable.
 # MAGIC
 # MAGIC **Idempotency:** if the target partition already exists and `force_reload = false`,
 # MAGIC the notebook exits early without re-ingesting. Airflow reruns are safe.
@@ -28,6 +29,9 @@ from datetime import datetime
 
 # ── Third-party ───────────────────────────────────────────────────────────────
 import requests  # available on Databricks Runtime >= 9.1
+
+# ── Request-building logic (pure, unit-tested) ────────────────────────────────
+from ingest_config import PAGE_SIZE, SOCRATA_URL, build_page_params
 
 # COMMAND ----------
 
@@ -100,25 +104,21 @@ if not force_reload:
 # ── Socrata API configuration ─────────────────────────────────────────────────
 # Dataset: NYC 311 Service Requests (erm2-nwe9)
 # Docs:    https://dev.socrata.com/foundry/data.cityofnewyork.us/erm2-nwe9
-
-SOCRATA_URL = "https://data.cityofnewyork.us/resource/erm2-nwe9.json"
-PAGE_SIZE   = 50_000   # Socrata hard maximum per request
+# URL, page size, and per-page query parameters come from ingest_config.py
+# (pure module, unit-tested in tests/test_ingest_config.py).
 
 headers = {
     "X-App-Token": SOCRATA_APP_TOKEN,
     "Accept":      "application/json",
 }
 
-base_params = {
-    "$limit":  PAGE_SIZE,
-    "$order":  ":id",  # stable ordering prevents missed rows across pages
-}
-
-# Incremental filter: only fetch records created on or after run_date.
-# Full load fetches the entire dataset (use sparingly — ~35M rows).
+# Incremental filter: fetch records created OR UPDATED on/after run_date, via
+# the Socrata `:updated_at` system field. Filtering on created_date instead
+# would fetch each request exactly once and never see later status changes —
+# leaving the Silver MERGE's update path dead and undercounting resolutions.
+# See ingest_config.build_page_params for the full rationale.
 if load_type == "incremental":
-    base_params["$where"] = f"created_date >= '{run_date}T00:00:00'"
-    print(f"Incremental mode: fetching records from {run_date} onwards.")
+    print(f"Incremental mode: fetching records created or updated since {run_date}.")
 else:
     print("Full load mode: fetching entire dataset. This may take 10–20 minutes.")
 
@@ -131,7 +131,7 @@ page         = 0
 retry_budget = 3  # retries per page on transient failures
 
 while True:
-    params          = {**base_params, "$offset": page * PAGE_SIZE}
+    params          = build_page_params(load_type, run_date, page)
     attempt         = 0
     response        = None
 

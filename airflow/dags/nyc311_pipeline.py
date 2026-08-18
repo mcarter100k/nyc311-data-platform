@@ -309,8 +309,9 @@ Host: `data.cityofnewyork.us`, Schema: `https`
 ## ingest_raw
 
 Triggers the Databricks **raw ingest** job (notebook `01_ingest_raw.py`).
-Pulls NYC 311 service request records for the execution date from the
-Socrata API and writes them as raw JSON to the ADLS Bronze partition
+Pulls NYC 311 service request records created or updated since the
+execution date (Socrata `:updated_at` watermark, so status changes on
+older requests are re-fetched) and writes them as raw JSON to the ADLS Bronze partition
 `year=YYYY/month=MM/day=DD`. Skips the partition if it already exists
 (idempotent unless `force_reload=true`).
 

@@ -29,6 +29,8 @@ README. Counts and links are additionally checked mechanically in CI by
 | Terraform validates without cloud credentials | whole `terraform/` tree | `tests/test_pipeline_components.py::test_terraform_validate` (behavioral, subprocess) |
 | No hardcoded credentials: secret scopes / env_var() / ARM_* env | `databricks/notebooks/01_ingest_raw.py:57-59`, `dbt/profiles.yml.example`, `terraform/main.tf:8-20` | `tests/test_pipeline_components.py::test_profiles_example_uses_env_vars_for_credentials` |
 | Source freshness keys on `_silver_timestamp`, not business dates | `dbt/models/staging/sources.yml:20-23` | `tests/test_dbt_architecture.py::test_source_freshness_uses_silver_timestamp` |
+| Incremental ingest watermarks on Socrata `:updated_at`, so post-creation updates are re-fetched | `databricks/notebooks/ingest_config.py::build_page_params` | `tests/test_ingest_config.py::test_incremental_watermark_is_updated_at_not_created_date` |
+| Status changes propagate through the fct incremental upsert — verified under DuckDB's delete+insert strategy; the Snowflake `merge` strategy is unverified (no warehouse) | `dbt/models/marts/fct_service_requests.sql` (merge on service_request_id), `local/models/marts/fct_service_requests.sql` (delete+insert) | `tests/local/test_local_gold.py::test_upsert_propagates_status_change` |
 | README counts (tests, ADRs, fact models) and links match the repo | marker system in `README.md` | `scripts/check_claims.py` in CI (`.github/workflows/dbt.yml`) |
 
 ## Deleted from the README rather than listed here
