@@ -37,3 +37,21 @@ def build_page_params(load_type: str, run_date: str, page: int) -> dict:
         params["$where"] = f":updated_at >= '{run_date}T00:00:00'"
     return params
 
+
+def batch_output_path(output_path: str, batch_index: int) -> str:
+    """Sub-directory for one flushed batch of a full load."""
+    return f"{output_path}/batch_{batch_index:05d}"
+
+
+def final_output_path(load_type: str, output_path: str, batch_index: int) -> str:
+    """Where the final in-memory batch is written.
+
+    Full loads MUST land the final partial batch in its own batch_* sub-
+    directory: a mode=overwrite write to output_path itself deletes every
+    previously flushed batch directory underneath it, silently discarding all
+    but the last ~500k records. Incremental loads never flush, so the single
+    write to output_path root is safe there.
+    """
+    if load_type == "full":
+        return batch_output_path(output_path, batch_index)
+    return output_path

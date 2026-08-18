@@ -31,6 +31,9 @@ README. Counts and links are additionally checked mechanically in CI by
 | Source freshness keys on `_silver_timestamp`, not business dates | `dbt/models/staging/sources.yml:20-23` | `tests/test_dbt_architecture.py::test_source_freshness_uses_silver_timestamp` |
 | Incremental ingest watermarks on Socrata `:updated_at`, so post-creation updates are re-fetched | `databricks/notebooks/ingest_config.py::build_page_params` | `tests/test_ingest_config.py::test_incremental_watermark_is_updated_at_not_created_date` |
 | Status changes propagate through the fct incremental upsert — verified under DuckDB's delete+insert strategy; the Snowflake `merge` strategy is unverified (no warehouse) | `dbt/models/marts/fct_service_requests.sql` (merge on service_request_id), `local/models/marts/fct_service_requests.sql` (delete+insert) | `tests/local/test_local_gold.py::test_upsert_propagates_status_change` |
+| Full-load batch flushes survive the final write | `databricks/notebooks/ingest_config.py::final_output_path` | `tests/test_ingest_config.py::test_full_load_final_batch_never_overwrites_partition_root` |
+| Quarantine writes target a column the rows carry (`_run_date`) | `databricks/notebooks/silver_transformations.py::quarantine_partition_predicate` | `tests/unit/test_silver_quarantine.py::test_replace_where_predicate_references_a_column_the_rows_carry` |
+| Quarantine selects exactly the critical failures, with reasons | `databricks/notebooks/silver_transformations.py::select_quarantine` | `tests/unit/test_silver_quarantine.py::test_select_quarantine_picks_exactly_the_critical_failures` |
 | README counts (tests, ADRs, fact models) and links match the repo | marker system in `README.md` | `scripts/check_claims.py` in CI (`.github/workflows/dbt.yml`) |
 
 ## Deleted from the README rather than listed here

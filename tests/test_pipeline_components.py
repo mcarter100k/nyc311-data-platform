@@ -173,16 +173,26 @@ def test_silver_notebook_uses_delta_merge():
     )
 
 
-def test_silver_notebook_filters_negative_resolution_days():
+def test_silver_notebook_quarantines_negative_resolution_days():
     """
-    Silver must drop records where closed_date precedes created_date.
-    These ~0.02% of records are data entry errors. If they reach Gold,
-    the dbt singular test assert_resolution_days_nonnegative will fail
-    and block the pipeline.
+    Silver must quarantine records where closed_date precedes created_date
+    (data entry errors — if they reach Gold, the dbt singular test
+    assert_resolution_days_nonnegative fails and blocks the pipeline). The
+    selection logic lives in silver_transformations.select_quarantine
+    (behaviorally tested in tests/unit/test_silver_quarantine.py); the
+    notebook must call it and keep only the passing population.
     """
     path = NOTEBOOKS["03_silver"]
-    assert file_contains(path, "resolution_days", "< 0"), (
-        "03_silver.py does not filter out negative resolution_days records."
+    assert file_contains(path, "select_quarantine"), (
+        "03_silver.py does not call select_quarantine — negative "
+        "resolution_days records are not being quarantined."
+    )
+    transformations_path = os.path.join(
+        ROOT, "databricks", "notebooks", "silver_transformations.py"
+    )
+    assert file_contains(transformations_path, "negative_resolution_days", "< 0"), (
+        "silver_transformations.select_quarantine does not implement the "
+        "negative resolution_days check."
     )
 
 

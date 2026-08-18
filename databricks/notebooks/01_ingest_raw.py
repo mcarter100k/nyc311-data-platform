@@ -31,7 +31,13 @@ from datetime import datetime
 import requests  # available on Databricks Runtime >= 9.1
 
 # ── Request-building logic (pure, unit-tested) ────────────────────────────────
-from ingest_config import PAGE_SIZE, SOCRATA_URL, build_page_params
+from ingest_config import (
+    PAGE_SIZE,
+    SOCRATA_URL,
+    batch_output_path,
+    build_page_params,
+    final_output_path,
+)
 
 # COMMAND ----------
 
@@ -128,7 +134,8 @@ else:
 
 all_records  = []
 page         = 0
-retry_budget = 3  # retries per page on transient failures
+batch_index  = 0   # full loads: counts flushed batch_* sub-directories
+retry_budget = 3   # retries per page on transient failures
 
 while True:
     params          = build_page_params(load_type, run_date, page)
@@ -179,9 +186,13 @@ while True:
           f"(cumulative: {len(all_records):>8})")
 
     # For full loads, write intermediate batches to ADLS every 500k records
-    # to avoid accumulating the full dataset in driver memory.
+    # to avoid accumulating the full dataset in driver memory. Each batch gets
+    # its own sub-directory; nothing ever overwrites OUTPUT_PATH itself in
+    # full mode (that would delete the previously flushed batches — see
+    # ingest_config.final_output_path).
     if load_type == "full" and len(all_records) >= 500_000:
-        batch_path = f"{OUTPUT_PATH}/batch_{page:05d}"
+        batch_index += 1
+        batch_path = batch_output_path(OUTPUT_PATH, batch_index)
         df_batch   = spark.createDataFrame(all_records)
         df_batch.coalesce(4).write.mode("overwrite").json(batch_path)
         print(f"  Flushed {len(all_records):,} records to {batch_path}")
@@ -198,6 +209,12 @@ total_row_count = 0
 if all_records:
     df_final = spark.createDataFrame(all_records)
 
+    # Incremental: single write to the partition root. Full: the final partial
+    # batch goes to its own batch_* sub-directory so the earlier flushed
+    # batches survive (an overwrite of the root would delete them).
+    batch_index += 1
+    final_path = final_output_path(load_type, OUTPUT_PATH, batch_index)
+
     # coalesce(4): 4 files of ~12MB each for a typical daily load (~50k records).
     # Avoids the small-file problem downstream while keeping parallelism reasonable.
     (
@@ -205,14 +222,20 @@ if all_records:
         .coalesce(4)
         .write
         .mode("overwrite")
-        .json(OUTPUT_PATH)
+        .json(final_path)
     )
     total_row_count += len(all_records)
-    print(f"Wrote final batch of {len(all_records):,} records to {OUTPUT_PATH}")
+    print(f"Wrote final batch of {len(all_records):,} records to {final_path}")
 
 # For full loads, query the full partition count across all batch sub-directories.
+# recursiveFileLookup: batch_* dirs are not Hive partitions, so a plain read
+# of the root would not descend into them.
 if load_type == "full":
-    df_verify       = spark.read.json(OUTPUT_PATH)
+    df_verify = (
+        spark.read
+        .option("recursiveFileLookup", "true")
+        .json(OUTPUT_PATH)
+    )
     total_row_count = df_verify.count()
 
 # COMMAND ----------

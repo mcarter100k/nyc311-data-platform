@@ -61,6 +61,8 @@ from silver_transformations import (
     compute_resolution_days,
     compute_unique_key_checksum,
     deduplicate_on_unique_key,
+    quarantine_partition_predicate,
+    select_quarantine,
     standardize_borough,
 )
 
@@ -294,23 +296,12 @@ if not dq_warnings:
 # Engineers query it directly via Snowflake when investigating DQ failures.
 #
 # Records that fail critical checks are written to a quarantine table with a
-# quarantine_reason column rather than being silently dropped.
-#
-# Critical checks (quarantine, not just warn):
-#   - null unique_key: cannot be MERGEd without a natural key
-#   - negative resolution_days: closed_date < created_date; corrupts Gold metrics
+# quarantine_reason column rather than being silently dropped. Selection logic
+# and the replaceWhere predicate live in silver_transformations.py
+# (unit-tested; the predicate must target _run_date, the audit column these
+# records actually carry).
 
-df_null_key = df_derived.filter(
-    F.col("unique_key").isNull()
-).withColumn("quarantine_reason", F.lit("null_unique_key"))
-
-df_neg_resolution = df_derived.filter(
-    F.col("unique_key").isNotNull()
-    & F.col("resolution_days").isNotNull()
-    & (F.col("resolution_days") < 0)
-).withColumn("quarantine_reason", F.lit("negative_resolution_days"))
-
-df_quarantine = df_null_key.union(df_neg_resolution)
+df_quarantine = select_quarantine(df_derived)
 count_quarantined = df_quarantine.count()
 
 if count_quarantined > 0:
@@ -318,15 +309,17 @@ if count_quarantined > 0:
         df_quarantine.write
         .format("delta")
         .mode("overwrite")
-        .option("replaceWhere", f"run_date = '{run_date}'")
+        .option("replaceWhere", quarantine_partition_predicate(run_date))
         .option("mergeSchema", "true")
         .saveAsTable(QUARANTINE_TABLE)
     )
+    reason_counts = {
+        r["quarantine_reason"]: r["count"]
+        for r in df_quarantine.groupBy("quarantine_reason").count().collect()
+    }
     print(
         f"Quarantined {count_quarantined:,} records to {QUARANTINE_TABLE} "
-        f"for run_date={run_date}. "
-        f"({df_null_key.count():,} null_unique_key, "
-        f"{df_neg_resolution.count():,} negative_resolution_days)"
+        f"for run_date={run_date}. Reasons: {reason_counts}"
     )
 else:
     print(f"No records quarantined for run_date={run_date}.")

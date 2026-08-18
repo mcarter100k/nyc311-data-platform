@@ -63,3 +63,30 @@ def test_ordering_is_stable_across_pages():
     params = build_page_params("incremental", "2024-06-01", page=3)
     assert params["$order"] == ":id"
 
+
+def test_full_load_final_batch_never_overwrites_partition_root():
+    """Regression guard: full loads flush batches to batch_* sub-directories
+    under the partition root; the final partial batch must land in its own
+    sub-directory too. Writing it to the root with mode=overwrite (the
+    original behavior) deletes every previously flushed batch — all but the
+    last ~500k records of a full load silently vanish."""
+    from ingest_config import batch_output_path, final_output_path
+
+    root = "abfss://raw@acct.dfs.core.windows.net/nyc311/ingest_date=2024-06-01"
+    final = final_output_path("full", root, batch_index=8)
+    assert final != root, (
+        "Full-load final batch targets the partition root — the overwrite "
+        "would delete the flushed batch_* directories."
+    )
+    assert final == batch_output_path(root, 8)
+    assert final.startswith(root + "/batch_")
+
+
+def test_incremental_final_write_targets_partition_root():
+    """Incremental loads never flush, so the single overwrite of the partition
+    root is the correct (idempotent) behavior — rerunning replaces the
+    partition wholesale."""
+    from ingest_config import final_output_path
+
+    root = "abfss://raw@acct.dfs.core.windows.net/nyc311/ingest_date=2024-06-01"
+    assert final_output_path("incremental", root, batch_index=1) == root
