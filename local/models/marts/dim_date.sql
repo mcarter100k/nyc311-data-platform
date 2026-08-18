@@ -22,7 +22,8 @@ dates as (
 ),
 
 -- Federal holiday rules (US). Non-fixed holidays use week-of-month arithmetic.
--- DuckDB dayofweek: 0=Sunday, 1=Monday … 6=Saturday (same as Snowflake).
+-- DuckDB isodow: 1=Monday … 7=Sunday — mirrors dayofweekiso in the Snowflake
+-- project, keeping day_of_week and is_weekend semantics identical across both.
 
 with_attributes as (
 
@@ -39,7 +40,7 @@ with_attributes as (
         strftime(full_date, '%B')                                               as month_name,
         strftime(full_date, '%b')                                               as month_abbr,
         dayofmonth(full_date)                                                   as day_of_month,
-        dayofweek(full_date)                                                    as day_of_week,      -- 0=Sun … 6=Sat
+        isodow(full_date)                                                       as day_of_week,      -- ISO: 1=Mon … 7=Sun
         strftime(full_date, '%A')                                               as day_name,
         left(strftime(full_date, '%A'), 3)                                      as day_abbr,
         dayofyear(full_date)                                                    as day_of_year,
@@ -47,7 +48,7 @@ with_attributes as (
 
         -- ── Weekend flag ──────────────────────────────────────────────────────
         case
-            when dayofweek(full_date) in (0, 6) then true
+            when isodow(full_date) in (6, 7) then true
             else false
         end                                                                     as is_weekend,
 
@@ -56,15 +57,15 @@ with_attributes as (
             when month(full_date) = 1  and dayofmonth(full_date) = 1
                 then true
             when month(full_date) = 1
-             and dayofweek(full_date) = 1
+             and isodow(full_date) = 1
              and dayofmonth(full_date) between 15 and 21
                 then true
             when month(full_date) = 2
-             and dayofweek(full_date) = 1
+             and isodow(full_date) = 1
              and dayofmonth(full_date) between 15 and 21
                 then true
             when month(full_date) = 5
-             and dayofweek(full_date) = 1
+             and isodow(full_date) = 1
              and dayofmonth(full_date) between 25 and 31
                 then true
             when month(full_date) = 6  and dayofmonth(full_date) = 19
@@ -72,17 +73,17 @@ with_attributes as (
             when month(full_date) = 7  and dayofmonth(full_date) = 4
                 then true
             when month(full_date) = 9
-             and dayofweek(full_date) = 1
+             and isodow(full_date) = 1
              and dayofmonth(full_date) between 1 and 7
                 then true
             when month(full_date) = 10
-             and dayofweek(full_date) = 1
+             and isodow(full_date) = 1
              and dayofmonth(full_date) between 8 and 14
                 then true
             when month(full_date) = 11 and dayofmonth(full_date) = 11
                 then true
             when month(full_date) = 11
-             and dayofweek(full_date) = 4
+             and isodow(full_date) = 4
              and dayofmonth(full_date) between 22 and 28
                 then true
             when month(full_date) = 12 and dayofmonth(full_date) = 25

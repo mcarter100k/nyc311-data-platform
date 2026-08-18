@@ -17,7 +17,9 @@ models:
     staging:
       +materialized: view
     intermediate:
-      +materialized: view
+      # Table for parity with the Snowflake project: three models read this,
+      # and the ILIKE classification should compute once, not per consumer.
+      +materialized: table
     marts:
       +materialized: table
       +schema: gold

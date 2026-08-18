@@ -2,8 +2,10 @@
 dbt/target/
 dbt/logs/
 dbt/.user.yml
-# dbt/profiles.yml is committed — it contains only CI placeholder credentials.
-# Real per-developer profiles live in ~/.dbt/profiles.yml (never committed).
+# profiles.yml is never committed — it holds credentials. CI workflows write an
+# ephemeral placeholder profile at runtime; developers keep theirs in
+# ~/.dbt/profiles.yml (see dbt/profiles.yml.example).
+dbt/profiles.yml
 
 # dbt_packages are restored by `dbt deps` — no need to commit vendored copies
 dbt/dbt_packages/

@@ -33,6 +33,16 @@ final as (
         agency_name,
         effective_date,
         expiry_date,
+        -- Join-window start for the point-in-time join in fct_service_requests;
+        -- first version per agency backdated so pre-snapshot history resolves.
+        case
+            when row_number() over (
+                partition by agency_abbreviation
+                order by effective_date
+            ) = 1
+            then '1900-01-01'::date
+            else effective_date
+        end                                 as valid_from,
         is_current
 
     from versioned

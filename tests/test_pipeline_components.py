@@ -222,9 +222,8 @@ EXPECTED_TASKS = [
     "ingest_raw",
     "load_bronze",
     "load_silver",
-    "snapshot_agency",
-    "dbt_run",
-    "dbt_test",
+    "dbt_build",
+    "dbt_publish",
     "notify_success",
 ]
 
@@ -232,10 +231,9 @@ EXPECTED_DEPENDENCY_CHAIN = [
     ("check_api_availability", "ingest_raw"),
     ("ingest_raw",             "load_bronze"),
     ("load_bronze",            "load_silver"),
-    ("load_silver",            "snapshot_agency"),
-    ("snapshot_agency",        "dbt_run"),
-    ("dbt_run",                "dbt_test"),
-    ("dbt_test",               "notify_success"),
+    ("load_silver",            "dbt_build"),
+    ("dbt_build",              "dbt_publish"),
+    ("dbt_publish",            "notify_success"),
 ]
 
 
@@ -255,8 +253,8 @@ def test_airflow_dag_is_valid_python():
 def test_airflow_dag_contains_expected_task(task_id):
     """
     Each expected task ID must appear in the DAG file. A missing task means
-    a pipeline stage (e.g. dbt_test) is not being run, leaving data quality
-    checks unexecuted in production.
+    a pipeline stage (e.g. dbt_publish) is not being run — either data quality
+    checks go unexecuted or validated builds never reach production.
     """
     assert file_contains(DAG_PATH, f'"{task_id}"') or file_contains(DAG_PATH, f"'{task_id}'"), (
         f"Task '{task_id}' not found in nyc311_pipeline.py."
@@ -274,14 +272,20 @@ def test_airflow_dag_has_http_sensor_gate():
     )
 
 
-def test_airflow_dag_separates_dbt_run_and_dbt_test():
+def test_airflow_dag_uses_write_audit_publish():
     """
-    dbt run and dbt test must be separate tasks. A single combined task makes
-    it impossible to distinguish a model build failure from a data quality test
-    failure in the Airflow UI — they require different remediation paths.
+    The dbt stage must follow write-audit-publish: `dbt build` routed into the
+    audit schema (audit_suffix var), then the publish_gold run-operation to
+    swap the validated schema into GOLD. A run-then-test design publishes bad
+    data to GOLD before the tests get a chance to catch it.
     """
-    assert file_contains(DAG_PATH, "dbt_run", "dbt_test"), (
-        "nyc311_pipeline.py does not separate dbt_run and dbt_test into distinct tasks."
+    assert file_contains(DAG_PATH, "dbt build", "audit_suffix"), (
+        "nyc311_pipeline.py does not run `dbt build` with the audit_suffix var — "
+        "models would be built and tested directly in production GOLD."
+    )
+    assert file_contains(DAG_PATH, "publish_gold"), (
+        "nyc311_pipeline.py is missing the publish_gold run-operation — "
+        "audited builds would never be swapped into production GOLD."
     )
 
 

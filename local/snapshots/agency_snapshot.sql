@@ -18,9 +18,11 @@ from {{ ref('int_service_requests_cleaned') }}
 where agency_abbreviation is not null
   and trim(agency_abbreviation) != ''
 
+-- Most recent name wins the dedup so the check strategy can detect renames
+-- (mirrors dbt/snapshots/agency_snapshot.sql).
 qualify row_number() over (
     partition by agency_abbreviation
-    order by agency_name
+    order by created_date desc, agency_name
 ) = 1
 
 {% endsnapshot %}

@@ -67,9 +67,12 @@ joined as (
 
     from requests r
 
+    -- Point-in-time SCD2 join on the half-open validity window; idempotent
+    -- across incremental and full-refresh builds (mirrors dbt/models/marts).
     left join dim_agency a
         on r.agency_abbreviation = a.agency_abbreviation
-       and a.is_current = true
+       and cast(r.created_date as date) >= a.valid_from
+       and cast(r.created_date as date) <  coalesce(a.expiry_date, '9999-12-31'::date)
 
     left join dim_date d
         on cast(r.created_date as date) = d.full_date

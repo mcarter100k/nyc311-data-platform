@@ -24,8 +24,12 @@ dates as (
 ),
 
 -- Federal holiday rules (US). Non-fixed holidays use week-of-month arithmetic:
--- "3rd Monday" = dayofmonth BETWEEN 15 AND 21 AND dayofweek = 1.
--- Snowflake default: dayofweek 0=Sunday, 1=Monday … 6=Saturday.
+-- "3rd Monday" = dayofmonth BETWEEN 15 AND 21 AND dayofweekiso = 1.
+-- All day-of-week logic uses DAYOFWEEKISO (1=Monday … 7=Sunday), which is
+-- fixed by the ISO standard and immune to the Snowflake WEEK_START session /
+-- account parameter. Plain DAYOFWEEK shifts with WEEK_START — using it would
+-- silently invert is_weekend and break every holiday rule if the parameter
+-- were ever changed.
 -- Observed holidays (e.g. Jul 4 on Saturday → observed Friday) are not modelled
 -- here; extend this CTE if reporting requires observed-holiday awareness.
 
@@ -44,15 +48,26 @@ with_attributes as (
         to_char(full_date, 'MMMM')                                              as month_name,
         to_char(full_date, 'MON')                                               as month_abbr,
         dayofmonth(full_date)                                                   as day_of_month,
-        dayofweek(full_date)                                                    as day_of_week,      -- 0=Sun … 6=Sat
-        trim(to_char(full_date, 'DAY'))                                         as day_name,         -- 'MONDAY' … 'SUNDAY'
+        dayofweekiso(full_date)                                                 as day_of_week,      -- ISO: 1=Mon … 7=Sun
+        -- Derived from dayofweekiso rather than to_char(..., 'DAY') so the value
+        -- is deterministic and documented here, not dependent on format-element
+        -- behaviour across Snowflake versions.
+        decode(dayofweekiso(full_date),
+            1, 'Monday',
+            2, 'Tuesday',
+            3, 'Wednesday',
+            4, 'Thursday',
+            5, 'Friday',
+            6, 'Saturday',
+            7, 'Sunday'
+        )                                                                       as day_name,         -- 'Monday' … 'Sunday'
         to_char(full_date, 'DY')                                                as day_abbr,         -- 'Mon' … 'Sun'
         dayofyear(full_date)                                                    as day_of_year,
-        weekofyear(full_date)                                                   as week_of_year,
+        weekiso(full_date)                                                      as week_of_year,     -- ISO week; immune to WEEK_OF_YEAR_POLICY
 
         -- ── Weekend flag ──────────────────────────────────────────────────────
         case
-            when dayofweek(full_date) in (0, 6) then true
+            when dayofweekiso(full_date) in (6, 7) then true
             else false
         end                                                                     as is_weekend,
 
@@ -63,17 +78,17 @@ with_attributes as (
                 then true
             -- Martin Luther King Jr. Day — 3rd Monday of January
             when month(full_date) = 1
-             and dayofweek(full_date) = 1
+             and dayofweekiso(full_date) = 1
              and dayofmonth(full_date) between 15 and 21
                 then true
             -- Presidents' Day (Washington's Birthday) — 3rd Monday of February
             when month(full_date) = 2
-             and dayofweek(full_date) = 1
+             and dayofweekiso(full_date) = 1
              and dayofmonth(full_date) between 15 and 21
                 then true
             -- Memorial Day — last Monday of May
             when month(full_date) = 5
-             and dayofweek(full_date) = 1
+             and dayofweekiso(full_date) = 1
              and dayofmonth(full_date) between 25 and 31
                 then true
             -- Juneteenth — Jun 19 (federal holiday since 2021)
@@ -84,12 +99,12 @@ with_attributes as (
                 then true
             -- Labor Day — 1st Monday of September
             when month(full_date) = 9
-             and dayofweek(full_date) = 1
+             and dayofweekiso(full_date) = 1
              and dayofmonth(full_date) between 1 and 7
                 then true
             -- Columbus Day — 2nd Monday of October
             when month(full_date) = 10
-             and dayofweek(full_date) = 1
+             and dayofweekiso(full_date) = 1
              and dayofmonth(full_date) between 8 and 14
                 then true
             -- Veterans Day — Nov 11
@@ -97,7 +112,7 @@ with_attributes as (
                 then true
             -- Thanksgiving — 4th Thursday of November
             when month(full_date) = 11
-             and dayofweek(full_date) = 4
+             and dayofweekiso(full_date) = 4
              and dayofmonth(full_date) between 22 and 28
                 then true
             -- Christmas — Dec 25

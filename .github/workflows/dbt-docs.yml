@@ -51,14 +51,11 @@ jobs:
           # Cache pip dependencies keyed on requirements to speed up re-runs.
           cache: pip
 
-      # Pin to the same minor version range as the project's dbt_project.yml
-      # (dbt-core 1.7.x). Installing dbt-snowflake pulls in dbt-core as a
-      # transitive dependency; specifying both pins ensures version alignment.
+      # Install the exact versions pinned in dbt/requirements.txt so CI, docs,
+      # and local environments all run identical dbt versions. The supported
+      # range is declared once, in dbt_project.yml's require-dbt-version.
       - name: Install dbt-core and dbt-snowflake
-        run: |
-          pip install \
-            "dbt-core>=1.7.0,<2.0.0" \
-            "dbt-snowflake>=1.7.0,<2.0.0"
+        run: pip install -r dbt/requirements.txt
 
       # ── IMPORTANT: why --no-compile does not skip catalog generation ─────────
       # `dbt docs generate --no-compile` skips Jinja/SQL compilation (reading
