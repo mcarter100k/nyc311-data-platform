@@ -46,7 +46,11 @@ continues to come from `local/requirements.txt`.
 
 **actionlint runs unconditionally** in fast-gate: it finishes in seconds,
 and a changed-files guard would add a third-party action this repo doesn't
-otherwise depend on.
+otherwise depend on. Its shellcheck layer (active on ubuntu runners, where
+shellcheck is preinstalled — a divergence the first CI run exposed, since a
+Mac without shellcheck lints more weakly) gates at `--severity=warning`:
+info/style advisories first fired on dbt-docs.yml, the house-standard file
+this restructure is not allowed to rewrite, and advisories are not defects.
 
 **Dependabot** (weekly; github-actions + both pip roots) groups minor+patch
 per ecosystem; majors arrive solo so breaking bumps are never buried.
