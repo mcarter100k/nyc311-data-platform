@@ -139,10 +139,14 @@ def stage3_silver() -> None:
     df["borough"] = df.get("borough", pd.Series(dtype=str)).apply(_standardize_borough)
     n_unrecognized = (df["borough"] == "UNSPECIFIED").sum()
 
-    # Timestamp parsing — coerce bad values to NaT
+    # Timestamp parsing — coerce bad values to NaT. Parse NAIVE, not utc=True:
+    # Socrata sends naive NYC-local timestamps, and the cloud spec stores them
+    # as TIMESTAMP_NTZ (no zone). Labeling them UTC here made the downstream
+    # ::timestamp cast shift every value by the machine's UTC offset — caught
+    # by source reconciliation as wrong calendar dates for after-midnight rows.
     for col in ("created_date", "closed_date", "resolution_action_updated_date"):
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce", utc=True)
+            df[col] = pd.to_datetime(df[col], errors="coerce")
         else:
             df[col] = pd.NaT
 
