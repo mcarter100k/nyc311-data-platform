@@ -34,6 +34,7 @@ README. Counts and links are additionally checked mechanically in CI by
 | Full-load batch flushes survive the final write | `databricks/notebooks/ingest_config.py::final_output_path` | `tests/test_ingest_config.py::test_full_load_final_batch_never_overwrites_partition_root` |
 | Quarantine writes target a column the rows carry (`_run_date`) | `databricks/notebooks/silver_transformations.py::quarantine_partition_predicate` | `tests/unit/test_silver_quarantine.py::test_replace_where_predicate_references_a_column_the_rows_carry` |
 | Quarantine selects exactly the critical failures, with reasons | `databricks/notebooks/silver_transformations.py::select_quarantine` | `tests/unit/test_silver_quarantine.py::test_select_quarantine_picks_exactly_the_critical_failures` |
+| Publish swap keeps reporter access (symmetric grants — spec) | `docs/adr/009-publish-grants-under-schema-swap.md` (Terraform follow-up listed there) | none until the Terraform lands — tracked in ADR 009 |
 | README counts (tests, ADRs, fact models) and links match the repo | marker system in `README.md` | `scripts/check_claims.py` in CI (`.github/workflows/dbt.yml`) |
 
 ## Deleted from the README rather than listed here

@@ -242,7 +242,7 @@ nyc311-data-platform/
 ├── airflow/dags/nyc311_pipeline.py    # 7-task orchestration DAG (spec — not deployed)
 ├── tests/                             # structural + PySpark unit suite (count checked in CI)
 ├── scripts/check_claims.py            # CI guard: README counts/links vs the repo
-├── docs/adr/                          # <!--claim:adr_count-->8<!--/claim--> architecture decision records
+├── docs/adr/                          # <!--claim:adr_count-->9<!--/claim--> architecture decision records
 ├── docs/CLAIMS.md                     # claim → enforcing code → verifying test
 ├── architecture/                      # Architecture diagram
 └── .github/workflows/                 # CI/CD: Terraform plan, dbt parse + pytest, docs deploy
@@ -264,6 +264,7 @@ ADRs document the reasoning behind major technology choices — written to be de
 | [006](docs/adr/006-schema-evolution.md) | Schema version stamp over runtime column detection |
 | [007](docs/adr/007-scd-type-2-dim-agency.md) | dbt snapshot (check strategy) for agency SCD Type 2; point-in-time fact join |
 | [008](docs/adr/008-prototype-scope.md) | Prototype scope — cloud services specified, not provisioned |
+| [009](docs/adr/009-publish-grants-under-schema-swap.md) | Symmetric grants on GOLD/GOLD_AUDIT so the publish swap keeps reporter access |
 
 ---
 
@@ -277,8 +278,8 @@ These are the decisions most likely to generate substantive conversation in a se
 **The HttpSensor is a cost gate, not just a health check.**
 The sensor validates HTTP 200 and a non-empty JSON body before any Databricks cluster starts. If the Socrata API is up but the daily refresh hasn't completed, the sensor waits. The cost of a five-minute sensor timeout is zero. The cost of a cluster spinning up, pulling an incomplete dataset, and writing a partial Bronze partition is a manual replay job plus incident investigation.
 
-**`FUTURE TABLES` grants eliminate a class of deployment bugs.**
-Granting `SELECT ON FUTURE TABLES IN SCHEMA GOLD TO ROLE NYC311_REPORTER` means any table dbt creates — including models added months after the initial Terraform apply — automatically inherits correct permissions. Without this, adding a new mart model creates a silent permissions gap that breaks BI dashboards until someone re-runs `terraform apply`.
+**`FUTURE TABLES` grants interact with schema-swap publishing — and the interaction has to be designed, not assumed.**
+`SELECT ON FUTURE TABLES` lets any table dbt creates inherit reporter permissions without a Terraform re-apply ([main.tf:389-399](terraform/modules/snowflake-foundation/main.tf#L389-L399)). But Snowflake grants attach to the schema *object*, and the write-audit-publish swap renames objects — so grants defined only on GOLD stop covering it after the first publish. [ADR 009](docs/adr/009-publish-grants-under-schema-swap.md) resolves this: the grant matrix is specified symmetrically on both GOLD and GOLD_AUDIT, keeping the single atomic swap (the alternative — per-table view swaps — was rejected because it reintroduces the cross-table inconsistency window WAP exists to eliminate).
 
 **All dimension joins in `fct_service_requests` are LEFT JOINs.**
 Not every 311 complaint has a recognized agency code or a geocodable address. INNER JOINs against imperfect dimension coverage silently drop fact rows — a `COUNT(*)` on the fact table then disagrees with Silver, and that discrepancy surfaces at 11pm before a board presentation. NULL foreign keys in the fact table are visible and fixable. Silently dropped rows are not.

@@ -25,6 +25,10 @@
 
     Permissions: the TRANSFORMER role needs OWNERSHIP of both schemas (it
     creates them) and CREATE SCHEMA on the database for the first run.
+
+    Grants: Snowflake grants attach to schema OBJECTS, and this swap renames
+    objects — so REPORTER's grants must be defined symmetrically on both GOLD
+    and GOLD_AUDIT or BI access breaks on the first publish. See ADR 009.
 #}
 
     {% set prod_schema  = target.schema %}
