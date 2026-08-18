@@ -297,9 +297,13 @@ The most important property of Bronze/Silver/Gold is not the materialization or 
 cd local
 pip install -r requirements.txt
 python local_runner.py            # ingest → bronze → silver → dbt gold → sample queries
+python reconcile.py               # verify the output against the source, record by record
 ```
 
 See [local/README_LOCAL.md](local/README_LOCAL.md) for stage-by-stage detail.
+[local/reconcile.py](local/reconcile.py) is the source-to-target check: layer conservation,
+independent recomputation from the raw JSON, and a live spot-check against the city's API —
+it proves the Gold layer agrees with reality, not just with itself.
 
 ### 1. Provision infrastructure (deferred — requires your own Azure + Snowflake accounts; see ADR 008)
 
