@@ -11,7 +11,15 @@
 
 select
     agency_abbreviation,
-    initcap(trim(agency_name)) as agency_name
+    -- DuckDB has no initcap(); title-case word-by-word to mirror the Snowflake
+    -- snapshot's initcap(trim(agency_name)) normalization.
+    array_to_string(
+        list_transform(
+            string_split(lower(trim(agency_name)), ' '),
+            x -> upper(x[1]) || x[2:]
+        ),
+        ' '
+    ) as agency_name
 
 from {{ ref('int_service_requests_cleaned') }}
 

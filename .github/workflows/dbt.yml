@@ -65,3 +65,10 @@ jobs:
       # Fail the build if README counts or links have drifted from the repo.
       - name: Check README claims against the repo
         run: python scripts/check_claims.py
+
+      # Behavioral tier: build the local/ dbt project twice against a seeded
+      # DuckDB database and assert incremental watermark + SCD2 join semantics.
+      - name: Run local-gold behavioral tests (dbt-duckdb)
+        run: |
+          pip install "dbt-duckdb==1.7.4"
+          pytest tests/local -v

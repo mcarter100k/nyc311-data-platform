@@ -7,6 +7,7 @@ README. Counts and links are additionally checked mechanically in CI by
 
 | Claim | Enforcing code | Verifying test |
 |---|---|---|
+| Pipeline runs end-to-end locally on DuckDB | `local/local_runner.py` (5 stages) | `tests/local/test_local_gold.py` (dbt build against seeded DuckDB) |
 | 7-task DAG: gate → ingest → bronze → silver → build → publish → notify | `airflow/dags/nyc311_pipeline.py:489-498` | `tests/test_pipeline_components.py::test_airflow_dag_contains_expected_task` |
 | dbt stage is write-audit-publish: build+test in GOLD_AUDIT, atomic swap into GOLD | `dbt/macros/generate_schema_name.sql` (audit_suffix), `dbt/macros/publish_gold.sql` | `tests/test_pipeline_components.py::test_airflow_dag_uses_write_audit_publish` |
 | HttpSensor gates on HTTP 200 + non-empty body | `airflow/dags/nyc311_pipeline.py:262-265` | `tests/test_pipeline_components.py::test_airflow_dag_has_http_sensor_gate` |
@@ -17,6 +18,9 @@ README. Counts and links are additionally checked mechanically in CI by
 | Replay checksum is row-order independent | `databricks/notebooks/silver_transformations.py:132-162` | `tests/unit/test_silver_transformations.py::test_unique_key_checksum_is_order_independent` |
 | Borough variants collapse to 5 canonical names + UNSPECIFIED | `databricks/notebooks/silver_transformations.py:44-83` | `tests/unit/test_silver_transformations.py::test_borough_standardization` |
 | fct_service_requests is incremental MERGE on service_request_id, clustered on cast(created_date as date) | `dbt/models/marts/fct_service_requests.sql:1-9` | `tests/test_dbt_architecture.py::test_fct_service_requests_is_incremental`, `::test_fct_service_requests_cluster_key` |
+| Incremental watermark is `_loaded_at` (pipeline time) with a 1-hour lookback | `dbt/models/marts/fct_service_requests.sql:118-128` | `tests/local/test_local_gold.py::test_incremental_lookback_picks_up_late_arriving_row` |
+| Agency FK is assigned point-in-time on the SCD2 validity window; rebuilds are idempotent, no fan-out | `dbt/models/marts/fct_service_requests.sql:100-110`, `dbt/models/marts/dim_agency.sql` (valid_from) | `tests/local/test_local_gold.py::test_scd2_rename_versions_and_point_in_time_assignment`, `::test_no_fanout_and_full_refresh_idempotent` |
+| Snapshot dedup takes the most recent name so renames are detectable | `dbt/snapshots/agency_snapshot.sql:32-36` | `tests/local/test_local_gold.py::test_scd2_rename_versions_and_point_in_time_assignment` |
 | All fact→dimension joins are LEFT; NULL FKs documented, borough coalesced in the daily rollup | `dbt/models/marts/fct_service_requests.sql`, `dbt/models/marts/fct_daily_volume.sql:36` | manifest-declared tests listed in `dbt/models/marts/marts.yml` |
 | is_overdue is three-valued: NULL while open | `dbt/models/marts/fct_service_requests.sql:88-95` | documented decision (README "Design Decisions"); no test — pure CASE expression |
 | Calendar semantics immune to Snowflake WEEK_START (ISO day-of-week) | `dbt/models/marts/dim_date.sql:51-70` | none yet — flagged in audit; candidate for the local harness |

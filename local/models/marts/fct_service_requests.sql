@@ -1,9 +1,12 @@
+{# dbt-duckdb does not implement the 'merge' incremental strategy;
+   delete+insert on the unique key has the same upsert semantics
+   (the Snowflake project uses merge). #}
 {{
     config(
         materialized        = 'incremental',
         schema              = 'gold',
         unique_key          = 'service_request_id',
-        incremental_strategy = 'merge'
+        incremental_strategy = 'delete+insert'
     )
 }}
 

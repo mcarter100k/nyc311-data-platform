@@ -207,14 +207,23 @@ def stage3_silver() -> None:
 
 # ── Stage 4: Gold (dbt) ────────────────────────────────────────────────────────
 
+def _dbt_executable() -> str:
+    # dbt-core 1.7 ships no __main__, so `python -m dbt` fails with
+    # "'dbt' is a package and cannot be directly executed". Use the console
+    # script installed next to this interpreter, falling back to PATH.
+    import shutil
+    candidate = Path(sys.executable).parent / "dbt"
+    return str(candidate) if candidate.exists() else (shutil.which("dbt") or "dbt")
+
+
 def _run_dbt(args: list[str]) -> int:
     cmd = [
-        sys.executable, "-m", "dbt", *args,
+        _dbt_executable(), *args,
         "--profiles-dir", str(LOCAL_DIR),
         "--project-dir",  str(LOCAL_DIR),
         "--no-version-check",
     ]
-    print(f"\n  $ {' '.join(cmd[2:])}")
+    print(f"\n  $ dbt {' '.join(args)}")
     return subprocess.run(cmd, cwd=LOCAL_DIR).returncode
 
 
