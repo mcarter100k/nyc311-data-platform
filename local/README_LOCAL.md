@@ -136,3 +136,25 @@ duckdb local/data/nyc311_local.duckdb
 SHOW ALL TABLES;
 SELECT * FROM gold.dim_date LIMIT 5;
 ```
+
+## Verifying against the source
+
+Tests prove the pipeline agrees with itself; `reconcile.py` proves it agrees
+with the city. After any run:
+
+```bash
+python local/reconcile.py
+```
+
+Three rungs: (1) **conservation** — every ingested record accounted for
+across layers, quarantine count independently recomputed; (2) **independent
+recomputation** — closed counts, borough distribution, per-record resolution
+days, and exact `created_date` timestamps recomputed from the raw JSON with
+no DuckDB or dbt involved; (3) **live spot-check** — sampled records fetched
+back from the Socrata API by `unique_key` and compared field by field
+(skips gracefully offline). Exit 0 means reconciled; any mismatch names the
+exact record and field and exits 1.
+
+This check exists because a run with a fully green test suite once carried a
+4-hour timestamp shift (`utc=True` mislabeling in the runner) that only
+rung 2's exact-timestamp comparison exposed.
