@@ -20,11 +20,22 @@
       2. Grant TRANSFORMER USAGE + CREATE TABLE/VIEW on both schemas
       3. Re-enable +schema: staging and +schema: intermediate in dbt_project.yml
       4. This macro will then route each layer to its dedicated schema.
+
+    Write-audit-publish: when the `audit_suffix` var is set (Airflow passes
+    '_audit'), model schemas are suffixed so the whole run builds and tests in
+    GOLD_AUDIT instead of GOLD. The publish_gold run-operation then swaps the
+    audited schema into place. Snapshots are never suffixed — SCD2 state must
+    live in exactly one schema across audit and production runs.
     #}
     {%- set default_schema = target.schema -%}
     {%- if custom_schema_name is none -%}
-        {{ default_schema }}
+        {%- set base_schema = default_schema -%}
     {%- else -%}
-        {{ custom_schema_name | trim }}
+        {%- set base_schema = custom_schema_name | trim -%}
+    {%- endif -%}
+    {%- if node.resource_type == 'snapshot' -%}
+        {{ base_schema }}
+    {%- else -%}
+        {{ base_schema ~ var('audit_suffix', '') }}
     {%- endif -%}
 {%- endmacro %}

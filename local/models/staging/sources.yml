@@ -1,0 +1,24 @@
+version: 2
+
+sources:
+  - name: silver
+    database: nyc311_local
+    schema: silver
+    tables:
+      - name: service_requests
+        columns:
+          - name: unique_key
+            tests:
+              - unique
+              - not_null
+          - name: created_date
+            tests:
+              - not_null
+      - name: data_quality_log
+        columns:
+          - name: run_date
+            tests:
+              - not_null
+          - name: check_name
+            tests:
+              - not_null

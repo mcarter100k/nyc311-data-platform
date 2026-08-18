@@ -2,10 +2,11 @@
 # MAGIC %md
 # MAGIC # 01 — Raw Ingestion
 # MAGIC
-# MAGIC Pulls NYC 311 service request records from the NYC Open Data Socrata API and writes
-# MAGIC raw JSON to Azure Data Lake Storage Gen2, partitioned by ingest date. This notebook
-# MAGIC is the first stage of the medallion pipeline: no transformations, no type coercion —
-# MAGIC data is written exactly as received so that any upstream changes are auditable.
+# MAGIC Pulls NYC 311 service request records — created OR updated since the run date —
+# MAGIC from the NYC Open Data Socrata API and writes raw JSON to Azure Data Lake Storage
+# MAGIC Gen2, partitioned by ingest date. This notebook is the first stage of the medallion
+# MAGIC pipeline: no transformations, no type coercion — data is written exactly as
+# MAGIC received so that any upstream changes are auditable.
 # MAGIC
 # MAGIC **Idempotency:** if the target partition already exists and `force_reload = false`,
 # MAGIC the notebook exits early without re-ingesting. Airflow reruns are safe.
@@ -28,6 +29,15 @@ from datetime import datetime
 
 # ── Third-party ───────────────────────────────────────────────────────────────
 import requests  # available on Databricks Runtime >= 9.1
+
+# ── Request-building logic (pure, unit-tested) ────────────────────────────────
+from ingest_config import (
+    PAGE_SIZE,
+    SOCRATA_URL,
+    batch_output_path,
+    build_page_params,
+    final_output_path,
+)
 
 # COMMAND ----------
 
@@ -100,25 +110,21 @@ if not force_reload:
 # ── Socrata API configuration ─────────────────────────────────────────────────
 # Dataset: NYC 311 Service Requests (erm2-nwe9)
 # Docs:    https://dev.socrata.com/foundry/data.cityofnewyork.us/erm2-nwe9
-
-SOCRATA_URL = "https://data.cityofnewyork.us/resource/erm2-nwe9.json"
-PAGE_SIZE   = 50_000   # Socrata hard maximum per request
+# URL, page size, and per-page query parameters come from ingest_config.py
+# (pure module, unit-tested in tests/test_ingest_config.py).
 
 headers = {
     "X-App-Token": SOCRATA_APP_TOKEN,
     "Accept":      "application/json",
 }
 
-base_params = {
-    "$limit":  PAGE_SIZE,
-    "$order":  ":id",  # stable ordering prevents missed rows across pages
-}
-
-# Incremental filter: only fetch records created on or after run_date.
-# Full load fetches the entire dataset (use sparingly — ~35M rows).
+# Incremental filter: fetch records created OR UPDATED on/after run_date, via
+# the Socrata `:updated_at` system field. Filtering on created_date instead
+# would fetch each request exactly once and never see later status changes —
+# leaving the Silver MERGE's update path dead and undercounting resolutions.
+# See ingest_config.build_page_params for the full rationale.
 if load_type == "incremental":
-    base_params["$where"] = f"created_date >= '{run_date}T00:00:00'"
-    print(f"Incremental mode: fetching records from {run_date} onwards.")
+    print(f"Incremental mode: fetching records created or updated since {run_date}.")
 else:
     print("Full load mode: fetching entire dataset. This may take 10–20 minutes.")
 
@@ -128,10 +134,11 @@ else:
 
 all_records  = []
 page         = 0
-retry_budget = 3  # retries per page on transient failures
+batch_index  = 0   # full loads: counts flushed batch_* sub-directories
+retry_budget = 3   # retries per page on transient failures
 
 while True:
-    params          = {**base_params, "$offset": page * PAGE_SIZE}
+    params          = build_page_params(load_type, run_date, page)
     attempt         = 0
     response        = None
 
@@ -179,9 +186,13 @@ while True:
           f"(cumulative: {len(all_records):>8})")
 
     # For full loads, write intermediate batches to ADLS every 500k records
-    # to avoid accumulating the full dataset in driver memory.
+    # to avoid accumulating the full dataset in driver memory. Each batch gets
+    # its own sub-directory; nothing ever overwrites OUTPUT_PATH itself in
+    # full mode (that would delete the previously flushed batches — see
+    # ingest_config.final_output_path).
     if load_type == "full" and len(all_records) >= 500_000:
-        batch_path = f"{OUTPUT_PATH}/batch_{page:05d}"
+        batch_index += 1
+        batch_path = batch_output_path(OUTPUT_PATH, batch_index)
         df_batch   = spark.createDataFrame(all_records)
         df_batch.coalesce(4).write.mode("overwrite").json(batch_path)
         print(f"  Flushed {len(all_records):,} records to {batch_path}")
@@ -198,6 +209,12 @@ total_row_count = 0
 if all_records:
     df_final = spark.createDataFrame(all_records)
 
+    # Incremental: single write to the partition root. Full: the final partial
+    # batch goes to its own batch_* sub-directory so the earlier flushed
+    # batches survive (an overwrite of the root would delete them).
+    batch_index += 1
+    final_path = final_output_path(load_type, OUTPUT_PATH, batch_index)
+
     # coalesce(4): 4 files of ~12MB each for a typical daily load (~50k records).
     # Avoids the small-file problem downstream while keeping parallelism reasonable.
     (
@@ -205,14 +222,20 @@ if all_records:
         .coalesce(4)
         .write
         .mode("overwrite")
-        .json(OUTPUT_PATH)
+        .json(final_path)
     )
     total_row_count += len(all_records)
-    print(f"Wrote final batch of {len(all_records):,} records to {OUTPUT_PATH}")
+    print(f"Wrote final batch of {len(all_records):,} records to {final_path}")
 
 # For full loads, query the full partition count across all batch sub-directories.
+# recursiveFileLookup: batch_* dirs are not Hive partitions, so a plain read
+# of the root would not descend into them.
 if load_type == "full":
-    df_verify       = spark.read.json(OUTPUT_PATH)
+    df_verify = (
+        spark.read
+        .option("recursiveFileLookup", "true")
+        .json(OUTPUT_PATH)
+    )
     total_row_count = df_verify.count()
 
 # COMMAND ----------

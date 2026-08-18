@@ -47,11 +47,13 @@ renamed as (
         -- incremental filter in fct_service_requests.
         _silver_timestamp::timestamp_ntz                                         as _loaded_at,
 
-        -- Schema version stamp. This is the value of the dbt_project.yml var
-        -- `schema_version` at the time this model was compiled and run.
-        -- Gold consumers can join or filter on this column to identify rows
-        -- produced under a given schema contract — useful when a breaking change
-        -- (column removal or rename) requires comparing pre- and post-change data.
+        -- Schema version stamp — the dbt_project.yml var `schema_version` at
+        -- the time this view was compiled. NOTE: because this model is a view,
+        -- the value here is evaluated at query time and always reflects the
+        -- CURRENT var. The stamp only becomes a durable per-row fact in
+        -- fct_service_requests, where the incremental merge writes it into
+        -- physical rows; query that column (not this one) to trace historical
+        -- rows to the schema contract that produced them.
         -- Increment `schema_version` in dbt_project.yml whenever a breaking
         -- change is deployed. Additive changes (new columns) do not require a bump.
         -- See ADR 006 for the full schema evolution contract.

@@ -21,6 +21,28 @@ jobs:
       - name: Install dbt
         run: pip install -r dbt/requirements.txt
 
+      # profiles.yml is gitignored (it holds credentials in real environments).
+      # Write a placeholder profile at runtime — dbt parse validates the profile
+      # schema but never opens a Snowflake connection.
+      - name: Write mock CI profiles.yml
+        run: |
+          cat > dbt/profiles.yml << 'EOF'
+          nyc311:
+            target: ci
+            outputs:
+              ci:
+                type: snowflake
+                account: "placeholder.us-east-1"
+                user: ci_user
+                password: ci_password
+                role: NYC311_TRANSFORMER
+                database: NYC311_DB
+                warehouse: NYC311_WH
+                schema: gold
+                threads: 1
+                client_session_keep_alive: false
+          EOF
+
       - name: dbt deps
         run: dbt deps --profiles-dir . --project-dir . --no-version-check
         working-directory: dbt
@@ -39,3 +61,14 @@ jobs:
 
       - name: Run pytest (excluding PySpark unit tests)
         run: pytest tests/ --ignore=tests/unit -v
+
+      # Fail the build if README counts or links have drifted from the repo.
+      - name: Check README claims against the repo
+        run: python scripts/check_claims.py
+
+      # Behavioral tier: build the local/ dbt project twice against a seeded
+      # DuckDB database and assert incremental watermark + SCD2 join semantics.
+      - name: Run local-gold behavioral tests (dbt-duckdb)
+        run: |
+          pip install "dbt-duckdb==1.7.4"
+          pytest tests/local -v

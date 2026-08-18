@@ -4,6 +4,10 @@ config-version: 2
 
 profile: 'nyc311'
 
+# Environments pin exact versions in dbt/requirements.txt (single source of
+# truth for installs); this range declares what the project itself supports.
+require-dbt-version: [">=1.7.0", "<2.0.0"]
+
 model-paths:    ["models"]
 test-paths:     ["tests"]
 macro-paths:    ["macros"]
@@ -23,8 +27,12 @@ models:
       # then re-add +schema: staging here.
 
     intermediate:
-      +materialized: view
-      # No +schema: intermediate views land in target.schema (GOLD).
+      +materialized: table
+      # Table, not view: int_service_requests_cleaned is read by three models
+      # (dim_location, agency_snapshot, fct_service_requests). As a view, its
+      # 12-branch leading-wildcard ILIKE classification would re-execute over
+      # full history three times per run; materializing it computes that once.
+      # No +schema: the intermediate table lands in target.schema (GOLD).
 
     marts:
       +materialized: table
@@ -40,9 +48,12 @@ vars:
   min_date: '2010-01-01'
   max_date: '2030-12-31'
 
-  # Schema version stamp written into stg_service_requests as a literal column.
-  # Downstream Gold models carry this value so historical rows can be traced to
-  # the schema contract that produced them.
+  # Schema version stamp selected in stg_service_requests as a literal column.
+  # Staging is a view, so the value there is evaluated at query time; it becomes
+  # durable in fct_service_requests, whose incremental merge writes it into each
+  # physical row. Rows untouched by later merges keep the version they were
+  # built under, so history can be traced to the schema contract that produced
+  # it. (A --full-refresh restamps all history with the current version.)
   #
   # Increment this integer whenever a BREAKING schema change reaches Gold —
   # meaning a column is removed, renamed, or its type changes incompatibly.

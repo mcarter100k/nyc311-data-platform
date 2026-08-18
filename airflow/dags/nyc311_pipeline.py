@@ -33,28 +33,27 @@ Pipeline architecture
    │  load_silver  (DatabricksRunNowOperator)              │
    │  PySpark cleaning: deduplication on unique_key,       │
    │  type casting, borough standardization, partition     │
-   │  pruning. Writes to Silver Delta; syncs to Snowflake. │
+   │  pruning. Writes to Silver Delta. (Snowflake sync     │
+   │  mechanism deferred — ADR 008.)                       │
    └───────┬──────────────────────────────────────────────┘
            │
    ┌───────▼──────────────────────────────────────────────┐
-   │  snapshot_agency  (BashOperator)                      │
-   │  dbt snapshot for agency_snapshot (SCD Type 2).       │
-   │  Must precede dbt_run — dim_agency reads from it.     │
-   │  Opens new versions when agency names change.         │
+   │  dbt_build  (BashOperator)     — WRITE + AUDIT        │
+   │  dbt build with audit_suffix=_audit: snapshots,       │
+   │  models, and tests run in DAG order (snapshot →       │
+   │  staging → intermediate → marts), all writing to      │
+   │  GOLD_AUDIT. Each model's tests run right after it    │
+   │  builds; a failure stops downstream models and the    │
+   │  task. GOLD is never touched by this step.            │
    └───────┬──────────────────────────────────────────────┘
            │
    ┌───────▼──────────────────────────────────────────────┐
-   │  dbt_run  (BashOperator)                              │
-   │  Builds all dbt models (staging → intermediate →      │
-   │  marts) against the Snowflake SILVER schema.          │
-   │  Produces the full Gold dimensional model.            │
-   └───────┬──────────────────────────────────────────────┘
-           │
-   ┌───────▼──────────────────────────────────────────────┐
-   │  dbt_test  (BashOperator)                             │
-   │  Runs all schema tests (not_null, unique,             │
-   │  relationships) and singular tests. Separate task     │
-   │  from dbt_run — test failure ≠ build failure.         │
+   │  dbt_publish  (BashOperator)   — PUBLISH              │
+   │  dbt run-operation publish_gold: atomically swaps     │
+   │  the fully-audited GOLD_AUDIT schema into GOLD        │
+   │  (ALTER SCHEMA ... SWAP WITH). Only runs if every     │
+   │  model built and every test passed — BI consumers     │
+   │  never see unvalidated data.                          │
    └───────┬──────────────────────────────────────────────┘
            │
    ┌───────▼──────────────────────────────────────────────┐
@@ -125,6 +124,12 @@ _DBT_FLAGS = (
     "--project-dir /opt/airflow/dbt "
     "--target prod"
 )
+
+# Write-audit-publish: the build step routes every model into GOLD_AUDIT via
+# the audit_suffix var (see dbt/macros/generate_schema_name.sql). Snapshots are
+# exempt — SCD2 state lives in one schema regardless of the suffix.
+# Single braces are safe here: Airflow only templates double-brace {{ }} fields.
+_AUDIT_VARS = '--vars \'{"audit_suffix": "_audit"}\''
 
 
 # ── Callbacks ─────────────────────────────────────────────────────────────────
@@ -304,8 +309,9 @@ Host: `data.cityofnewyork.us`, Schema: `https`
 ## ingest_raw
 
 Triggers the Databricks **raw ingest** job (notebook `01_ingest_raw.py`).
-Pulls NYC 311 service request records for the execution date from the
-Socrata API and writes them as raw JSON to the ADLS Bronze partition
+Pulls NYC 311 service request records created or updated since the
+execution date (Socrata `:updated_at` watermark, so status changes on
+older requests are re-fetched) and writes them as raw JSON to the ADLS Bronze partition
 `year=YYYY/month=MM/day=DD`. Skips the partition if it already exists
 (idempotent unless `force_reload=true`).
 
@@ -343,7 +349,7 @@ that `ingest_raw` wrote the expected files to ADLS before rerunning.
 """,
     )
 
-    # ── Task 4: Silver cleaning and sync ──────────────────────────────────────
+    # ── Task 4: Silver cleaning ───────────────────────────────────────────────
 
     load_silver = DatabricksRunNowOperator(
         task_id                = "load_silver",
@@ -357,8 +363,13 @@ that `ingest_raw` wrote the expected files to ADLS before rerunning.
 Triggers the Databricks **Silver** job (notebook `03_silver.py`).
 Reads the Bronze Delta partition for this date and applies:
 deduplication on `unique_key`, type casting, borough name standardization,
-and null handling. Writes the result to the Silver Delta table and syncs
-to the Snowflake SILVER schema so dbt can read it in the next step.
+and null handling. Writes the result to the Silver Delta table.
+
+**Open dependency:** dbt reads Snowflake's SILVER schema, so a
+Silver→Snowflake sync must land these rows before `dbt_build` runs. The
+sync mechanism is an open design decision (docs/adr/008-prototype-scope.md);
+it must complete within one hour of `_silver_timestamp` stamping or the
+fct incremental watermark loses rows.
 
 **Failure means:** A data quality issue in Bronze that Silver cleaning
 cannot handle (e.g. a new complaint type that breaks a schema constraint),
@@ -368,81 +379,74 @@ or a Snowflake sync failure. Investigate the Databricks run log.
 """,
     )
 
-    # ── Task 5: dbt agency snapshot (SCD Type 2) ─────────────────────────────
-    # Must run before dbt_run. dim_agency reads from agency_snapshot; without
-    # a preceding snapshot run it reflects the previous state. ADR 007.
+    # ── Task 5: dbt build — the WRITE + AUDIT half of write-audit-publish ─────
+    # One `dbt build` resolves the whole DAG in dependency order: the
+    # agency_snapshot (SCD Type 2) runs before dim_agency, each model's tests
+    # run immediately after the model builds, and a failure skips everything
+    # downstream. Crucially, the audit_suffix var routes every model into
+    # GOLD_AUDIT — production GOLD is untouched until dbt_publish swaps the
+    # audited schema in. Testing after publishing (the previous design) meant
+    # bad data was already live in GOLD by the time a test caught it.
 
-    snapshot_agency = BashOperator(
-        task_id      = "snapshot_agency",
-        bash_command = f"dbt snapshot --select agency_snapshot {_DBT_FLAGS}",
+    dbt_build = BashOperator(
+        task_id      = "dbt_build",
+        bash_command = f"dbt build {_DBT_FLAGS} {_AUDIT_VARS}",
         doc_md       = """\
-## snapshot_agency
+## dbt_build
 
-Runs `dbt snapshot` for `agency_snapshot` (SCD Type 2 for the agency dimension).
-Opens a new version row whenever an agency's name changes in the Silver source.
+Write + audit step. Runs `dbt build` with `audit_suffix=_audit`, which:
 
-**Must precede `dbt_run`** — `dim_agency` reads from the snapshot table.
-If this task is skipped and an agency name changed since the last snapshot,
-`dim_agency` will show the old name until the next snapshot run.
+1. Resolves the full DAG in one command — `agency_snapshot` (SCD Type 2)
+   runs before `dim_agency`, then `stg_service_requests` →
+   `int_service_requests_cleaned` → dims → `fct_service_requests` →
+   `fct_daily_volume`.
+2. Builds every model into **GOLD_AUDIT** (see
+   `dbt/macros/generate_schema_name.sql`). Snapshots are exempt from the
+   suffix — SCD2 state lives in one schema across all runs.
+3. Runs each model's tests immediately after the model builds. A model or
+   test failure halts everything downstream of it and fails this task, so
+   nothing unvalidated ever reaches the publish step.
 
-See ADR 007 for the full SCD Type 2 decision and fan-out risk analysis.
+Reads from Snowflake SILVER schema. Uses the `prod` dbt target
+(TRANSFORMER role, NYC311_WH warehouse).
+
+**Failure means:** either broken SQL (compile/execute error) or a data
+contract violation (test failure) — the dbt log names the failing node
+either way. In both cases production GOLD still holds the last published
+build; no remediation urgency for BI consumers.
+
+**Incremental note:** GOLD_AUDIT always holds the previous production
+build (the publish swap ping-pongs the schemas), so the incremental
+watermark in `fct_service_requests` picks up everything Silver touched
+since that state. The merge is idempotent on `service_request_id`.
 """,
     )
 
-    # ── Task 6: dbt model run ─────────────────────────────────────────────────
-    # dbt_run and dbt_test are deliberately separate tasks so that the Airflow
-    # UI can distinguish a model build failure from a data test failure.
-    # These are operationally different: a build failure means broken SQL;
-    # a test failure means the data violates a contract. Different remediation.
+    # ── Task 6: dbt publish — the PUBLISH half of write-audit-publish ─────────
 
-    dbt_run = BashOperator(
-        task_id      = "dbt_run",
-        bash_command = f"dbt run {_DBT_FLAGS}",
+    dbt_publish = BashOperator(
+        task_id      = "dbt_publish",
+        bash_command = f"dbt run-operation publish_gold {_DBT_FLAGS}",
         doc_md       = """\
-## dbt_run
+## dbt_publish
 
-Runs all dbt models in dependency order:
-`stg_service_requests` → `int_service_requests_cleaned` →
-`dim_agency` / `dim_date` / `dim_location` → `fct_service_requests` →
-`fct_daily_volume`.
+Publish step. Runs the `publish_gold` run-operation
+(`dbt/macros/publish_gold.sql`), which executes:
 
-Reads from Snowflake SILVER schema; writes to GOLD schema.
-Uses the `prod` dbt target (TRANSFORMER role, NYC311_WH warehouse).
+    ALTER SCHEMA GOLD_AUDIT SWAP WITH GOLD
 
-**Failure means:** A model failed to compile or execute. Common causes:
-a schema change in the Silver source that broke a column reference, a
-Snowflake permission error, or a warehouse suspension that didn't
-auto-resume. Check `dbt.log` in the Airflow task log output.
+— a single atomic metadata operation in Snowflake. BI consumers switch
+from the previous build to the fully-audited new build instantaneously;
+there is no window where GOLD holds untested data.
 
-**Note:** This task builds models only. Data quality is validated by the
-separate `dbt_test` task to make failure modes distinguishable in the UI.
-""",
-    )
+Only reachable when `dbt_build` succeeded, i.e. every model built and
+every declared test passed against GOLD_AUDIT.
 
-    # ── Task 7: dbt test ──────────────────────────────────────────────────────
-
-    dbt_test = BashOperator(
-        task_id      = "dbt_test",
-        bash_command = f"dbt test {_DBT_FLAGS}",
-        doc_md       = """\
-## dbt_test
-
-Runs all dbt schema tests (`not_null`, `unique`, `relationships`,
-`accepted_values`, `dbt_utils.expression_is_true`) and singular tests
-(`assert_resolution_days_nonnegative`, `assert_one_current_agency_per_abbreviation`).
-
-A passing run means the Gold dimensional model satisfies all data
-contracts declared in `stg_service_requests.yml` and `marts.yml`.
-
-**Failure means:** Data in the Gold schema violates a declared contract.
-This is a data quality failure, not a pipeline code failure. Investigate
-the specific failing test in the dbt test output — the failing rows are
-returned as a SELECT result. Do not mark the DAG run as successful if
-this task fails; downstream BI consumers should not see untested data.
-
-**SLA note:** If only `dbt_test` fails but `dbt_run` succeeded, the Gold
-tables exist but are unvalidated. Alert the data team before clearing
-this task for retry.
+**Failure means:** a Snowflake permission or metadata error (e.g. the
+TRANSFORMER role lacks OWNERSHIP of one of the schemas). Data is safe:
+GOLD still serves the previous published build. Fix the grant and clear
+this task — GOLD_AUDIT still holds the validated build, so no rebuild is
+needed.
 """,
     )
 
@@ -491,8 +495,7 @@ email) by replacing the echo with a curl call or by adding a
         >> ingest_raw
         >> load_bronze
         >> load_silver
-        >> snapshot_agency
-        >> dbt_run
-        >> dbt_test
+        >> dbt_build
+        >> dbt_publish
         >> notify_success
     )

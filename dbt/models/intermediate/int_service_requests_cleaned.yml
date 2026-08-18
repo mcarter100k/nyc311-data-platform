@@ -9,17 +9,20 @@ models:
       of truth for all mart models — all business logic lives here.
     columns:
 
+      # Uniqueness of service_request_id / unique_key is asserted at the
+      # boundary (stg_service_requests) and on the published artifact
+      # (fct_service_requests). This pass-through layer cannot introduce
+      # duplicates, so repeating the unique tests here would only add two more
+      # full-table scans per `dbt test` with no added signal.
       - name: service_request_id
         description: "MD5 surrogate key inherited from staging. Unique per service request."
         tests:
           - not_null
-          - unique
 
       - name: unique_key
         description: "Natural key from NYC Open Data."
         tests:
           - not_null
-          - unique
 
       - name: borough_clean
         description: >

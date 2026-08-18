@@ -71,8 +71,9 @@ and `is_current` columns. The snapshot table lives in a dedicated `SNAPSHOTS` sc
 - Adding a second slowly-changing dimension in the future follows the same pattern.
 
 **Cons:**
-- The pipeline has two steps where it previously had one: `dbt snapshot` must run before
-  `dbt run` for the agency dimension to reflect the latest source data.
+- The agency dimension gains a build-order dependency: the snapshot must run before
+  `dim_agency` for the dimension to reflect the latest source data. (`dbt build`
+  resolves this automatically — it runs snapshots, models, and tests in DAG order.)
 - `dim_agency` no longer depends directly on `int_service_requests_cleaned` in the dbt
   DAG — it depends on `agency_snapshot`. The lineage test was updated to assert the
   snapshot dependency rather than a direct intermediate dependency.
@@ -92,10 +93,13 @@ and the correctness guarantee is worth more than the simplicity of SCD Type 1.
 
 ### `snapshots/agency_snapshot.sql`
 
-Source query: `SELECT DISTINCT agency_abbreviation, initcap(trim(agency_name))` from
+Source query: `agency_abbreviation, initcap(trim(agency_name))` from
 `int_service_requests_cleaned`, with a `QUALIFY row_number() = 1` to produce exactly
 one row per `agency_abbreviation` per snapshot run (required by the `unique_key`
-constraint).
+constraint). The dedup is ordered by `created_date desc` — the name on the most
+recent request wins — so a rename is visible to the `check` strategy as soon as it
+appears in the source. (Ordering alphabetically would pin whichever variant sorts
+first and could suppress renames indefinitely.)
 
 Configuration:
 ```sql
@@ -120,34 +124,43 @@ Reads from `{{ ref('agency_snapshot') }}`. Exposes:
 | `agency_name`       | VARCHAR | Full name, initcap-normalized. Tracked attribute    |
 | `effective_date`    | DATE    | When this version became active                     |
 | `expiry_date`       | DATE    | When superseded (NULL for the current version)      |
+| `valid_from`        | DATE    | Join-window start; first version backdated to 1900-01-01 |
 | `is_current`        | BOOLEAN | TRUE for exactly one row per abbreviation           |
 
 ### `fct_service_requests.sql`
 
-The agency join is restricted to `AND a.is_current = true`:
+The agency join is point-in-time on the version's validity window:
 
 ```sql
 left join dim_agency a
     on r.agency_abbreviation = a.agency_abbreviation
-   and a.is_current = true
+   and cast(r.created_date as date) >= a.valid_from
+   and cast(r.created_date as date) <  coalesce(a.expiry_date, '9999-12-31'::date)
 ```
 
-Without this filter, the SCD2 table fans out the fact: a service request for an agency
-with two historical name versions would produce two rows in the fact table — one per
-version. The `is_current = true` restriction pins the join to the current version,
-ensuring a 1:1 relationship between service requests and agency rows.
+The windows are half-open and non-overlapping, so each request matches at most one
+version — no fan-out — and the version assigned is the one in effect on the request's
+`created_date`. This makes the join **idempotent**: an incremental run and a
+`--full-refresh` assign the same `agency_key` for the same inputs. (The earlier
+design joined on `is_current = true`, which pinned every newly-merged row to
+whatever version happened to be current at load time — a full refresh would
+silently reassign all history to current keys.)
+
+`valid_from` equals `effective_date` except on each agency's first version, which is
+backdated to 1900-01-01: the snapshot only starts observing an agency on its first
+run, but requests created before that date still belong to the earliest known version.
 
 The `agency_id` column in `fct_service_requests` carries `agency_key` (the versioned
-surrogate). Historical fact rows retain the `agency_key` from the version that was
-current when they were last merged by Silver. Old `agency_key` values continue to
-resolve the FK because SCD2 never deletes expired dimension rows.
+surrogate). Historical fact rows point at expired versions (`is_current = false`);
+those keys always resolve because SCD2 never deletes expired dimension rows.
 
 ### Singular test
 
 `dbt/tests/assert_one_current_agency_per_abbreviation.sql` verifies that exactly one
-`is_current = true` row exists per `agency_abbreviation`. This constraint is what makes
-the `fct_service_requests` join safe. A violation (zero or two current rows) would be
-caught before any BI consumer sees corrupted data.
+`is_current = true` row exists per `agency_abbreviation`. A violation (zero or two
+current rows) means the snapshot's version chain is corrupted — its validity windows
+would overlap, which is the one condition that could fan out the point-in-time join —
+so it is caught before any BI consumer sees corrupted data.
 
 ## What triggers a new version
 
@@ -165,19 +178,23 @@ stores the abbreviation that appeared in the API response at ingestion time.
 ## Consequences
 
 **Positive:**
-- Historical service requests resolve to the agency name that was active at load time.
+- Historical service requests resolve to the agency name that was in effect when the
+  request was created, regardless of when or how often the fact table is rebuilt.
 - Agency name changes are auditable: query `dim_agency WHERE agency_abbreviation = 'X'`
   to see the full version history.
 - The singular test catches any snapshot bug that produces two active rows, before it
   fans out the fact table join.
 
 **Negative / accepted risks:**
-- `dbt snapshot` must run before `dbt run` in the Airflow DAG. If a dbt run is
-  executed without a preceding snapshot, `dim_agency` reflects the previous snapshot
-  state — agency names updated in Silver since the last snapshot won't appear yet.
-  Mitigation: Airflow task dependency `snapshot_agency >> dbt_run` enforces ordering.
-- New service requests load with `agency_id = agency_key` of the currently-active
-  version. If the Airflow snapshot step is skipped and an agency name changed, those
-  fact rows will carry the old `agency_key` until the snapshot runs. This is a
-  short-term inconsistency, not data loss — the snapshot run corrects it and the
-  next incremental dbt run picks up the new key.
+- The snapshot must run before `dim_agency` builds, or the dimension reflects the
+  previous snapshot state — agency names updated in Silver since the last snapshot
+  won't appear yet. Mitigation: the Airflow `dbt_build` task uses `dbt build`, which
+  runs snapshots, models, and tests in DAG order in one command; the same holds for
+  anyone running `dbt build` locally.
+- A rename is only versioned when the snapshot next runs. Requests created between
+  the rename appearing in Silver and the next snapshot run fall inside the
+  still-open window of the previous version until then. This is a short-term
+  inconsistency, not data loss — once the snapshot opens the new version, the next
+  incremental merge (or any full refresh) assigns those rows the correct key,
+  because the point-in-time join is a pure function of `created_date` and the
+  version windows.

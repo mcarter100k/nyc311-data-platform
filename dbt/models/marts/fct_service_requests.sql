@@ -48,8 +48,9 @@ joined as (
 
         -- ── Foreign keys ──────────────────────────────────────────────────────
         -- agency_key is the SCD2 version-specific surrogate from dim_agency.
-        -- The dim_agency join is restricted to is_current=true (see below) so
-        -- this always carries the key of the version active at load time.
+        -- The point-in-time join (see below) assigns the version in effect on
+        -- the request's created_date, so incremental runs and --full-refresh
+        -- produce identical keys for identical inputs.
         a.agency_key                                                        as agency_id,
         d.date_id                                                               as created_date_id,
         l.location_id,
@@ -59,6 +60,13 @@ joined as (
         r.complaint_category,
         r.descriptor,
         r.channel_type,
+
+        -- ── Coordinates ───────────────────────────────────────────────────────
+        -- Carried through to Gold so geo analysis (heat maps, spatial joins)
+        -- doesn't have to reach back into Silver. NULL where the address
+        -- couldn't be geocoded (~15% of records).
+        r.latitude,
+        r.longitude,
 
         -- ── Dates ─────────────────────────────────────────────────────────────
         r.created_date,
@@ -85,16 +93,27 @@ joined as (
         end                                                                     as is_overdue,
 
         -- ── Audit ─────────────────────────────────────────────────────────────
-        r._loaded_at
+        r._loaded_at,
+        -- schema_version is stamped in the staging view, where it is evaluated
+        -- at query time — it only becomes durable here, when the incremental
+        -- merge writes it into a physical row. After the var is bumped, rows not
+        -- touched by later merges keep the version they were built under.
+        -- (A --full-refresh restamps all history with the current version.)
+        r.schema_version
 
     from requests r
 
-    -- Restrict to the current version so the join returns exactly one dim_agency
-    -- row per agency_abbreviation. Without is_current=true, the SCD2 table would
-    -- fan out the fact: one row per historical name change per service request.
+    -- Point-in-time SCD2 join: pick the agency version whose validity window
+    -- [valid_from, expiry_date) contains the request's created_date. Windows are
+    -- half-open and non-overlapping, so each request matches at most one version
+    -- (no fan-out), and the assignment is a pure function of the inputs — an
+    -- incremental run and a --full-refresh produce the same agency_id for the
+    -- same row. valid_from backdates each agency's first version, so requests
+    -- created before the first snapshot run still join to a version.
     left join dim_agency a
         on r.agency_abbreviation = a.agency_abbreviation
-       and a.is_current = true
+       and cast(r.created_date as date) >= a.valid_from
+       and cast(r.created_date as date) <  coalesce(a.expiry_date, '9999-12-31'::date)
 
     left join dim_date d
         on cast(r.created_date as date) = d.full_date

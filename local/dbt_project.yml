@@ -1,0 +1,30 @@
+name: 'nyc311_local'
+version: '1.0.0'
+config-version: 2
+
+profile: 'nyc311_local'
+
+model-paths:    ["models"]
+test-paths:     []
+macro-paths:    ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path:   "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  nyc311_local:
+    staging:
+      +materialized: view
+    intermediate:
+      # Table for parity with the Snowflake project: three models read this,
+      # and the ILIKE classification should compute once, not per consumer.
+      +materialized: table
+    marts:
+      +materialized: table
+      +schema: gold
+
+vars:
+  min_date: '2010-01-01'
+  max_date: '2030-12-31'
+  schema_version: '1'

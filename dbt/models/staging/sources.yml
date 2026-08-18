@@ -5,8 +5,11 @@ sources:
     description: >
       Cleaned and typed Silver layer produced by the Databricks Bronze→Silver PySpark
       pipeline. Tables in this schema are deduplicated, fully typed, and partitioned
-      by ingestion date in ADLS before being synced to Snowflake via Snowpipe or
-      the Databricks Snowflake connector.
+      by ingestion date in ADLS. They must be synced into this Snowflake schema by a
+      mechanism that is an open design decision (Snowpipe, the Databricks Snowflake
+      connector, or external tables — see docs/adr/008-prototype-scope.md). Whatever
+      is chosen must land rows less than one hour after _silver_timestamp is stamped,
+      or the fct_service_requests incremental watermark silently loses them.
     database: "{{ env_var('SNOWFLAKE_DATABASE', 'NYC311_DB') }}"
     schema: SILVER
 

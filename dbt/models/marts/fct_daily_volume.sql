@@ -37,7 +37,10 @@ aggregated as (
         d.quarter,
         d.is_weekend,
         d.is_federal_holiday,
-        l.borough,
+        -- The dim_location join is LEFT, so l.borough is NULL whenever a fact
+        -- row carries no location_id. Fold those into the UNSPECIFIED bucket so
+        -- the grain key stays non-null and no volume is silently dropped.
+        coalesce(l.borough, 'UNSPECIFIED')                                      as borough,
         f.complaint_category,
 
         -- ── Volume metrics ────────────────────────────────────────────────────
@@ -75,7 +78,7 @@ aggregated as (
         d.quarter,
         d.is_weekend,
         d.is_federal_holiday,
-        l.borough,
+        coalesce(l.borough, 'UNSPECIFIED'),
         f.complaint_category
 
 ),

@@ -100,11 +100,16 @@ Rejected because split orchestration is architecturally worse than a single unif
 **Apache Airflow** with a single DAG (`nyc311_pipeline`) in `airflow/dags/nyc311_pipeline.py`.
 
 The DAG implements the `check_api_availability >> ingest_raw >> load_bronze >> load_silver
->> dbt_run >> dbt_test >> notify_success` dependency chain using:
+>> dbt_build >> dbt_publish >> notify_success` dependency chain using:
 - `HttpSensor` (mode=reschedule) as the pipeline gate
 - `DatabricksRunNowOperator` for all three Databricks jobs, with `notebook_params`
   passing the execution date for idempotent replay
-- `BashOperator` for `dbt run` and `dbt test` as separate tasks (build failure ≠ test failure)
+- `BashOperator` for the dbt stage, structured as write-audit-publish: `dbt build`
+  (with the `audit_suffix` var) builds and tests every model in the `GOLD_AUDIT`
+  schema — snapshots, models, and tests resolve in one command in DAG order — then
+  the `publish_gold` run-operation atomically swaps the audited schema into `GOLD`
+  (`ALTER SCHEMA ... SWAP WITH`). A failed model or test halts before publish, so
+  BI consumers never see unvalidated data.
 - `on_failure_callback` for structured alerting
 - `sla_miss_callback` for SLA monitoring against the 2-hour completion window
 
