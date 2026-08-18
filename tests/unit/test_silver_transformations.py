@@ -72,7 +72,7 @@ def test_borough_standardization(spark):
         ("b2", "Bklyn",          "BROOKLYN"),
         ("b3", "brooklyn",       "BROOKLYN"),
         ("b4", "BK",             "BROOKLYN"),
-        ("b5", "KINGS",          "QUEENS"),
+        ("b5", "KINGS",          "BROOKLYN"),
         ("b6", "Kings County",   "BROOKLYN"),
         # MANHATTAN variants
         ("m1", "MANHATTAN",      "MANHATTAN"),
