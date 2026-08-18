@@ -39,7 +39,7 @@ jobs:
       # Uploaded before the SLO gate so a breach still leaves the evidence
       # file downloadable for investigation.
       - name: Upload DuckDB artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nyc311-duckdb-${{ github.run_id }}
           path: local/data/nyc311_local.duckdb
