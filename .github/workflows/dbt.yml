@@ -61,3 +61,7 @@ jobs:
 
       - name: Run pytest (excluding PySpark unit tests)
         run: pytest tests/ --ignore=tests/unit -v
+
+      # Fail the build if README counts or links have drifted from the repo.
+      - name: Check README claims against the repo
+        run: python scripts/check_claims.py

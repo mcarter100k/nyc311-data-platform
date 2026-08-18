@@ -426,12 +426,15 @@ print(f"MERGE complete: {num_updated:,} updated, {num_inserted:,} inserted.")
 
 # ── SCD Type 2 pattern — agency dimension (reference only) ────────────────────
 #
-# If agency names change over time and historical accuracy is required, Silver
-# would track an agency SCD Type 2 table. The pattern is shown here; in this
-# pipeline dbt Gold handles the agency dimension (dim_agency.sql), which is
-# SCD Type 1 (latest name wins).
+# In this pipeline, agency SCD Type 2 is implemented in dbt Gold: the
+# agency_snapshot (check strategy on agency_name) feeds dim_agency, and
+# fct_service_requests joins point-in-time on the version validity window.
+# See ADR 007. The Delta MERGE pattern below is the REJECTED alternative
+# (Option B in ADR 007) — kept as reference for what a Silver-side
+# implementation would look like, and why it was not chosen: custom MERGE
+# code for a ~60-row dimension, mixed into the fact-processing notebook.
 #
-# To implement SCD Type 2 for agency at Silver:
+# The rejected Silver-side SCD Type 2 pattern:
 #
 #   from pyspark.sql.window import Window
 #

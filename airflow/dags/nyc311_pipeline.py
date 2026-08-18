@@ -33,7 +33,8 @@ Pipeline architecture
    │  load_silver  (DatabricksRunNowOperator)              │
    │  PySpark cleaning: deduplication on unique_key,       │
    │  type casting, borough standardization, partition     │
-   │  pruning. Writes to Silver Delta; syncs to Snowflake. │
+   │  pruning. Writes to Silver Delta. (Snowflake sync     │
+   │  mechanism deferred — ADR 008.)                       │
    └───────┬──────────────────────────────────────────────┘
            │
    ┌───────▼──────────────────────────────────────────────┐
@@ -347,7 +348,7 @@ that `ingest_raw` wrote the expected files to ADLS before rerunning.
 """,
     )
 
-    # ── Task 4: Silver cleaning and sync ──────────────────────────────────────
+    # ── Task 4: Silver cleaning ───────────────────────────────────────────────
 
     load_silver = DatabricksRunNowOperator(
         task_id                = "load_silver",
@@ -361,8 +362,13 @@ that `ingest_raw` wrote the expected files to ADLS before rerunning.
 Triggers the Databricks **Silver** job (notebook `03_silver.py`).
 Reads the Bronze Delta partition for this date and applies:
 deduplication on `unique_key`, type casting, borough name standardization,
-and null handling. Writes the result to the Silver Delta table and syncs
-to the Snowflake SILVER schema so dbt can read it in the next step.
+and null handling. Writes the result to the Silver Delta table.
+
+**Open dependency:** dbt reads Snowflake's SILVER schema, so a
+Silver→Snowflake sync must land these rows before `dbt_build` runs. The
+sync mechanism is an open design decision (docs/adr/008-prototype-scope.md);
+it must complete within one hour of `_silver_timestamp` stamping or the
+fct incremental watermark loses rows.
 
 **Failure means:** A data quality issue in Bronze that Silver cleaning
 cannot handle (e.g. a new complaint type that breaks a schema constraint),
