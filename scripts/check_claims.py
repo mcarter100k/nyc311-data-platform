@@ -104,6 +104,34 @@ def check_markers(readme_text: str, expected: dict) -> list:
     return errors
 
 
+SLO_DOC = os.path.join(ROOT, "docs", "SLO.md")
+SLO_BLOCK_RE = re.compile(r"<!--slo-sql:([^\s>]+)-->\s*```sql\n(.*?)```", re.S)
+
+
+def check_slo_doc_sync() -> list:
+    # docs/SLO.md reproduces the queries whose executable form lives in
+    # scripts/slo/. Two copies is the numbers-in-six-places bug for SQL —
+    # tolerated only because this check makes them provably identical.
+    if not os.path.exists(SLO_DOC):
+        return []
+    errors = []
+    doc = open(SLO_DOC).read()
+    blocks = SLO_BLOCK_RE.findall(doc)
+    if not blocks:
+        errors.append("docs/SLO.md has no <!--slo-sql:...--> guarded blocks")
+    for rel_path, doc_sql in blocks:
+        full = os.path.join(ROOT, rel_path)
+        if not os.path.exists(full):
+            errors.append(f"SLO doc references missing file: {rel_path}")
+            continue
+        if doc_sql.strip() != open(full).read().strip():
+            errors.append(
+                f"SLO drift: the query shown in docs/SLO.md differs from {rel_path} "
+                f"— edit the .sql file and re-paste it into the doc"
+            )
+    return errors
+
+
 def check_links(readme_text: str) -> list:
     errors = []
     for target in LINK_RE.findall(readme_text):
@@ -118,7 +146,8 @@ def check_links(readme_text: str) -> list:
 def main() -> int:
     readme_text = open(README).read()
     expected = expected_values()
-    errors = check_markers(readme_text, expected) + check_links(readme_text)
+    errors = (check_markers(readme_text, expected) + check_links(readme_text)
+              + check_slo_doc_sync())
 
     if errors:
         print("README claim check FAILED:")

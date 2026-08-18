@@ -1,0 +1,90 @@
+name: Daily Live Run
+
+# 10:00 UTC = 06:00 America/New_York while DST is in effect. GitHub cron has
+# no timezone anchor, so when DST ends the same trigger fires at 05:00 local —
+# accepted drift, documented in ADR 010. workflow_dispatch exists for manual
+# runs and for the post-merge verification of this workflow itself.
+on:
+  schedule:
+    - cron: "0 10 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  daily-run:
+    name: Live fetch, build, SLO check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install pipeline dependencies
+        run: pip install -r local/requirements.txt
+
+      # Trailing-7-day created_date window, hard 150k row cap, no retries
+      # beyond one — any failure here is a red run, never a partial load.
+      # Unauthenticated; set a SOCRATA_APP_TOKEN repo secret to lift API
+      # throttling if the public rate limit ever becomes the bottleneck.
+      - name: Run live pipeline (fetch → bronze → silver → dbt build)
+        run: python local/local_runner.py --live
+
+      # Uploaded before the SLO gate so a breach still leaves the evidence
+      # file downloadable for investigation.
+      - name: Upload DuckDB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nyc311-duckdb-${{ github.run_id }}
+          path: local/data/nyc311_local.duckdb
+          retention-days: 14
+
+      # Executes the same scripts/slo/*.sql that docs/SLO.md displays —
+      # check_claims fails CI if those two ever differ, so there is exactly
+      # one copy of each contract query in play.
+      - name: Check SLOs
+        run: python scripts/check_slos.py local/data/nyc311_local.duckdb --report slo_report.md
+
+      - name: File or update breach issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create daily-run-breach \
+            --description "Scheduled daily run failed or missed an SLO" \
+            --color B60205 --force || true
+
+          {
+            echo "## Daily run failed — $(date -u +%F)"
+            echo ""
+            echo "Run: $RUN_URL"
+            echo ""
+            if [ -f slo_report.md ]; then
+              echo "SLO measurements from this run:"
+              echo ""
+              cat slo_report.md
+            else
+              echo "The pipeline failed before the SLO check ran (fetch, build,"
+              echo "or dbt tests) — see the run log above for the failing stage."
+            fi
+          } > breach_body.md
+
+          # One open issue per breach stream: comment on the existing one
+          # rather than opening a duplicate every day a breach persists.
+          existing=$(gh issue list --label daily-run-breach --state open \
+                       --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file breach_body.md
+          else
+            gh issue create \
+              --title "Daily run breach: $(date -u +%F)" \
+              --label daily-run-breach \
+              --body-file breach_body.md
+          fi
