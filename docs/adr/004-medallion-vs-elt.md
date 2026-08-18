@@ -115,6 +115,7 @@ that successfully wrote to Bronze. Replay from any checkpoint is safe because:
 **Two compute environments.** Running both Databricks and Snowflake adds cost and
 operational surface area compared to a pure-ELT Snowflake-only architecture. At this
 project's data scale (~35M rows from NYC 311 historical dataset), the Databricks cluster
+*(Correction, 2026-08-18: figures describe the pre-split dataset; erm2-nwe9 has covered 2020–present, ~22M rows, since the city's Dec 2025 split. Decision unaffected.)*
 cost for Bronze→Silver processing is a few dollars per run. The incremental operational
 complexity is accepted as a deliberate portfolio showcase of distributed compute skills.
 
