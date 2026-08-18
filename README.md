@@ -187,7 +187,7 @@ Provisions the complete Snowflake hierarchy from scratch:
 ---
 
 <a name="test-suite"></a>
-## Test Suite — <!--claim:test_count-->102<!--/claim--> Tests, Zero Live Credentials Required
+## Test Suite — <!--claim:test_count-->108<!--/claim--> Tests, Zero Live Credentials Required
 
 The suite has three tiers, none of which connects to Snowflake, Databricks, or Azure (the total above is recomputed by `scripts/check_claims.py` in CI — the build fails if this section drifts):
 
