@@ -37,6 +37,7 @@ README. Counts and links are additionally checked mechanically in CI by
 | Publish swap keeps reporter access (symmetric grants — spec) | `docs/adr/009-publish-grants-under-schema-swap.md` (Terraform follow-up listed there) | none until the Terraform lands — tracked in ADR 009 |
 | README counts (tests, ADRs, fact models) and links match the repo | marker system in `README.md` | `scripts/check_claims.py` in CI (`.github/workflows/dbt.yml`) |
 | Gold output agrees with the source, not just with itself: layer conservation, independently recomputed metrics, exact timestamps, live API spot-check | the full transform stack (`local_runner.py` + `local/models/`) | `local/reconcile.py` — run after any local pipeline run; exit 0 = reconciled |
+| The local/ DuckDB mirror tracks the dbt/ models — every intentional dialect divergence is registered; unregistered drift fails the build | `scripts/model_drift_baseline.json` (the divergence register) | `scripts/check_model_drift.py` in CI (`.github/workflows/dbt.yml`) |
 
 ## Deleted from the README rather than listed here
 

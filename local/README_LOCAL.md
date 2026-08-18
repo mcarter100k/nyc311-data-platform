@@ -158,3 +158,14 @@ exact record and field and exits 1.
 This check exists because a run with a fully green test suite once carried a
 4-hour timestamp shift (`utc=True` mislabeling in the runner) that only
 rung 2's exact-timestamp comparison exposed.
+
+## Keeping the mirror honest
+
+These models are a hand-maintained DuckDB mirror of `dbt/` — deliberate
+duplication (it is what makes the behavioral test tier possible), guarded the
+same way the README's numbers are: every intentional dialect divergence
+(`dayofweekiso` vs `isodow`, `merge` vs `delete+insert`, …) is registered in
+`scripts/model_drift_baseline.json`, and `scripts/check_model_drift.py` fails
+CI if the two trees drift beyond the register. After an intentional change to
+BOTH sides, re-register with `python scripts/check_model_drift.py --update`
+and let the baseline diff be reviewed like any other code.
