@@ -1,0 +1,4 @@
+requests==2.31.0
+pandas==2.2.2
+dbt-core==1.7.19
+dbt-duckdb==1.7.4

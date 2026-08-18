@@ -17,8 +17,11 @@
 -- QUALIFY deduplicates within the source in case multiple service requests
 -- for the same agency_abbreviation carry slightly different agency_name strings
 -- in the same snapshot run (e.g., casing variants that survived Silver).
--- We pick the alphabetically first name; real name changes produce a new
--- version on the next run once the Silver data stabilises.
+-- We pick the name on the MOST RECENT request (order by created_date desc):
+-- when an agency is renamed, the new name wins the dedup as soon as it appears,
+-- so the check strategy can actually detect the rename. Ordering by name would
+-- pin whichever variant sorts first and suppress renames that sort later.
+-- agency_name is the deterministic tiebreak for requests created at the same time.
 
 select
     agency_abbreviation,
@@ -31,7 +34,7 @@ where agency_abbreviation is not null
 
 qualify row_number() over (
     partition by agency_abbreviation
-    order by agency_name
+    order by created_date desc, agency_name
 ) = 1
 
 {% endsnapshot %}

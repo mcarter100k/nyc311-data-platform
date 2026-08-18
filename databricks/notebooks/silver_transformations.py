@@ -124,6 +124,37 @@ def deduplicate_on_unique_key(df: DataFrame) -> DataFrame:
     )
 
 
+def quarantine_partition_predicate(run_date: str) -> str:
+    """replaceWhere predicate for the per-run overwrite of the quarantine table.
+
+    Must reference `_run_date` — the Bronze audit column that quarantined
+    records actually carry. The record DataFrames have no bare `run_date`
+    column; a predicate naming one makes the first genuinely quarantined
+    record fail the whole Silver job with an unresolved-column error.
+    """
+    return f"_run_date = '{run_date}'"
+
+
+def select_quarantine(df: DataFrame) -> DataFrame:
+    """Rows failing critical checks, labeled with quarantine_reason.
+
+    Critical checks (quarantine, not just warn):
+      - null unique_key: cannot be MERGEd without a natural key
+      - negative resolution_days: closed_date < created_date; corrupts metrics
+    """
+    df_null_key = df.filter(
+        F.col("unique_key").isNull()
+    ).withColumn("quarantine_reason", F.lit("null_unique_key"))
+
+    df_neg_resolution = df.filter(
+        F.col("unique_key").isNotNull()
+        & F.col("resolution_days").isNotNull()
+        & (F.col("resolution_days") < 0)
+    ).withColumn("quarantine_reason", F.lit("negative_resolution_days"))
+
+    return df_null_key.union(df_neg_resolution)
+
+
 def failure_rate(failed: int, checked: int) -> float:
     """Compute failure rate as a proportion, safe against zero denominators."""
     return round(failed / checked, 6) if checked > 0 else 0.0

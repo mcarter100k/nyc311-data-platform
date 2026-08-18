@@ -38,15 +38,28 @@ final as (
     select
         -- Surrogate key encodes both the agency and the version.
         -- Stable as long as (abbreviation, effective_date) is unchanged.
-        -- When a new version opens, the old agency_key is retained in
-        -- historical fact rows; the FK relationship test still passes because
-        -- old versions are never deleted from this dimension.
+        -- fct_service_requests joins point-in-time on [valid_from, expiry_date),
+        -- so a request keeps the key of the version in effect on its created_date
+        -- regardless of when (or how often) the fact row is rebuilt. Old versions
+        -- are never deleted, so those keys always resolve.
         {{ dbt_utils.generate_surrogate_key(['agency_abbreviation', 'effective_date']) }}
                                             as agency_key,
         agency_abbreviation,
         agency_name,
         effective_date,
         expiry_date,
+        -- valid_from backdates each agency's FIRST version to the beginning of
+        -- time: the snapshot only starts observing an agency on its first run,
+        -- but requests created before that date still belong to the earliest
+        -- known version. Later versions keep their true effective_date.
+        case
+            when row_number() over (
+                partition by agency_abbreviation
+                order by effective_date
+            ) = 1
+            then '1900-01-01'::date
+            else effective_date
+        end                                 as valid_from,
         is_current
 
     from versioned

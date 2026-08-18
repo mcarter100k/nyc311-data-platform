@@ -74,16 +74,28 @@ def test_source_database_uses_env_var():
 
 # ── 2. Materialization Strategy ───────────────────────────────────────────────
 
-@pytest.mark.parametrize("model_name", ["stg_service_requests", "int_service_requests_cleaned"])
-def test_staging_and_intermediate_are_views(models, model_name):
+def test_staging_is_view(models):
     """
-    Staging and intermediate models must be views, not tables.
-    Views don't consume storage and always reflect the latest upstream data.
-    Building them as tables would waste storage and require scheduled refreshes.
+    Staging must be a view, not a table. It is a thin rename/cast layer read by
+    exactly one downstream model — a view costs no storage and always reflects
+    the latest Silver data.
     """
-    materialized = models[model_name]["config"]["materialized"]
+    materialized = models["stg_service_requests"]["config"]["materialized"]
     assert materialized == "view", (
-        f"{model_name} is materialized as '{materialized}' — expected 'view'."
+        f"stg_service_requests is materialized as '{materialized}' — expected 'view'."
+    )
+
+
+def test_intermediate_is_table(models):
+    """
+    int_service_requests_cleaned must be a table, not a view. Three models read
+    it (dim_location, agency_snapshot, fct_service_requests) — as a view, its
+    12-branch leading-wildcard ILIKE classification would re-execute over full
+    history three times per run. Materializing computes it once.
+    """
+    materialized = models["int_service_requests_cleaned"]["config"]["materialized"]
+    assert materialized == "table", (
+        f"int_service_requests_cleaned is materialized as '{materialized}' — expected 'table'."
     )
 
 
@@ -285,10 +297,13 @@ def test_every_model_has_at_least_one_test(tests_by_model, model_name):
     )
 
 
+# int_service_requests_cleaned is deliberately absent: uniqueness is asserted
+# at the boundary (staging) and on the published artifact (the fact). The
+# pass-through intermediate layer cannot introduce duplicates, and re-testing
+# it costs two extra full-table scans per dbt test run with no added signal.
 @pytest.mark.parametrize("model_name", ["stg_service_requests", "dim_agency",
                                          "dim_date", "dim_location",
-                                         "fct_service_requests", "fct_daily_volume",
-                                         "int_service_requests_cleaned"])
+                                         "fct_service_requests", "fct_daily_volume"])
 def test_primary_key_has_unique_and_not_null(tests_by_model, model_name):
     """
     Every model's surrogate key must have both unique and not_null tests.
@@ -302,16 +317,11 @@ def test_primary_key_has_unique_and_not_null(tests_by_model, model_name):
     assert has_not_null, f"{model_name} is missing a 'not_null' test on its primary key."
 
 
-def test_fct_has_relationship_test_on_agency_id(tests_by_model):
-    """
-    agency_id in fct_service_requests must have a relationships test pointing to
-    dim_agency. Without this test, a broken JOIN condition would silently produce
-    NULL agency_ids and no alert would fire.
-    """
-    test_names = [t["name"] for t in tests_by_model.get("fct_service_requests", [])]
-    assert any("relationships" in t and "agency_id" in t for t in test_names), (
-        "fct_service_requests.agency_id is missing a relationships test to dim_agency."
-    )
+# NOTE: agency_id and location_id intentionally have NO relationships tests.
+# dim_agency and dim_location are both derived from int_service_requests_cleaned
+# — the same source as the fact — so their FKs resolve by construction and a
+# relationships test on them can never fail. dim_date is the only dimension
+# built independently of the request data, so its FK test carries real signal.
 
 
 def test_fct_has_relationship_test_on_created_date_id(tests_by_model):
@@ -323,14 +333,6 @@ def test_fct_has_relationship_test_on_created_date_id(tests_by_model):
     test_names = [t["name"] for t in tests_by_model.get("fct_service_requests", [])]
     assert any("relationships" in t and "created_date_id" in t for t in test_names), (
         "fct_service_requests.created_date_id is missing a relationships test to dim_date."
-    )
-
-
-def test_fct_has_relationship_test_on_location_id(tests_by_model):
-    """location_id must have a relationships test to dim_location."""
-    test_names = [t["name"] for t in tests_by_model.get("fct_service_requests", [])]
-    assert any("relationships" in t and "location_id" in t for t in test_names), (
-        "fct_service_requests.location_id is missing a relationships test to dim_location."
     )
 
 

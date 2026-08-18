@@ -143,9 +143,13 @@ Breaking changes require a PR that:
 Additive changes (a new column appearing in a mart) do NOT require a version bump because
 existing downstream consumers are unaffected by the addition of a new column.
 
-The `schema_version` value is stamped into `stg_service_requests` as a literal column on
-every dbt run. This allows pre- and post-breaking-change rows to be distinguished when
-backfilling or comparing historical data.
+The `schema_version` value is selected in `stg_service_requests` as a literal column.
+Because staging is a view, the value there always reflects the current var; it becomes a
+durable per-row stamp in `fct_service_requests`, whose incremental merge writes it into
+physical rows. Rows untouched by later merges keep the version they were built under,
+which is what allows pre- and post-breaking-change rows to be distinguished when
+backfilling or comparing historical data. (A `--full-refresh` restamps all history with
+the current version.)
 
 ## Consequences
 

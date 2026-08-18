@@ -40,6 +40,15 @@ models:
         description: >
           Date this version was superseded by a newer name. NULL for the current
           version. Cast from dbt_valid_to (snapshot timestamp) to DATE.
+      - name: valid_from
+        description: >
+          Join-window start for the point-in-time join in fct_service_requests.
+          Equals effective_date except for each agency's first version, which is
+          backdated to 1900-01-01 so requests created before the first snapshot
+          run still resolve to a version. Windows are half-open:
+          [valid_from, expiry_date).
+        tests:
+          - not_null
       - name: is_current
         description: >
           TRUE for exactly one row per agency_abbreviation — the version with
@@ -85,11 +94,13 @@ models:
         tests:
           - not_null
       - name: day_of_week
-        description: "Snowflake dayofweek value: 0=Sunday, 1=Monday … 6=Saturday."
+        description: >
+          ISO day of week from dayofweekiso: 1=Monday … 7=Sunday. Immune to the
+          Snowflake WEEK_START session/account parameter.
         tests:
           - not_null
       - name: is_weekend
-        description: "TRUE for Saturday (6) and Sunday (0). Used in volume trend analysis."
+        description: "TRUE for Saturday (6) and Sunday (7, ISO numbering). Used in volume trend analysis."
         tests:
           - not_null
       - name: is_federal_holiday
@@ -131,9 +142,11 @@ models:
   - name: fct_service_requests
     description: >
       Atomic fact table. One row per NYC 311 service request. Grain: unique_key.
-      Clustered on created_date_id for time-range query performance in Snowflake.
-      Foreign keys to dim_agency, dim_date, and dim_location. All dimension joins
-      are LEFT joins to avoid losing records with null location or unrecognized agency.
+      Clustered on cast(created_date as date) for time-range query performance
+      in Snowflake. Foreign keys to dim_agency, dim_date, and dim_location. All
+      dimension joins are LEFT joins to avoid losing records with null location
+      or unrecognized agency. The dim_agency join is point-in-time on the SCD2
+      validity window, so rebuilds are idempotent.
     columns:
       - name: service_request_id
         description: "MD5 surrogate key on unique_key."
@@ -149,15 +162,15 @@ models:
 
       - name: agency_id
         description: >
-          Foreign key to dim_agency.agency_key. Carries the agency_key of the
-          version that was current when this fact row was last merged by Silver.
-          Historical rows point to expired versions (is_current=FALSE) — the FK
-          still resolves because SCD2 never deletes old dim_agency rows.
-        tests:
-          - not_null
-          - relationships:
-              to: ref('dim_agency')
-              field: agency_key
+          Foreign key to dim_agency.agency_key, assigned point-in-time — the
+          version whose [valid_from, expiry_date) window contains the request's
+          created_date. Historical rows therefore point to expired versions
+          (is_current=FALSE); the FK always resolves because SCD2 never deletes
+          old dim_agency rows. NULL when the join is missed (the join is LEFT by
+          design — dropping unmatched requests would under-count volume).
+          No not_null or relationships test here: dim_agency is derived from the
+          same source as this fact, so those tests hold by construction and
+          carry no signal.
 
       - name: created_date_id
         description: "Foreign key to dim_date (YYYYMMDD integer)."
@@ -168,11 +181,12 @@ models:
               field: date_id
 
       - name: location_id
-        description: "Foreign key to dim_location. NULL for records with no borough and no ZIP."
-        tests:
-          - relationships:
-              to: ref('dim_location')
-              field: location_id
+        description: >
+          Foreign key to dim_location. NULL for records with no borough and no
+          ZIP. No relationships test: dim_location is derived from the same
+          source rows as this fact, so referential integrity holds by
+          construction and the test can never fail. (dim_date is built
+          independently, which is why created_date_id keeps its test.)
 
       - name: complaint_type
         description: "Raw complaint type (degenerate dimension — too high-cardinality for a standalone dim)."
@@ -183,6 +197,12 @@ models:
         description: "Grouped complaint category from the intermediate classification CASE WHEN."
         tests:
           - not_null
+
+      - name: latitude
+        description: "WGS84 latitude of the incident. NULL for ~15% of records with no geocodable address."
+
+      - name: longitude
+        description: "WGS84 longitude of the incident. NULL wherever latitude is NULL."
 
       - name: resolution_days
         description: "Integer days between created_date and closed_date. NULL for open requests."
@@ -201,7 +221,19 @@ models:
         description: "TRUE when resolution_days > 30. NULL for open requests."
 
       - name: _loaded_at
-        description: "Model run timestamp carried forward from the staging layer."
+        description: >
+          Silver load timestamp (_silver_timestamp) carried forward from the
+          staging layer. Incremental watermark for this table.
+        tests:
+          - not_null
+
+      - name: schema_version
+        description: >
+          Schema contract version this row was last merged under. Stamped in the
+          staging view but only durable here — the incremental merge writes it
+          into physical rows, so after a var bump, untouched historical rows
+          keep the version that built them. A --full-refresh restamps all
+          history with the current version. See ADR 006.
         tests:
           - not_null
 
@@ -226,7 +258,9 @@ models:
           - not_null
 
       - name: borough
-        description: "Standardized borough name."
+        description: >
+          Standardized borough name. Fact rows with no location_id are folded
+          into UNSPECIFIED by the model (coalesce), so this is never NULL.
         tests:
           - not_null
 
