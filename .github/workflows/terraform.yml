@@ -5,6 +5,14 @@ on:
     paths:
       - 'terraform/**'
 
+# Least-privilege and superseded-run cancellation, matching dbt-docs.yml.
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate:
     name: Format check and validate

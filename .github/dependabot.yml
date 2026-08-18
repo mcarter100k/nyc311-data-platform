@@ -1,0 +1,35 @@
+# Weekly dependency updates. Minor + patch releases arrive grouped per
+# ecosystem (one PR, not one per package); majors arrive solo so a breaking
+# bump is never buried inside a routine batch.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: pip
+    directory: /dbt
+    schedule:
+      interval: weekly
+    groups:
+      dbt-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: pip
+    directory: /local
+    schedule:
+      interval: weekly
+    groups:
+      local-minor-patch:
+        update-types:
+          - minor
+          - patch

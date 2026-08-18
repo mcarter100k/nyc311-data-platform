@@ -1,0 +1,179 @@
+name: CI
+
+# Three parallel, independently-required checks — one per failure class:
+#   fast-gate         — contract drift: dbt parse, structural pytest, claim /
+#                       mirror checkers, workflow lint. Fails when the repo
+#                       stops agreeing with itself.
+#   unit-pyspark      — Silver transform logic on a real SparkSession. Fails
+#                       when the transformation code is wrong.
+#   behavioral-duckdb — the dbt models built twice against seeded DuckDB.
+#                       Fails when Gold semantics (watermark, SCD2 join,
+#                       upsert) regress.
+# No `needs:` between them: a red check names its failure class directly,
+# and total wall time is the slowest tier, not the sum. See ADR 011.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  fast-gate:
+    name: fast-gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dbt
+        run: pip install -r dbt/requirements.txt
+
+      # profiles.yml is gitignored (it holds credentials in real environments).
+      # Write a placeholder profile at runtime — dbt parse validates the profile
+      # schema but never opens a Snowflake connection.
+      - name: Write mock CI profiles.yml
+        run: |
+          cat > dbt/profiles.yml << 'EOF'
+          nyc311:
+            target: ci
+            outputs:
+              ci:
+                type: snowflake
+                account: "placeholder.us-east-1"
+                user: ci_user
+                password: ci_password
+                role: NYC311_TRANSFORMER
+                database: NYC311_DB
+                warehouse: NYC311_WH
+                schema: gold
+                threads: 1
+                client_session_keep_alive: false
+          EOF
+
+      - name: dbt deps
+        run: dbt deps --profiles-dir . --project-dir . --no-version-check
+        working-directory: dbt
+
+      - name: dbt parse (compile without connecting)
+        # dbt compile triggers a Snowflake connection even with placeholder credentials.
+        # dbt parse validates the project and writes the manifest with no DB connection —
+        # the same approach used by run_tests.sh locally.
+        run: dbt parse --profiles-dir . --project-dir . --target ci --no-version-check
+        working-directory: dbt
+
+      - name: Install test dependencies
+        run: |
+          pip install pytest pyyaml
+          pip install pytest-github-actions-annotate-failures || true
+
+      # The unit and local tiers have their own jobs; collecting them here
+      # would only re-report their conftest skips as noise.
+      - name: Structural pytest
+        run: pytest tests/ --ignore=tests/unit --ignore=tests/local -q
+
+      # Fail the build if README counts or links have drifted from the repo.
+      - name: Check README claims against the repo
+        run: python scripts/check_claims.py
+
+      # Fail the build if the dbt/ and local/ model mirrors drifted apart
+      # beyond their registered dialect divergences.
+      - name: Check dbt/local model mirror drift
+        run: python scripts/check_model_drift.py
+
+      # Unconditional rather than diff-guarded: it finishes in seconds, and a
+      # changed-files condition would add a third-party dependency this repo
+      # doesn't otherwise carry.
+      - name: actionlint (workflow lint)
+        env:
+          # shellcheck (present on ubuntu runners, so actionlint engages it)
+          # gates at warning+ only: its info/style advisories first fired on
+          # dbt-docs.yml, the house-standard file this workflow must not
+          # rewrite. Real script defects still fail. ADR 011.
+          SHELLCHECK_OPTS: --severity=warning
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
+  unit-pyspark:
+    name: unit-pyspark
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Pinned here, not in a requirements file: pyspark is a CI-only concern
+      # for this repo (the notebooks run on Databricks runtimes; local devs
+      # may skip the tier). 3.5.1 + Temurin 17 is the combination the tier
+      # was verified against. Recorded in ADR 011.
+      - name: Install pyspark and test dependencies
+        run: pip install "pyspark==3.5.1" pytest
+
+      - name: PySpark unit tests
+        run: pytest tests/unit -v -ra --junitxml=unit-report.xml
+
+      # tests/unit/conftest.py importorskips pyspark so laptops without it
+      # skip gracefully — which is exactly how this tier silently never ran
+      # in CI before this workflow existed. Here, a skip (or an empty
+      # collection) is a red build, never a pass.
+      - name: Enforce zero skips
+        run: |
+          python - << 'EOF'
+          import xml.etree.ElementTree as ET
+          root = ET.parse("unit-report.xml").getroot()
+          suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+          tests = sum(int(s.get("tests", 0)) for s in suites)
+          skipped = sum(int(s.get("skipped", 0)) for s in suites)
+          assert tests > 0, "zero unit tests collected — the tier is hollow"
+          assert skipped == 0, f"{skipped} test(s) skipped — this job exists so importorskip can never hollow it out"
+          print(f"{tests} unit tests ran, 0 skipped")
+          EOF
+
+  behavioral-duckdb:
+    name: behavioral-duckdb
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # local/requirements.txt carries the pins (dbt-duckdb==1.7.4,
+      # dbt-core==1.7.19) plus pandas/requests, which the live-fetch unit
+      # tests need just to import local_runner.
+      - name: Install pipeline and test dependencies
+        run: |
+          pip install -r local/requirements.txt
+          pip install pytest
+
+      # Builds the local/ dbt project twice against a seeded DuckDB database:
+      # incremental watermark + lookback boundary, snapshot rename detection,
+      # SCD2 point-in-time join, upsert propagation, and the mocked live-fetch
+      # contract tests.
+      - name: Behavioral tests
+        run: pytest tests/local -v
