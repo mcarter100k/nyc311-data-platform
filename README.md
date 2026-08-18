@@ -4,8 +4,9 @@
 [![Terraform](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/terraform.yml/badge.svg)](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/terraform.yml)
 [![Daily Live Run](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/daily-run.yml/badge.svg)](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/daily-run.yml)
 
-> A **reference implementation** of a data platform for NYC 311 service requests — a ~35M-row
-> public dataset ([NYC Open Data, erm2-nwe9](https://data.cityofnewyork.us/Social-Services/311-Service-Requests-from-2010-to-Present/erm2-nwe9)).
+> A **reference implementation** of a data platform for NYC 311 service requests — a ~22M-row
+> public dataset covering 2020 to present ([NYC Open Data, erm2-nwe9](https://data.cityofnewyork.us/Social-Services/311-Service-Requests-from-2020-to-Present/erm2-nwe9);
+> in Dec 2025 the city split 2010–2019 into a separate historical dataset).
 > The full Bronze→Silver→Gold flow runs end-to-end on a laptop against DuckDB
 > ([local/local_runner.py](local/local_runner.py)); the cloud deployment is specified in
 > Terraform, Databricks notebooks, and an Airflow DAG, but deliberately **not provisioned**
@@ -33,7 +34,7 @@
 
 New York City fields millions of 311 calls every year — potholes, broken streetlights, noise complaints, rat infestations. All of it is public data. None of it is usable in its raw form.
 
-The source dataset is 35 million rows of messy JSON going back to 2010: duplicate records from API pagination, borough names spelled 15 different ways, timestamps that show a case closing before it was opened, and columns that appear and disappear as the city changes its data entry systems over the years.
+The source dataset is 22 million rows of messy JSON covering 2020 to the present (the city split the earlier decade into a companion historical dataset in December 2025): duplicate records from API pagination, borough names spelled 15 different ways, timestamps that show a case closing before it was opened, and columns that appear and disappear as the city changes its data entry systems over the years.
 
 In that state, you can't answer a basic question like "which borough has the worst response time?" without hours of manual work — and the answer is already stale by the time you have it.
 
@@ -64,7 +65,7 @@ This project was built to show what a senior data engineer / principal architect
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │  NYC Open Data — Socrata API (data.cityofnewyork.us)                │
-│  311 Service Requests · 35M+ rows · updated daily                   │
+│  311 Service Requests · 22M+ rows (2020–present) · daily            │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │ paginated JSON / REST
                                ▼

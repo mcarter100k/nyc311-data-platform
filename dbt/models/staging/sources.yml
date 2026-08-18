@@ -17,7 +17,8 @@ sources:
       - name: service_requests
         description: >
           One row per NYC 311 service request after deduplication on unique_key.
-          Covers the full historical dataset from 2010-01-01 to present.
+          Covers 2020-01-01 to present (~22M rows; in Dec 2025 the city split
+          2010-2019 into a separate historical dataset).
           Schema mirrors the NYC Open Data Socrata export with Databricks type inference
           applied: strings remain VARCHAR, timestamps are TIMESTAMP_NTZ.
         loaded_at_field: _silver_timestamp

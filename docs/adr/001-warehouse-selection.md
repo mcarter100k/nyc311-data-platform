@@ -82,6 +82,7 @@ The interview-defensible framing of this architecture:
 Snowflake on AWS (the default free-trial deployment) incurs Azure egress charges for the
 Silver-to-Snowflake sync performed by the Databricks Silver job. At the scale of the NYC 311
 dataset (~35M rows, ~15 GB), this cost is negligible in development.
+*(Correction, 2026-08-18: figures describe the pre-split dataset; erm2-nwe9 has covered 2020–present, ~22M rows, since the city's Dec 2025 split. Decision unaffected.)*
 
 **At 10× production volume**, the correct mitigation is to deploy Snowflake on Azure in the
 same region as ADLS (East US 2). Snowflake supports Azure as a cloud provider for all tiers.
