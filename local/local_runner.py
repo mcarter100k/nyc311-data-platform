@@ -159,8 +159,12 @@ def stage3_silver() -> None:
     # is_resolved
     df["is_resolved"] = df.get("status", pd.Series(dtype=str)) == "Closed"
 
-    # Quarantine records with negative resolution_days (data entry errors)
-    invalid_mask = df["resolution_days"].notna() & (df["resolution_days"].astype(float) < 0)
+    # Quarantine records with negative resolution_days (data entry errors).
+    # to_numeric, not astype(float): the column is nullable Int64 and astype
+    # raises on pd.NA; to_numeric keeps NA as NaN, which compares False.
+    invalid_mask = df["resolution_days"].notna() & (
+        pd.to_numeric(df["resolution_days"], errors="coerce") < 0
+    )
     n_invalid = int(invalid_mask.sum())
     if n_invalid:
         print(f"  quarantining {n_invalid:,} records with negative resolution_days")
@@ -228,25 +232,21 @@ def _run_dbt(args: list[str]) -> int:
 
 
 def stage4_gold() -> None:
-    _banner("Stage 4 — Gold  (dbt snapshot → run → test)")
+    _banner("Stage 4 — Gold  (dbt build: models + snapshot + tests in DAG order)")
 
     print("\n  Installing dbt packages...")
     _run_dbt(["deps"])
 
-    print("\n  Running agency snapshot (SCD Type 2)...")
-    _run_dbt(["snapshot"])
-
-    print("\n  Building Gold models (full refresh)...")
-    rc_run = _run_dbt(["run", "--full-refresh"])
-    if rc_run != 0:
-        print(f"\n  WARNING: dbt run exited {rc_run}")
-
-    print("\n  Running dbt tests...")
-    rc_test = _run_dbt(["test"])
-    if rc_test != 0:
-        print(f"\n  NOTE: dbt test exited {rc_test} — some tests failed (see above)")
-    else:
-        print("\n  All dbt tests passed.")
+    # dbt build resolves the whole DAG: the agency snapshot runs AFTER the
+    # intermediate model it reads (a bare `dbt snapshot` first fails on a
+    # fresh database — the model does not exist yet), and each model's tests
+    # run right after it builds.
+    print("\n  Building Gold (full refresh)...")
+    rc_build = _run_dbt(["build", "--full-refresh"])
+    if rc_build != 0:
+        print(f"\n  ERROR: dbt build exited {rc_build} — see output above")
+        sys.exit(rc_build)
+    print("\n  Gold built; all dbt tests passed.")
 
 
 # ── Stage 5: Results ───────────────────────────────────────────────────────────

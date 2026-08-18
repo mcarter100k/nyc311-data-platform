@@ -49,7 +49,7 @@ python local_runner.py --stage 5      # reprint results only
 | **1 — Ingest** | Paginates the Socrata API (1,000 rows/request), writes `local/data/raw/nyc311_raw.json` |
 | **2 — Bronze** | Loads JSON into DuckDB `bronze.service_requests` with audit columns |
 | **3 — Silver** | Deduplicates on `unique_key`, standardizes boroughs, computes `resolution_days`, writes `silver.service_requests` and `silver.data_quality_log` |
-| **4 — Gold** | Runs `dbt snapshot` (agency SCD Type 2) then `dbt run --full-refresh` and `dbt test` |
+| **4 — Gold** | Runs `dbt build --full-refresh` — models, the agency SCD Type 2 snapshot, and tests resolve in DAG order in one command |
 | **5 — Results** | Queries the Gold tables and prints five summary tables |
 
 ---
