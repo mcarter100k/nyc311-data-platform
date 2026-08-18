@@ -64,3 +64,4 @@ local/logs/
 *.p8
 .env
 .env.*
+local/.user.yml

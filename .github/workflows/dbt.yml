@@ -66,6 +66,11 @@ jobs:
       - name: Check README claims against the repo
         run: python scripts/check_claims.py
 
+      # Fail the build if the dbt/ and local/ model mirrors drifted apart
+      # beyond their registered dialect divergences.
+      - name: Check dbt/local model mirror drift
+        run: python scripts/check_model_drift.py
+
       # Behavioral tier: build the local/ dbt project twice against a seeded
       # DuckDB database and assert incremental watermark + SCD2 join semantics.
       - name: Run local-gold behavioral tests (dbt-duckdb)
