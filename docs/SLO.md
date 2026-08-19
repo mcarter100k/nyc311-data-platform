@@ -11,7 +11,14 @@ files ever differ.
 
 **Target:** the newest `_loaded_at` in `gold.fct_service_requests` is less than **26 hours** old
 at measurement time. **Window:** point-in-time, measured once per scheduled run. 26 = one daily
-cycle + 2h grace for upstream publish latency.
+cycle + 2h grace for run-time variance (a late or long-running scheduled run).
+
+**What this does and does not measure:** `_loaded_at` is stamped by our own pipeline when
+Silver writes the row, so SLO-1 verifies that *a run recently succeeded in producing rows* —
+pipeline liveness. It is structurally blind to upstream staleness: after any successful run
+the newest `_loaded_at` is minutes old regardless of how stale the city's source data is
+(see the 2026-08-18 postmortem). Source-side staleness is SLO-2's job, which measures
+`created_date` — the city's own timestamps.
 
 <!--slo-sql:scripts/slo/slo1_freshness.sql-->
 ```sql

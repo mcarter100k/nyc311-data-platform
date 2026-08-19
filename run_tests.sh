@@ -37,7 +37,7 @@ echo ""
 echo "► Step 1/2: Rebuilding dbt manifest..."
 cd "$REPO_ROOT/dbt"
 if "$PYTHON" -c "import dbt.cli.main" >/dev/null 2>&1; then
-  "$PYTHON" -m dbt parse --profiles-dir . --project-dir . --target ci --quiet
+  "$PYTHON" -m dbt parse --profiles-dir . --project-dir . --target ci --no-partial-parse --quiet
   echo "  manifest.json refreshed."
 elif [ -f target/manifest.json ]; then
   echo "  WARNING: dbt is not importable by $PYTHON — reusing existing"

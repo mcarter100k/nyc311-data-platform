@@ -31,9 +31,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
           cache: pip
@@ -103,8 +103,19 @@ jobs:
           # dbt-docs.yml, the house-standard file this workflow must not
           # rewrite. Real script defects still fail. ADR 011.
           SHELLCHECK_OPTS: --severity=warning
+        # Version- and checksum-pinned: the previous curl|bash of the
+        # installer from the upstream repo's mutable `main` branch executed
+        # unpinned third-party code inside a required check on every PR —
+        # and, not being an action, it sat outside Dependabot's reach.
+        # Bumping the version means updating BOTH the version and the sha256
+        # (from actionlint_<ver>_checksums.txt on the release page).
         run: |
-          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ver="1.7.12"
+          sha="8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+          curl -fsSLo actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ver}/actionlint_${ver}_linux_amd64.tar.gz"
+          echo "${sha}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
           ./actionlint -color
 
   unit-pyspark:
@@ -112,24 +123,24 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
           cache: pip
 
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: "17"
 
-      # Pinned here, not in a requirements file: pyspark is a CI-only concern
-      # for this repo (the notebooks run on Databricks runtimes; local devs
-      # may skip the tier). 3.5.1 + Temurin 17 is the combination the tier
-      # was verified against. Recorded in ADR 011.
+      # Pinned in tests/unit/requirements.txt (not inline) so Dependabot's
+      # pip ecosystem can see and update it — an inline workflow pin is
+      # invisible to all dependency automation. 3.5.1 + Temurin 17 is the
+      # combination the tier was verified against. Recorded in ADR 011.
       - name: Install pyspark and test dependencies
-        run: pip install "pyspark==3.5.1" pytest
+        run: pip install -r tests/unit/requirements.txt
 
       - name: PySpark unit tests
         run: pytest tests/unit -v -ra --junitxml=unit-report.xml
@@ -156,9 +167,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
           cache: pip

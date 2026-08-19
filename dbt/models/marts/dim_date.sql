@@ -5,6 +5,14 @@
     )
 }}
 
+-- Calendar spine dimension. Grain: one row per day, 2010-01-01 → 2030-12-31
+-- (driven by the min_date / max_date project vars). Time attributes — weekday,
+-- weekend, US federal holidays — are computed once here so every query joins
+-- to the same answer instead of re-deriving its own date math; "was this a
+-- holiday?" must mean the same thing in every dashboard. Generated from a
+-- spine rather than the data so days with zero requests still exist as rows
+-- (a gap in complaint volume is a finding, not a missing join).
+
 with date_spine as (
 
     -- generate_date_spine wraps dbt_utils.date_spine to produce one row per calendar day.
@@ -91,8 +99,10 @@ with_attributes as (
              and dayofweekiso(full_date) = 1
              and dayofmonth(full_date) between 25 and 31
                 then true
-            -- Juneteenth — Jun 19 (federal holiday since 2021)
+            -- Juneteenth — Jun 19, federal holiday since 2021 only: the year
+            -- guard keeps 2010–2020 spine dates correctly unflagged.
             when month(full_date) = 6  and dayofmonth(full_date) = 19
+             and year(full_date) >= 2021
                 then true
             -- Independence Day — Jul 4
             when month(full_date) = 7  and dayofmonth(full_date) = 4

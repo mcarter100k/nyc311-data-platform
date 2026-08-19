@@ -104,22 +104,36 @@ def gold_db(tmp_path_factory):
             run_date VARCHAR, check_name VARCHAR, records_checked BIGINT,
             records_failed BIGINT, failure_rate DOUBLE, pipeline_stage VARCHAR)
     """)
-    con.execute("""
+    # Seeded at TODAY so the mirrored singular test assert_dq_log_is_current
+    # (max(run_date) within a day) passes during every dbt build below.
+    con.execute(f"""
         INSERT INTO silver.data_quality_log
-        VALUES ('2024-01-03', 'null_rate_unique_key', 100, 0, 0.0, 'silver')
+        VALUES ('{TODAY_UTC}', 'null_rate_unique_key', 100, 0, 0.0, 'silver')
     """)
 
-    # ── Phase 1: two requests, one agency name each ──────────────────────────
+    # ── Phase 1: three requests — r6 is valid now, corrected-invalid later ────
     con.execute("INSERT INTO silver.service_requests VALUES " + ",".join([
         _row("r1", "2024-01-02 10:00:00", "2024-01-03 01:00:00",
              "HPD", "Housing Preservation And Development", "Closed", T1),
         _row("r2", "2024-01-03 09:00:00", None,
              "NYPD", "New York City Police Dept", "Open", T1),
+        _row("r6", "2024-01-02 12:00:00", "2024-01-02 18:00:00",
+             "HPD", "Housing Preservation And Development", "Closed", T1),
     ]))
     con.close()
 
     _dbt(["deps"], workdir)
     _dbt(["build"], workdir)          # snapshot v1 + full first build
+
+    # Capture the phase-1 fact keys so tests can prove r6 existed before its
+    # correction — and was therefore DELETED by the reconciliation post_hook,
+    # not merely never built.
+    con = duckdb.connect(str(db_path))
+    phase1_fct_keys = {
+        r[0] for r in con.execute(
+            "SELECT unique_key FROM gold.fct_service_requests").fetchall()
+    }
+    con.close()
 
     # ── Phase 2 mutations ────────────────────────────────────────────────────
     con = duckdb.connect(str(db_path))
@@ -141,6 +155,15 @@ def gold_db(tmp_path_factory):
             closed_date = TIMESTAMP '2024-01-04 04:00:00',
             _silver_timestamp = TIMESTAMP '{T2}'
         WHERE unique_key = 'r2'
+    """)
+    # r6 is CORRECTED so it now fails the quality filter (closed before
+    # created): it disappears from int_service_requests_cleaned, and the
+    # reconciliation post_hook must delete its stale fact row.
+    con.execute(f"""
+        UPDATE silver.service_requests
+        SET closed_date = TIMESTAMP '2024-01-01 06:00:00',
+            _silver_timestamp = TIMESTAMP '{T2}'
+        WHERE unique_key = 'r6'
     """)
     con.close()
 
@@ -176,4 +199,8 @@ def gold_db(tmp_path_factory):
     full_refresh = capture(con)
     con.close()
 
-    return {"incremental": incremental, "full_refresh": full_refresh}
+    return {
+        "phase1_fct_keys": phase1_fct_keys,
+        "incremental": incremental,
+        "full_refresh": full_refresh,
+    }

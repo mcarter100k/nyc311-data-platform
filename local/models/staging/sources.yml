@@ -14,6 +14,16 @@ sources:
           - name: created_date
             tests:
               - not_null
+          # Parity with dbt/models/staging/sources.yml: same source contract
+          # columns tested on both sides. Freshness is not configured here —
+          # local freshness is enforced by SLO-1 (scripts/slo/slo1_freshness.sql)
+          # on every scheduled run instead of `dbt source freshness`.
+          - name: agency
+            tests:
+              - not_null
+          - name: complaint_type
+            tests:
+              - not_null
       - name: data_quality_log
         columns:
           - name: run_date

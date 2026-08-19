@@ -342,7 +342,7 @@ def test_data_quality_metrics(spark):
     r = by_check["null_rate_unique_key"]
     assert r.records_checked == 4
     assert r.records_failed  == 1
-    assert r.failure_rate    == failure_rate(1, 4)
+    assert r.failure_rate    == 0.25      # literal, not failure_rate(1, 4): no self-comparison
     assert r.pipeline_stage  == "silver"
     assert r.run_date        == "2024-01-01"
 
@@ -350,25 +350,25 @@ def test_data_quality_metrics(spark):
     r = by_check["null_rate_created_date"]
     assert r.records_checked == 4
     assert r.records_failed  == 1
-    assert r.failure_rate    == failure_rate(1, 4)
+    assert r.failure_rate    == 0.25      # literal, not failure_rate(1, 4): no self-comparison
 
     # duplicate_rate: 4 bronze rows → 3 after dedup → 1 dropped
     r = by_check["duplicate_rate"]
     assert r.records_checked == 4
     assert r.records_failed  == 1
-    assert r.failure_rate    == failure_rate(1, 4)
+    assert r.failure_rate    == 0.25      # literal, not failure_rate(1, 4): no self-comparison
 
     # invalid_resolution_days: 1 out of 3 deduped rows has resolution_days < 0
     r = by_check["invalid_resolution_days"]
     assert r.records_checked == 3
     assert r.records_failed  == 1
-    assert r.failure_rate    == failure_rate(1, 3)
+    assert r.failure_rate    == 0.333333  # literal round(1/3, 6), not failure_rate(1, 3): no self-comparison
 
     # unrecognized_borough: 1 out of 3 deduped rows has an unrecognized borough
     r = by_check["unrecognized_borough"]
     assert r.records_checked == 3
     assert r.records_failed  == 1
-    assert r.failure_rate    == failure_rate(1, 3)
+    assert r.failure_rate    == 0.333333  # literal round(1/3, 6), not failure_rate(1, 3): no self-comparison
 
 
 # ── 5. Unique-key checksum ────────────────────────────────────────────────────

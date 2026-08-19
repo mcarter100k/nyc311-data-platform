@@ -33,3 +33,14 @@ updates:
         update-types:
           - minor
           - patch
+
+  # The unit-pyspark CI tier's pinned pyspark (tests/unit/requirements.txt).
+  - package-ecosystem: pip
+    directory: /tests/unit
+    schedule:
+      interval: weekly
+    groups:
+      unit-minor-patch:
+        update-types:
+          - minor
+          - patch

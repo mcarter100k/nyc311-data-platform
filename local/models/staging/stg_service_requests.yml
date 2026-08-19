@@ -1,0 +1,128 @@
+version: 2
+
+models:
+  - name: stg_service_requests
+    description: >
+      Thin staging view over the Silver service_requests source table. Renames columns
+      to snake_case dbt conventions, casts all types explicitly, and adds a surrogate key.
+      No business logic is applied here — this model is a stable alias contract between
+      the raw source and all downstream intermediate models.
+    columns:
+      - name: service_request_id
+        description: >
+          MD5 surrogate key generated from unique_key via dbt_utils.generate_surrogate_key.
+          Stable across re-runs for the same unique_key value.
+        tests:
+          - unique
+          - not_null
+
+      - name: unique_key
+        description: "Natural key from NYC Open Data. Numeric string unique per service request."
+        tests:
+          - not_null
+          - unique
+
+      - name: created_date
+        description: "Timestamp (TIMESTAMP_NTZ) when the service request was submitted to 311."
+        tests:
+          - not_null
+
+      - name: closed_date
+        description: >
+          Timestamp when the request was resolved and closed. NULL for all requests with
+          status Open, Pending, In Progress, or Assigned.
+
+      - name: resolution_action_updated_date
+        description: "Last timestamp at which the agency updated the resolution action."
+
+      - name: agency_abbreviation
+        description: "Short code for the responsible agency (e.g. NYPD, DOT, DSNY, DEP, DPR)."
+        tests:
+          - not_null
+
+      - name: agency_name
+        description: "Full name of the responsible city agency."
+
+      - name: complaint_type
+        description: >
+          Primary category assigned by the 311 operator (e.g. Noise - Residential,
+          HEAT/HOT WATER, Illegal Parking). Over 400 distinct values in the dataset.
+        tests:
+          - not_null
+
+      - name: descriptor
+        description: "Sub-category providing additional detail about the complaint type."
+
+      - name: location_type
+        description: "Type of premises where the incident occurred (e.g. Residential Building/House)."
+
+      - name: incident_zip
+        description: "5-digit ZIP code of the incident. NULL for ~3% of records."
+
+      - name: incident_address
+        description: "Street address of the incident. May be cross-street or intersection."
+
+      - name: street_name
+        description: "Primary street name extracted from the incident address."
+
+      - name: city
+        description: "City component — often equals the borough name for NYC records."
+
+      - name: borough
+        description: >
+          Raw borough string from the source. May contain case variants (BROOKLYN, Brooklyn),
+          abbreviations (BK), or UNSPECIFIED. Standardized in the intermediate layer.
+
+      - name: community_board
+        description: "Community board designation in 'NN BOROUGH' format (e.g. '07 BROOKLYN')."
+
+      - name: latitude
+        description: "WGS84 latitude of the incident. NULL for ~15% of records with no geocodable address."
+
+      - name: longitude
+        description: "WGS84 longitude of the incident. NULL wherever latitude is NULL."
+
+      - name: status
+        description: "Current lifecycle status of the service request."
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - 'Open'
+                - 'Closed'
+                - 'Pending'
+                - 'In Progress'
+                - 'Assigned'
+                - 'Started'
+                - 'Unspecified'
+
+      - name: resolution_description
+        description: "Free-text description written by the agency explaining how the request was resolved."
+
+      - name: channel_type
+        description: "Submission channel (PHONE, ONLINE, MOBILE, OTHER, UNKNOWN)."
+
+      - name: _loaded_at
+        description: >
+          Timestamp from Silver's _silver_timestamp column — the moment the
+          PySpark Silver notebook last wrote or updated this row. Used as the
+          incremental watermark in fct_service_requests: on each dbt run, only
+          rows where _loaded_at exceeds the previous run's max are merged in.
+        tests:
+          - not_null
+
+      - name: schema_version
+        description: >
+          Integer string identifying the current schema contract version, set
+          from the dbt_project.yml var `schema_version`. Because this model is a
+          view, the value is evaluated at query time and always shows the
+          current var — it is NOT a durable per-row stamp here. The stamp
+          becomes durable in fct_service_requests, whose incremental merge
+          writes it into each physical row; use that column to compare pre- and
+          post-breaking-change rows when backfilling or validating a schema
+          migration. The var is incremented in a PR whenever a breaking schema
+          change (column removal, rename, or incompatible type change) is
+          deployed to Gold; additive changes do not increment it.
+          See docs/adr/006-schema-evolution.md for the full contract.
+        tests:
+          - not_null
