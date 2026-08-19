@@ -91,6 +91,46 @@ jobs:
       - name: Check SLOs
         run: python scripts/check_slos.py local/data/nyc311_local.duckdb --report slo_report.md
 
+      # WARNING path, not a gate (exit 0 either way): the volume-cliff check
+      # that used to be SLO-2. A city publishing outage no longer reddens
+      # this run — SLO-2 now verifies we loaded everything the source
+      # published — but the stall must stay visible, so a labeled issue is
+      # filed/updated below while the run stays green.
+      - name: Check upstream publish volume (warning only)
+        id: upstream
+        run: python scripts/check_upstream_stall.py local/data/nyc311_local.duckdb --report upstream_report.md
+
+      - name: File or update upstream-stall notice
+        if: steps.upstream.outputs.stall == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create upstream-stall \
+            --description "Source feed published abnormally little data — not a pipeline failure" \
+            --color D93F0B --force || true
+
+          {
+            echo "## Upstream publish stall — $(date -u +%F)"
+            echo ""
+            echo "Run: $RUN_URL (green: the pipeline loaded everything the source published)"
+            echo ""
+            cat upstream_report.md
+          } > stall_body.md
+
+          # Same one-open-issue dedup pattern as the breach stream, separate
+          # label: this thread tracks the CITY's outage, not our failures.
+          existing=$(gh issue list --label upstream-stall --state open \
+                       --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file stall_body.md
+          else
+            gh issue create \
+              --title "Upstream publish stall: $(date -u +%F)" \
+              --label upstream-stall \
+              --body-file stall_body.md
+          fi
+
       - name: File or update breach issue
         if: failure()
         env:

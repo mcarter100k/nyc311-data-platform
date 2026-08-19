@@ -30,6 +30,7 @@ DATA_DIR    = LOCAL_DIR / "data"
 RAW_DIR     = DATA_DIR / "raw"
 DUCKDB_PATH = DATA_DIR / "nyc311_local.duckdb"
 RAW_FILE    = RAW_DIR / "nyc311_raw.json"
+SOURCE_COUNT_FILE = RAW_DIR / "source_count.json"
 
 SOCRATA_ENDPOINT = "https://data.cityofnewyork.us/resource/erm2-nwe9.json"
 PAGE_SIZE        = 1_000
@@ -149,6 +150,54 @@ def fetch_live_records(days: int = LIVE_DAYS, cap: int = LIVE_ROW_CAP, get=None)
     return records
 
 
+def fetch_source_count_yesterday(get=None) -> dict:
+    """Ask the source how many requests IT has for yesterday (UTC).
+
+    This single number is what turns SLO-2 into a reconciliation: our
+    completeness is measured against what the city actually published, not
+    against a historical volume guess. Captured at fetch time — the same
+    API, the same auth, the same one-retry/fail-loud contract as
+    fetch_live_records: if the count query fails, the run fails, because a
+    missing capture would otherwise silently degrade the SLO gate.
+    `get` is injectable for tests.
+    """
+    sys.path.insert(0, str(LOCAL_DIR.parent / "databricks" / "notebooks"))
+    from ingest_config import SOCRATA_URL
+
+    if get is None:
+        get = requests.get
+
+    headers = {"Accept": "application/json"}
+    token = os.environ.get("SOCRATA_APP_TOKEN")
+    if token:
+        headers["X-App-Token"] = token
+
+    target = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
+    params = {
+        "$select": "count(*) as n",
+        "$where": (f"created_date between '{target}T00:00:00.000'"
+                   f" and '{target}T23:59:59.999'"),
+    }
+    for attempt in (1, 2):
+        try:
+            resp = get(SOCRATA_URL, params=params, headers=headers, timeout=60)
+            break
+        except Exception as exc:
+            if attempt == 2:
+                raise RuntimeError(
+                    f"Socrata source-count query failed after one retry: {exc}"
+                ) from exc
+    resp.raise_for_status()
+    payload = resp.json()
+    if not payload or "n" not in payload[0]:
+        raise RuntimeError(f"Socrata source-count query returned no count: {payload!r}")
+    return {
+        "target_date": target,
+        "source_count": int(payload[0]["n"]),
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def stage1_live() -> None:
     _banner(f"Stage 1 — Live ingest  (trailing {LIVE_DAYS} days, cap {LIVE_ROW_CAP:,})")
     RAW_DIR.mkdir(parents=True, exist_ok=True)
@@ -160,6 +209,13 @@ def stage1_live() -> None:
     print(f"  fetched {len(records):,} rows created since "
           f"{(datetime.now(timezone.utc) - timedelta(days=LIVE_DAYS)).date()}")
     print(f"  written: {RAW_FILE.relative_to(LOCAL_DIR)}")
+
+    # Source-side truth for SLO-2's reconciliation (loaded into DuckDB by
+    # stage 3, read by scripts/slo/slo2_completeness.sql).
+    count = fetch_source_count_yesterday()
+    SOURCE_COUNT_FILE.write_text(json.dumps(count))
+    print(f"  source reports {count['source_count']:,} requests created "
+          f"{count['target_date']} (written: {SOURCE_COUNT_FILE.relative_to(LOCAL_DIR)})")
 
 
 # ── Stage 2: Bronze ────────────────────────────────────────────────────────────
@@ -310,6 +366,22 @@ def stage3_silver() -> None:
     n_dq = con.execute("SELECT COUNT(*) FROM silver.data_quality_log").fetchone()[0]
     print(f"  silver.data_quality_log: {len(dq_rows)} checks recorded for "
           f"{run_date} ({n_dq} rows across all runs)")
+
+    # Source counts captured in stage 1 (live mode only) — the reconciliation
+    # target for SLO-2. Accumulates across runs like the DQ log; idempotent
+    # per target_date. NOT a dbt source: no model reads it — it exists solely
+    # for scripts/slo/slo2_completeness.sql.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS silver.source_counts (
+            target_date DATE, source_count BIGINT, captured_at TIMESTAMP)
+    """)
+    if SOURCE_COUNT_FILE.exists():
+        sc = json.loads(SOURCE_COUNT_FILE.read_text())
+        con.execute("DELETE FROM silver.source_counts WHERE target_date = ?",
+                    [sc["target_date"]])
+        con.execute("INSERT INTO silver.source_counts VALUES (?, ?, ?)",
+                    [sc["target_date"], sc["source_count"], sc["captured_at"]])
+        print(f"  silver.source_counts: {sc['source_count']:,} for {sc['target_date']}")
     con.close()
 
 

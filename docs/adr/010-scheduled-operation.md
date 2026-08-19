@@ -68,6 +68,14 @@ same way: red or fully green, never partial.
   rests on SLO-2 (see the 2026-08-18 postmortem). Measured in UTC
   explicitly — the first local evaluation returned `age_hours=-7` because the
   query compared a UTC stamp against session-local time.
+- *(Amended 2026-08-19: SLO-2 was redefined as a source reconciliation — we
+  must load ≥98% of what the city actually published for yesterday, with the
+  source's own count captured at fetch time into silver.source_counts. The
+  original volume-cliff check below was demoted to a non-gating warning
+  (scripts/check_upstream_stall.py, `upstream-stall` issue label): the
+  2026-08-18 publish stall showed it reddens our reliability signal for the
+  city's outages. Detection is preserved — the warning files the issue — but
+  the run only fails when the loss is ours. See docs/SLO.md.)*
 - **SLO-2 completeness: yesterday's created-count ≥ 40% of the prior 7-day
   daily median.** Floor only — completeness guards against missing data, so
   spikes are not breaches. 40% sits below NYC 311's natural weekend/holiday
