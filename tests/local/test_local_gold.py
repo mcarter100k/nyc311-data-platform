@@ -77,6 +77,28 @@ def test_upsert_propagates_status_change(gold_db):
     assert fct["r2"]["is_resolved"] is True
 
 
+def test_correction_reconciliation_deletes_disqualified_row(gold_db):
+    """r6 was VALID in phase 1 (present in the fact) and corrected in phase 2
+    so it now fails the closed-before-created quality filter. Without the
+    reconciliation post_hook the merge would never touch it again and the
+    fact would serve its stale pre-correction values forever — diverging from
+    --full-refresh. Asserts the full lifecycle: built, then deleted, and both
+    build modes agree."""
+    assert "r6" in gold_db["phase1_fct_keys"], (
+        "Precondition broken: r6 must exist in the fact after phase 1 — "
+        "otherwise this test proves nothing about deletion."
+    )
+    assert "r6" not in gold_db["incremental"]["fct"], (
+        "r6 was corrected to closed-before-created but still has a fact row "
+        "after the incremental run — the reconciliation post_hook did not "
+        "delete it, so incremental and full-refresh now diverge."
+    )
+    assert "r6" not in gold_db["full_refresh"]["fct"], (
+        "r6 must not survive a full refresh — the quality filter in "
+        "int_service_requests_cleaned should exclude it at build time."
+    )
+
+
 def test_no_fanout_and_full_refresh_idempotent(gold_db):
     """Grain (one row per service request) survives the SCD2 join: row count
     equals the silver population. And idempotency: a --full-refresh assigns
@@ -84,14 +106,17 @@ def test_no_fanout_and_full_refresh_idempotent(gold_db):
     outputs, regardless of build mode."""
     inc, full = gold_db["incremental"], gold_db["full_refresh"]
 
-    # r4 is excluded by the watermark, so incremental has silver_count - 1 rows.
-    assert inc["fct_rowcount"] == inc["silver_count"] - 1, (
-        f"Row count {inc['fct_rowcount']} != silver {inc['silver_count']} - 1: "
+    # r4 is excluded by the watermark and r6 by the quality filter (corrected
+    # to closed-before-created in phase 2), so incremental has
+    # silver_count - 2 rows.
+    assert inc["fct_rowcount"] == inc["silver_count"] - 2, (
+        f"Row count {inc['fct_rowcount']} != silver {inc['silver_count']} - 2: "
         "the SCD2 join fanned out (or dropped) fact rows."
     )
-    # Full refresh sees everything including r4.
-    assert full["fct_rowcount"] == full["silver_count"], (
-        "Full refresh must contain the entire silver population."
+    # Full refresh sees everything including r4 — but never quarantined r6.
+    assert full["fct_rowcount"] == full["silver_count"] - 1, (
+        "Full refresh must contain the entire silver population minus the "
+        "quality-quarantined r6."
     )
 
     inc_keys = {k: v["agency_id"] for k, v in inc["fct"].items()}

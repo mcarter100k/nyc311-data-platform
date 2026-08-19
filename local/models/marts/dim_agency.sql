@@ -16,6 +16,7 @@ versioned as (
     select
         agency_abbreviation,
         agency_name,
+        dbt_valid_from                      as version_opened_at,
         dbt_valid_from::date                as effective_date,
         dbt_valid_to::date                  as expiry_date,
         (dbt_valid_to is null)              as is_current
@@ -27,7 +28,9 @@ versioned as (
 final as (
 
     select
-        {{ dbt_utils.generate_surrogate_key(['agency_abbreviation', 'effective_date']) }}
+        -- Keyed on the full snapshot timestamp, not effective_date: two
+        -- versions opened the same DAY stay distinct (mirrors dbt/).
+        {{ dbt_utils.generate_surrogate_key(['agency_abbreviation', 'version_opened_at']) }}
                                             as agency_key,
         agency_abbreviation,
         agency_name,
@@ -38,7 +41,7 @@ final as (
         case
             when row_number() over (
                 partition by agency_abbreviation
-                order by effective_date
+                order by version_opened_at
             ) = 1
             then '1900-01-01'::date
             else effective_date

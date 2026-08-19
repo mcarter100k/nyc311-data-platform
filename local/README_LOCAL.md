@@ -99,11 +99,19 @@ are DuckDB-adapted versions with these changes:
 | Production (Snowflake) | Local (DuckDB) |
 |---|---|
 | `::TIMESTAMP_NTZ` | `::TIMESTAMP` |
-| `to_char(date, 'MMMM')` | `strftime(date, '%B')` |
-| `dateadd('day', 1, date)` | `date + INTERVAL '1 day'` |
+| `to_char(date, 'MMMM')` / `decode(...)` | `strftime(date, '%B')` |
+| `dateadd(...)` | `INTERVAL` arithmetic |
+| `dayofweekiso` / `weekiso` | `isodow` / `weekofyear` (ISO-equivalent) |
 | `cluster_by` config | removed (DuckDB has no clustering) |
+| `merge` incremental strategy | `delete+insert` (upsert-equivalent on the unique key) |
+| `initcap(name)` | space-delimited title-casing in the snapshot — **known divergence:** Snowflake's `initcap` also breaks words at hyphens/parens, DuckDB has no `initcap`, so hyphenated agency names normalize differently |
+| `publish_gold` macro (schema swap) | not mirrored — no write-audit-publish locally |
+| explanatory comments | largely stripped |
 
-All other SQL is identical.
+The model `.yml` test suites, the three singular tests in `tests/`, and the
+project vars are mirrored verbatim. The authoritative, machine-checked list of
+every remaining divergence is `scripts/model_drift_baseline.json` — CI fails
+if the trees drift beyond it (see "Keeping the mirror honest" below).
 
 ---
 

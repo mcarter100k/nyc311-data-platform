@@ -69,6 +69,7 @@ with_attributes as (
              and dayofmonth(full_date) between 25 and 31
                 then true
             when month(full_date) = 6  and dayofmonth(full_date) = 19
+             and year(full_date) >= 2021
                 then true
             when month(full_date) = 7  and dayofmonth(full_date) = 4
                 then true

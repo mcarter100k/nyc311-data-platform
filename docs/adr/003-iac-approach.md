@@ -89,8 +89,11 @@ storage account access key or a short-lived SAS token. The access key must be pa
 
 **Drift detection is automatic but only on `terraform plan`.** If a developer modifies a
 Snowflake role or grant manually through the console, Terraform will detect the drift at the
-next plan run and propose reverting it. The CI pipeline (`.github/workflows/terraform.yml`)
-runs `terraform plan` on every pull request targeting `main` for exactly this reason.
+next plan run and propose reverting it. *(Correction, 2026-08-19: an earlier revision claimed
+CI runs `terraform plan` on every PR. It does not and cannot — the CI workflow runs
+`terraform fmt` + `validate` with `-backend=false` and no cloud credentials, so drift
+detection is a local/apply-time capability, not a CI gate. The workflow now runs on every PR
+and push to main so it can serve as a required check.)*
 
 **The `SYSADMIN` role is used for provisioning.** This is Snowflake's recommended pattern for
 creating databases and warehouses. `ACCOUNTADMIN` is deliberately not used for day-to-day

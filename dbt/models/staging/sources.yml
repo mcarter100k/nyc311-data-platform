@@ -64,7 +64,7 @@ sources:
           - name: community_board
             description: "Community board number in 'NN BOROUGH' format (e.g. '01 BROOKLYN')."
           - name: latitude
-            description: "WGS84 latitude. NULL for ~15% of records with no geocodable address."
+            description: "WGS84 latitude. NULL where the address was not geocodable (~15% at last manual measure; not continuously verified — see docs/CLAIMS.md)."
           - name: longitude
             description: "WGS84 longitude. NULL where latitude is NULL."
           - name: status

@@ -62,7 +62,10 @@ same way: red or fully green, never partial.
 ## Decision 3 — the SLO targets
 
 - **SLO-1 freshness: newest `_loaded_at` < 26h at measurement.** One daily
-  cycle plus 2h grace for upstream publish latency. Measured in UTC
+  cycle plus 2h grace for run-time variance. This measures pipeline
+  liveness (our own load stamp), NOT upstream staleness — `_loaded_at` is
+  minutes old after any successful run, so source-side staleness detection
+  rests on SLO-2 (see the 2026-08-18 postmortem). Measured in UTC
   explicitly — the first local evaluation returned `age_hours=-7` because the
   query compared a UTC stamp against session-local time.
 - **SLO-2 completeness: yesterday's created-count ≥ 40% of the prior 7-day

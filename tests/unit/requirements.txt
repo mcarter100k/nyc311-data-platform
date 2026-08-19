@@ -1,0 +1,5 @@
+# Dependencies for the unit-pyspark CI tier (ci.yml). Kept in a requirements
+# file, not an inline workflow pin, so Dependabot's pip ecosystem tracks it.
+# pyspark 3.5.1 + Temurin 17 is the verified combination (ADR 011).
+pyspark==3.5.1
+pytest
