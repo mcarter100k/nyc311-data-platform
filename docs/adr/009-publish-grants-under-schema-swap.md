@@ -68,22 +68,25 @@ declarative, and self-documenting in the same file as the rest of the matrix.
 Same reasoning extends to the `snapshots` schema: it is referenced by the dbt snapshot
 config but never provisioned. Terraform should own it alongside `GOLD_AUDIT`.
 
-## Implementation (follow-up — spec-level until then)
+## Implementation
 
-Nothing is provisioned yet (ADR 008), so today this ADR changes the specification, not
-a live system. The Terraform follow-up:
+Nothing is provisioned yet (ADR 008), so this ADR changes the specification, not a live
+system. Follow-up status:
 
-1. `snowflake_schema` resources for `GOLD_AUDIT` and `SNAPSHOTS`.
-2. Mirror `reporter_gold_*` and `transformer_gold_*` grant resources onto `GOLD_AUDIT`;
-   grant TRANSFORMER write on `SNAPSHOTS`.
-3. Ownership: `ALTER SCHEMA ... SWAP WITH` requires the executing role to own both
-   schemas (or hold MODIFY per Snowflake's swap rules) — assign OWNERSHIP of both GOLD
-   and GOLD_AUDIT to `NYC311_TRANSFORMER`, which also removes the need for the
-   `CREATE SCHEMA` fallback in `publish_gold.sql`.
+1. **Done (2026-08-19):** `snowflake_schema` resources for `GOLD_AUDIT` and `SNAPSHOTS`
+   in `terraform/modules/snowflake-foundation/main.tf`.
+2. **Done (2026-08-19):** `reporter_gold_*` and `transformer_gold_*` grant resources
+   mirrored onto `GOLD_AUDIT`; TRANSFORMER write grants on `SNAPSHOTS`.
+3. **Remains an apply-time step:** `ALTER SCHEMA ... SWAP WITH` requires the executing
+   role to own both schemas (or hold MODIFY per Snowflake's swap rules) — assign
+   OWNERSHIP of both GOLD and GOLD_AUDIT to `NYC311_TRANSFORMER` at apply time. Not
+   modeled in Terraform because the pinned provider (~0.89) predates a stable
+   `snowflake_grant_ownership`; revisit when the provider is upgraded. Until then the
+   `CREATE SCHEMA` fallback in `publish_gold.sql` stays.
 
 ## Consequences
 
 - The README's future-grants paragraph now states the symmetric-grant requirement
   instead of claiming the old single-schema grant set already survives publishing.
-- Until the follow-up lands, `terraform apply` + one pipeline run would still strand
-  REPORTER — tracked by this ADR's implementation list, which is the honest state.
+- With items 1–2 landed, `terraform apply` + the apply-time ownership step yields a
+  swap-safe grant matrix; only skipping the ownership step would strand the publish.

@@ -32,7 +32,7 @@ aggregated as (
         d.quarter,
         d.is_weekend,
         d.is_federal_holiday,
-        l.borough,
+        coalesce(l.borough, 'UNSPECIFIED')                                      as borough,
         f.complaint_category,
 
         count(*)                                                                as total_requests,
@@ -60,7 +60,7 @@ aggregated as (
         d.quarter,
         d.is_weekend,
         d.is_federal_holiday,
-        l.borough,
+        coalesce(l.borough, 'UNSPECIFIED'),
         f.complaint_category
 
 ),

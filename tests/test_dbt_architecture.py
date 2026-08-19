@@ -21,13 +21,29 @@ import pytest
 
 ALL_MODELS = [
     "stg_service_requests",
+    "stg_data_quality_log",
     "int_service_requests_cleaned",
     "dim_agency",
     "dim_date",
     "dim_location",
     "fct_service_requests",
     "fct_daily_volume",
+    "fct_data_quality",
 ]
+
+
+def test_all_models_list_matches_manifest(models):
+    """
+    ALL_MODELS must equal the manifest's model set exactly. Without this sync
+    check the list drifts silently: a model added to the project but not to
+    the list escapes every parametrized test below — which happened twice
+    (stg_data_quality_log, then fct_data_quality) before this test existed.
+    """
+    assert sorted(ALL_MODELS) == sorted(models.keys()), (
+        f"ALL_MODELS is out of sync with the compiled manifest.\n"
+        f"  missing from list: {sorted(set(models.keys()) - set(ALL_MODELS))}\n"
+        f"  stale in list:     {sorted(set(ALL_MODELS) - set(models.keys()))}"
+    )
 
 
 @pytest.mark.parametrize("model_name", ALL_MODELS)
@@ -74,15 +90,16 @@ def test_source_database_uses_env_var():
 
 # ── 2. Materialization Strategy ───────────────────────────────────────────────
 
-def test_staging_is_view(models):
+@pytest.mark.parametrize("model_name", ["stg_service_requests", "stg_data_quality_log"])
+def test_staging_is_view(models, model_name):
     """
     Staging must be a view, not a table. It is a thin rename/cast layer read by
     exactly one downstream model — a view costs no storage and always reflects
     the latest Silver data.
     """
-    materialized = models["stg_service_requests"]["config"]["materialized"]
+    materialized = models[model_name]["config"]["materialized"]
     assert materialized == "view", (
-        f"stg_service_requests is materialized as '{materialized}' — expected 'view'."
+        f"{model_name} is materialized as '{materialized}' — expected 'view'."
     )
 
 
@@ -99,10 +116,11 @@ def test_intermediate_is_table(models):
     )
 
 
-@pytest.mark.parametrize("model_name", ["dim_agency", "dim_date", "dim_location", "fct_daily_volume"])
+@pytest.mark.parametrize("model_name", ["dim_agency", "dim_date", "dim_location",
+                                         "fct_daily_volume", "fct_data_quality"])
 def test_dimension_and_aggregate_facts_are_tables(models, model_name):
     """
-    Dimension tables and the pre-aggregated fact must be materialized as tables.
+    Dimension tables and the derived facts must be materialized as tables.
     BI tools query these directly — views would re-run expensive logic on every query.
     """
     materialized = models[model_name]["config"]["materialized"]
@@ -113,13 +131,13 @@ def test_dimension_and_aggregate_facts_are_tables(models, model_name):
 
 def test_fct_service_requests_is_incremental(models):
     """
-    The atomic fact table must be incremental. At 35M+ rows, rebuilding it as a
+    The atomic fact table must be incremental. At ~22M rows, rebuilding it as a
     full table every day wastes significant Snowflake compute on unchanged historical data.
     """
     materialized = models["fct_service_requests"]["config"]["materialized"]
     assert materialized == "incremental", (
         f"fct_service_requests is '{materialized}' — expected 'incremental'. "
-        f"35M rows rebuilt daily is an unnecessary cost."
+        f"~22M rows rebuilt daily is an unnecessary cost."
     )
 
 
@@ -311,8 +329,13 @@ def test_primary_key_has_unique_and_not_null(tests_by_model, model_name):
     A null surrogate key means the row is invisible to any FK lookup.
     """
     test_names = [t["name"] for t in tests_by_model.get(model_name, [])]
-    has_unique = any("unique" in t for t in test_names)
-    has_not_null = any("not_null" in t for t in test_names)
+    # Prefix match, not substring: a substring check is satisfied by the
+    # NOT_NULL test on any column merely NAMED "unique_key"
+    # (not_null_fct_service_requests_unique_key contains "unique") — deleting
+    # the real uniqueness test would still pass. Manifest test names are
+    # "<test_type>_<model>_<column>", so the prefix is unambiguous.
+    has_unique = any(t.startswith("unique_") for t in test_names)
+    has_not_null = any(t.startswith("not_null_") for t in test_names)
     assert has_unique, f"{model_name} is missing a 'unique' test on its primary key."
     assert has_not_null, f"{model_name} is missing a 'not_null' test on its primary key."
 

@@ -49,12 +49,12 @@ This project was built to show what a senior data engineer / principal architect
 | Skill Area | What You'll Find Here |
 |---|---|
 | **Data Architecture** | Full medallion lakehouse (Bronze → Silver → Gold) with a clear failure-isolation contract at each layer |
-| **Infrastructure as Code** | Terraform provisions 30+ Snowflake objects with least-privilege role grants enforced as code, not documentation |
+| **Infrastructure as Code** | Terraform provisions 45+ Snowflake objects with least-privilege role grants enforced as code, not documentation |
 | **Pipeline Engineering** | Idempotent, paginated API ingestion with Airflow orchestration, HTTP availability gating, and retry-safe Delta MERGE |
 | **Dimensional Modeling** | Star schema with <!--claim:fct_models-->3<!--/claim--> fact tables, 3 dimension tables, and a 21-year calendar spine (2010–2030) — built and tested in dbt |
 | **Data Quality** | A pytest suite verifying pipeline architecture plus PySpark unit tests on the Silver transforms — no live cloud credentials required ([Test Suite](#test-suite)) |
 | **Security** | Zero hardcoded credentials — Databricks secret scopes, Airflow Connections, dbt env_var(), RSA key-pair auth for prod |
-| **CI/CD** | GitHub Actions runs `terraform plan` on every PR and validates the dbt project (`dbt parse` + pytest suite) on pushes to main and PRs |
+| **CI/CD** | GitHub Actions runs `terraform fmt` + `validate` on every PR and push to main, and validates the dbt project (`dbt parse` + pytest suite) on pushes to main and PRs. (`terraform plan` needs live credentials and state, so it is a local/apply-time step, not CI — see ADR 003) |
 
 ---
 
@@ -102,7 +102,7 @@ This project was built to show what a senior data engineer / principal architect
 
 **Orchestration:** the Apache Airflow DAG ([nyc311_pipeline.py](airflow/dags/nyc311_pipeline.py)) specifies a daily 06:00 UTC run with an HttpSensor gate — nothing starts until the source API is confirmed live. The DAG is a deployment spec; no Airflow instance is running it ([ADR 008](docs/adr/008-prototype-scope.md)).
 
-**Infrastructure:** Terraform provisions all Snowflake objects (database, 3 schemas, warehouse, 4 roles, 25+ grants) in a single `terraform apply`.
+**Infrastructure:** Terraform provisions the Snowflake objects (database, 5 schemas — including the GOLD_AUDIT write-audit-publish area and SNAPSHOTS for SCD2 state — warehouse, 4 roles, 35+ grants) in a single `terraform apply`. One apply-time step remains outside Terraform: the OWNERSHIP transfer the schema swap requires (ADR 009).
 
 ---
 
@@ -116,7 +116,7 @@ This project was built to show what a senior data engineer / principal architect
 | Warehouse | Snowflake | Auto-suspend compute; best-in-class dbt adapter; strict role isolation |
 | Transformation | dbt Core | Version-controlled SQL; DAG lineage; schema test framework as a quality gate |
 | Orchestration | Apache Airflow | Code-defined DAGs; DatabricksRunNowOperator; reschedule-mode sensor |
-| CI/CD | GitHub Actions | `terraform plan` on PR; `dbt parse` + pytest suite on main pushes and PRs |
+| CI/CD | GitHub Actions | `terraform fmt`+`validate` on PRs and main pushes; `dbt parse` + pytest suite on main pushes and PRs |
 
 ---
 
@@ -178,9 +178,9 @@ The `HttpSensor` at the front validates both HTTP 200 and a non-empty response b
 ---
 
 ### Infrastructure — Terraform
-Provisions the complete Snowflake hierarchy from scratch:
+Provisions the Snowflake hierarchy from scratch (all five schemas — BRONZE, SILVER, GOLD, GOLD_AUDIT, SNAPSHOTS; the swap's OWNERSHIP transfer stays an apply-time step, ADR 009):
 
-- Four roles with a least-privilege grant matrix: `NYC311_ADMIN`, `NYC311_LOADER` (Bronze write-only), `NYC311_TRANSFORMER` (Bronze read, Silver/Gold write), `NYC311_REPORTER` (Gold read-only)
+- Four roles with a least-privilege grant matrix: `NYC311_ADMIN`, `NYC311_LOADER` (Bronze write-only), `NYC311_TRANSFORMER` (Bronze read, Silver/Gold/audit/snapshots write), `NYC311_REPORTER` (Gold read-only, symmetric on GOLD_AUDIT for the publish swap)
 - `FUTURE TABLES` grants mean any new dbt model automatically inherits the correct permissions — no post-deploy Terraform re-apply required
 - All environment differences (dev vs. prod) are handled by a single `environment` variable — no duplicated config
 - Remote state in Azure Blob with lease locking for safe team collaboration
@@ -190,7 +190,7 @@ Provisions the complete Snowflake hierarchy from scratch:
 ---
 
 <a name="test-suite"></a>
-## Test Suite — <!--claim:test_count-->109<!--/claim--> Tests, Zero Live Credentials Required
+## Test Suite — <!--claim:test_count-->117<!--/claim--> Tests, Zero Live Credentials Required
 
 The suite has three tiers, none of which connects to Snowflake, Databricks, or Azure (the total above is recomputed by `scripts/check_claims.py` in CI — the build fails if this section drifts):
 
@@ -282,7 +282,7 @@ These are the decisions most likely to generate substantive conversation in a se
 The sensor validates HTTP 200 and a non-empty JSON body before any Databricks cluster starts. If the Socrata API is up but the daily refresh hasn't completed, the sensor waits. The cost of a five-minute sensor timeout is zero. The cost of a cluster spinning up, pulling an incomplete dataset, and writing a partial Bronze partition is a manual replay job plus incident investigation.
 
 **`FUTURE TABLES` grants interact with schema-swap publishing — and the interaction has to be designed, not assumed.**
-`SELECT ON FUTURE TABLES` lets any table dbt creates inherit reporter permissions without a Terraform re-apply ([main.tf:389-399](terraform/modules/snowflake-foundation/main.tf#L389-L399)). But Snowflake grants attach to the schema *object*, and the write-audit-publish swap renames objects — so grants defined only on GOLD stop covering it after the first publish. [ADR 009](docs/adr/009-publish-grants-under-schema-swap.md) resolves this: the grant matrix is specified symmetrically on both GOLD and GOLD_AUDIT, keeping the single atomic swap (the alternative — per-table view swaps — was rejected because it reintroduces the cross-table inconsistency window WAP exists to eliminate).
+`SELECT ON FUTURE TABLES` lets any table dbt creates inherit reporter permissions without a Terraform re-apply ([main.tf:471-481](terraform/modules/snowflake-foundation/main.tf#L471-L481)). But Snowflake grants attach to the schema *object*, and the write-audit-publish swap renames objects — so grants defined only on GOLD stop covering it after the first publish. [ADR 009](docs/adr/009-publish-grants-under-schema-swap.md) resolves this: the grant matrix is specified symmetrically on both GOLD and GOLD_AUDIT, keeping the single atomic swap (the alternative — per-table view swaps — was rejected because it reintroduces the cross-table inconsistency window WAP exists to eliminate).
 
 **All dimension joins in `fct_service_requests` are LEFT JOINs.**
 Not every 311 complaint has a recognized agency code or a geocodable address. INNER JOINs against imperfect dimension coverage silently drop fact rows — a `COUNT(*)` on the fact table then disagrees with Silver, and that discrepancy surfaces at 11pm before a board presentation. NULL foreign keys in the fact table are visible and fixable. Silently dropped rows are not.

@@ -34,8 +34,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASELINE = os.path.join(ROOT, "scripts", "model_drift_baseline.json")
 
 # Mirrored trees, relative to dbt/ and local/ respectively.
-SUBDIRS = ("models", "snapshots", "macros")
+# "tests" is included so one-sided edits to the singular Gold-integrity tests
+# are caught — they were invisible to this gate before (found in audit).
+SUBDIRS = ("models", "snapshots", "macros", "tests")
 EXTS = (".sql", ".yml")
+
+# Project-root files mirrored by relative name. Covers materialization
+# configs, vars, and package version pins — a one-sided change to any of
+# these diverges the projects just as surely as a model edit.
+ROOT_FILES = ("dbt_project.yml", "packages.yml", "package-lock.yml")
 
 
 def collect(side: str) -> dict:
@@ -49,6 +56,10 @@ def collect(side: str) -> dict:
                     full = os.path.join(dirpath, f)
                     rel = os.path.relpath(full, os.path.join(ROOT, side))
                     out[rel] = open(full).read()
+    for fname in ROOT_FILES:
+        full = os.path.join(ROOT, side, fname)
+        if os.path.exists(full):
+            out[fname] = open(full).read()
     return out
 
 
@@ -86,6 +97,25 @@ def main() -> int:
     state = current_state()
 
     if "--update" in sys.argv:
+        # Loud summary of exactly what the update absorbs, so a reviewer of
+        # the baseline commit sees the changed files without decoding the
+        # JSON diff. --update is the gate's designed bypass; this printout is
+        # the audit trail that keeps it reviewable.
+        if os.path.exists(BASELINE):
+            old = json.load(open(BASELINE))
+            changed = sorted(
+                rel for rel in set(state["pairs"]) | set(old.get("pairs", {}))
+                if state["pairs"].get(rel) != old.get("pairs", {}).get(rel)
+            )
+            for key in ("only_in_dbt", "only_in_local"):
+                for f in sorted(set(state[key]) ^ set(old.get(key, []))):
+                    changed.append(f"{f} ({key} membership changed)")
+            if changed:
+                print("Re-registering divergence for:")
+                for rel in changed:
+                    print(f"  ~ {rel}")
+            else:
+                print("No divergence changes — baseline rewritten unchanged.")
         with open(BASELINE, "w") as fh:
             json.dump(state, fh, indent=2)
         print(f"Baseline re-registered: {len(state['pairs'])} mirrored pairs, "

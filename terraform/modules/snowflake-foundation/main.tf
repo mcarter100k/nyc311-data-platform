@@ -27,9 +27,11 @@ locals {
   db_name = "${var.database_name}${local.name_suffix}"
 
   # Fully-qualified schema identifiers used in grant blocks.
-  fq_bronze = "\"${local.db_name}\".\"BRONZE\""
-  fq_silver = "\"${local.db_name}\".\"SILVER\""
-  fq_gold   = "\"${local.db_name}\".\"GOLD\""
+  fq_bronze     = "\"${local.db_name}\".\"BRONZE\""
+  fq_silver     = "\"${local.db_name}\".\"SILVER\""
+  fq_gold       = "\"${local.db_name}\".\"GOLD\""
+  fq_gold_audit = "\"${local.db_name}\".\"GOLD_AUDIT\""
+  fq_snapshots  = "\"${local.db_name}\".\"SNAPSHOTS\""
 
   # Role names exported via outputs.
   role_admin       = "NYC311_ADMIN${local.name_suffix}"
@@ -71,6 +73,29 @@ resource "snowflake_schema" "gold" {
   database = snowflake_database.nyc311.name
   name     = "GOLD"
   comment  = "Dimensional model — dbt staging, intermediate, and mart models"
+}
+
+# Write-audit-publish (ADR 009): every dbt build lands here first, is tested
+# here, and is swapped into GOLD atomically only when green. The two schemas
+# ping-pong under ALTER SCHEMA ... SWAP WITH, which renames the OBJECTS —
+# so every grant below is declared symmetrically on GOLD and GOLD_AUDIT, or
+# REPORTER's access breaks on the first publish. NOTE: the SWAP itself also
+# requires the executing role to own both schemas; the OWNERSHIP transfer to
+# TRANSFORMER is an apply-time step documented in ADR 009, not modeled here
+# (the provider pin predates a stable snowflake_grant_ownership).
+resource "snowflake_schema" "gold_audit" {
+  database = snowflake_database.nyc311.name
+  name     = "GOLD_AUDIT"
+  comment  = "Write-audit-publish staging area — swapped into GOLD when tests pass (ADR 009)"
+}
+
+# SCD2 state (dbt snapshot target_schema). Deliberately OUTSIDE the audit
+# swap: snapshot history must live in exactly one schema across audit and
+# production runs (see macros/generate_schema_name.sql).
+resource "snowflake_schema" "snapshots" {
+  database = snowflake_database.nyc311.name
+  name     = "SNAPSHOTS"
+  comment  = "dbt snapshot (SCD2) state — persistent across audit/publish cycles"
 }
 
 # ---------------------------------------------------------------------------
@@ -355,6 +380,63 @@ resource "snowflake_grant_privileges_to_account_role" "transformer_gold_future_v
   depends_on = [snowflake_schema.gold]
 }
 
+# TRANSFORMER on GOLD_AUDIT — identical to the GOLD grants above (symmetry
+# contract, ADR 009: the swap renames objects between the two schemas).
+resource "snowflake_grant_privileges_to_account_role" "transformer_gold_audit_schema" {
+  account_role_name = snowflake_role.transformer.name
+  privileges        = ["USAGE", "CREATE TABLE", "CREATE VIEW"]
+  on_schema {
+    schema_name = local.fq_gold_audit
+  }
+  depends_on = [snowflake_schema.gold_audit]
+}
+
+resource "snowflake_grant_privileges_to_account_role" "transformer_gold_audit_future_tables" {
+  account_role_name = snowflake_role.transformer.name
+  privileges        = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE"]
+  on_schema_object {
+    future {
+      object_type_plural = "TABLES"
+      in_schema          = local.fq_gold_audit
+    }
+  }
+  depends_on = [snowflake_schema.gold_audit]
+}
+
+resource "snowflake_grant_privileges_to_account_role" "transformer_gold_audit_future_views" {
+  account_role_name = snowflake_role.transformer.name
+  privileges        = ["SELECT"]
+  on_schema_object {
+    future {
+      object_type_plural = "VIEWS"
+      in_schema          = local.fq_gold_audit
+    }
+  }
+  depends_on = [snowflake_schema.gold_audit]
+}
+
+# TRANSFORMER on SNAPSHOTS — dbt snapshot writes SCD2 state here on every run.
+resource "snowflake_grant_privileges_to_account_role" "transformer_snapshots_schema" {
+  account_role_name = snowflake_role.transformer.name
+  privileges        = ["USAGE", "CREATE TABLE"]
+  on_schema {
+    schema_name = local.fq_snapshots
+  }
+  depends_on = [snowflake_schema.snapshots]
+}
+
+resource "snowflake_grant_privileges_to_account_role" "transformer_snapshots_future_tables" {
+  account_role_name = snowflake_role.transformer.name
+  privileges        = ["SELECT", "INSERT", "UPDATE", "DELETE"]
+  on_schema_object {
+    future {
+      object_type_plural = "TABLES"
+      in_schema          = local.fq_snapshots
+    }
+  }
+  depends_on = [snowflake_schema.snapshots]
+}
+
 # ---------------------------------------------------------------------------
 # REPORTER grants — GOLD read-only
 # ---------------------------------------------------------------------------
@@ -408,4 +490,41 @@ resource "snowflake_grant_privileges_to_account_role" "reporter_gold_future_view
     }
   }
   depends_on = [snowflake_schema.gold]
+}
+
+# REPORTER on GOLD_AUDIT — symmetric with the GOLD grants above. Grants
+# attach to schema OBJECTS and ALTER SCHEMA ... SWAP WITH renames objects
+# between the two schemas, so asymmetric grants would break BI access on the
+# first publish (ADR 009).
+resource "snowflake_grant_privileges_to_account_role" "reporter_gold_audit_schema_usage" {
+  account_role_name = snowflake_role.reporter.name
+  privileges        = ["USAGE"]
+  on_schema {
+    schema_name = local.fq_gold_audit
+  }
+  depends_on = [snowflake_schema.gold_audit]
+}
+
+resource "snowflake_grant_privileges_to_account_role" "reporter_gold_audit_future_tables" {
+  account_role_name = snowflake_role.reporter.name
+  privileges        = ["SELECT"]
+  on_schema_object {
+    future {
+      object_type_plural = "TABLES"
+      in_schema          = local.fq_gold_audit
+    }
+  }
+  depends_on = [snowflake_schema.gold_audit]
+}
+
+resource "snowflake_grant_privileges_to_account_role" "reporter_gold_audit_future_views" {
+  account_role_name = snowflake_role.reporter.name
+  privileges        = ["SELECT"]
+  on_schema_object {
+    future {
+      object_type_plural = "VIEWS"
+      in_schema          = local.fq_gold_audit
+    }
+  }
+  depends_on = [snowflake_schema.gold_audit]
 }

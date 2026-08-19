@@ -1,9 +1,15 @@
 name: Terraform
 
+# Runs on EVERY PR and on pushes to main — deliberately no `paths:` filter.
+# A path-filtered workflow cannot be a required branch-protection check
+# (non-matching PRs would block forever on a pending status), and the old
+# PR-only + paths trigger meant direct pushes to main shipped unvalidated.
+# fmt+validate completes in seconds; running it unconditionally buys a
+# requirable, always-on gate.
 on:
   pull_request:
-    paths:
-      - 'terraform/**'
+  push:
+    branches: [main]
 
 # Least-privilege and superseded-run cancellation, matching dbt-docs.yml.
 permissions:
@@ -22,9 +28,9 @@ jobs:
         working-directory: terraform
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
         with:
           terraform_version: "~> 1.7"
 

@@ -40,7 +40,16 @@ def main() -> int:
     breaches = []
     report = ["# SLO check", f"database: `{db_path}`", ""]
 
-    for sql_file in sorted(glob.glob(os.path.join(SLO_DIR, "*.sql"))):
+    sql_files = sorted(glob.glob(os.path.join(SLO_DIR, "*.sql")))
+    # Guard against the silent-green failure mode: if the SLO directory is
+    # missing, renamed, or empty, zero checks would run and the gate would
+    # pass. Zero evaluated SLOs is a breach of the gate itself, not a pass.
+    if not sql_files:
+        print(f"SLO GATE ERROR: no SLO queries found in {SLO_DIR} — "
+              "refusing to pass with zero checks evaluated.")
+        return 1
+
+    for sql_file in sql_files:
         name = os.path.basename(sql_file)
         rel = con.sql(open(sql_file).read())
         cols = rel.columns

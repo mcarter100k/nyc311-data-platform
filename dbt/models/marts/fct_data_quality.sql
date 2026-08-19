@@ -30,33 +30,44 @@ with dq_log as (
 
 ),
 
--- 7-day rolling average failure rate per check, ordered by run_date.
--- rolling_7d_day_count < 7 in the first week of pipeline history — the average
--- is still meaningful but should be interpreted with fewer data points in mind.
+-- 7-CALENDAR-DAY rolling average failure rate per check. A self-join on the
+-- date window, not a `rows between 6 preceding` frame: a row-based frame
+-- counts physical rows, so any gap in run_date (a skipped pipeline day)
+-- silently stretches the "7-day" average across a longer calendar span —
+-- mixing stale pre-outage rates into the window that drives the breach flag
+-- exactly when it matters most. The join bounds the window in calendar days;
+-- rolling_7d_day_count is the number of days WITH data inside it (< 7 in the
+-- first week and after outages — interpret with fewer points in mind).
+-- Safe to group by: (run_date, check_name) is unique-tested in
+-- stg_data_quality_log.yml, so `a` rows never collapse.
 
 with_rolling as (
 
     select
-        run_date,
-        check_name,
-        pipeline_stage,
-        records_checked,
-        records_failed,
-        failure_rate,
+        a.run_date,
+        a.check_name,
+        a.pipeline_stage,
+        a.records_checked,
+        a.records_failed,
+        a.failure_rate,
 
-        avg(failure_rate) over (
-            partition by check_name
-            order by run_date
-            rows between 6 preceding and current row
-        )                                                           as rolling_7d_avg_failure_rate,
+        avg(b.failure_rate)                                         as rolling_7d_avg_failure_rate,
+        count(b.run_date)                                           as rolling_7d_day_count
 
-        count(*) over (
-            partition by check_name
-            order by run_date
-            rows between 6 preceding and current row
-        )                                                           as rolling_7d_day_count
+    from dq_log a
 
-    from dq_log
+    join dq_log b
+      on b.check_name = a.check_name
+     and b.run_date::date between a.run_date::date - 6
+                              and a.run_date::date
+
+    group by
+        a.run_date,
+        a.check_name,
+        a.pipeline_stage,
+        a.records_checked,
+        a.records_failed,
+        a.failure_rate
 
 ),
 

@@ -5,6 +5,14 @@
     )
 }}
 
+-- Location dimension derived from the data itself: one row per distinct
+-- (borough, community_board, incident_zip) combination that has ever appeared,
+-- giving analysts a three-level geographic drill path. There is no authoritative
+-- upstream location list, so the domain grows as new combinations arrive.
+-- CONTRACT: the UNKNOWN-coalescing on community_board and incident_zip below
+-- must stay byte-identical to the join keys in fct_service_requests — if the
+-- two drift, fact rows silently lose their location_id.
+
 with locations as (
 
     select distinct

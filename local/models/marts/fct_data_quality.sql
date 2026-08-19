@@ -11,29 +11,35 @@ with dq_log as (
 
 ),
 
+-- 7-calendar-day window via self-join, not a row-based frame (mirrors dbt/).
+
 with_rolling as (
 
     select
-        run_date,
-        check_name,
-        pipeline_stage,
-        records_checked,
-        records_failed,
-        failure_rate,
+        a.run_date,
+        a.check_name,
+        a.pipeline_stage,
+        a.records_checked,
+        a.records_failed,
+        a.failure_rate,
 
-        avg(failure_rate) over (
-            partition by check_name
-            order by run_date
-            rows between 6 preceding and current row
-        )                                                           as rolling_7d_avg_failure_rate,
+        avg(b.failure_rate)                                         as rolling_7d_avg_failure_rate,
+        count(b.run_date)                                           as rolling_7d_day_count
 
-        count(*) over (
-            partition by check_name
-            order by run_date
-            rows between 6 preceding and current row
-        )                                                           as rolling_7d_day_count
+    from dq_log a
 
-    from dq_log
+    join dq_log b
+      on b.check_name = a.check_name
+     and b.run_date::date between a.run_date::date - 6
+                              and a.run_date::date
+
+    group by
+        a.run_date,
+        a.check_name,
+        a.pipeline_stage,
+        a.records_checked,
+        a.records_failed,
+        a.failure_rate
 
 ),
 

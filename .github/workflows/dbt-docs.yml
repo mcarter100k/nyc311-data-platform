@@ -13,13 +13,12 @@ on:
   workflow_dispatch:
 
 # ── Permissions ───────────────────────────────────────────────────────────────
-# pages: write   — allows the deploy job to publish to GitHub Pages
-# id-token: write — required for OIDC-based authentication with the Pages API
-# contents: read  — required for actions/checkout
+# Workflow default is read-only; the deploy job elevates itself to
+# pages: write + id-token: write at the JOB level, so the build job (which
+# runs pip install and dbt compile on the checked-out ref) never holds a
+# token that can publish.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # Prevent concurrent Pages deployments. If a second push arrives while a
 # deploy is in progress, cancel the in-progress run rather than queueing.
@@ -42,10 +41,10 @@ jobs:
     steps:
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.11'
           # Cache pip dependencies keyed on requirements to speed up re-runs.
@@ -237,12 +236,12 @@ jobs:
 
       # Configure the Pages upload context. Must run before upload-pages-artifact.
       - name: Configure GitHub Pages
-        uses: actions/configure-pages@v4
+        uses: actions/configure-pages@1f0c5cde4bc74cd7e1254d0cb4de8d49e9068c7d # v4
 
       # Upload dbt/target/ as the Pages artifact. The deploy job picks this up.
       # The artifact name is always 'github-pages' (fixed by the Pages API).
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           # Path is relative to the repository root.
           path: dbt/target
@@ -251,7 +250,17 @@ jobs:
   deploy:
     name: Deploy to GitHub Pages
     needs: build
+    # Publish from main only. workflow_dispatch has no branch guard of its
+    # own, so without this condition ANY branch containing this file could be
+    # dispatched straight onto the production docs site — unreviewed and
+    # without passing CI. Dispatching from a branch still runs the build job
+    # as a dry-run; only the publish is gated.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write     # publish to GitHub Pages
+      id-token: write  # OIDC auth with the Pages API
 
     # The github-pages environment records every deployment in the repository's
     # Environments tab and provides the published URL as a deployment status.
@@ -262,7 +271,7 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5
 
       # Print the published URL to the Actions summary for quick access.
       - name: Print published URL

@@ -1,3 +1,12 @@
+-- The single place business rules are applied to service requests, in four
+-- steps (labelled below): standardize borough names, compute resolution_days,
+-- classify 400+ complaint types into ~10 categories, and filter rows that
+-- closed before they opened. Grain: one row per service request that survives
+-- the quality filter. If a rule about what the data *means* changes, it
+-- changes here — staging stays mechanical, marts stay presentational.
+-- Read by three models (dim_location, agency_snapshot, fct_service_requests),
+-- which is why it is materialized as a table (see dbt_project.yml).
+
 with source as (
 
     select * from {{ ref('stg_service_requests') }}
@@ -103,8 +112,9 @@ with_complaint_category as (
 ),
 
 -- ── Step 4: Data quality filter ──────────────────────────────────────────────
--- Remove records where closed_date precedes created_date. These represent ~0.02%
--- of the dataset and are attributable to operator data-entry errors, not legitimate
+-- Remove records where closed_date precedes created_date. A tiny fraction of the
+-- dataset (~0.02% at last manual measure, pre-split; not continuously verified —
+-- see docs/CLAIMS.md) attributable to operator data-entry errors, not legitimate
 -- request lifecycle events. The assert_resolution_days_nonnegative singular test
 -- in dbt/tests/ validates that no negative values survive into the mart layer.
 

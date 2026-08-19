@@ -1,3 +1,11 @@
+-- Staging contract for SILVER.service_requests — rename and retype only, zero
+-- business logic. Grain: one row per Silver service request (1:1 passthrough).
+-- This is the only model allowed to reference the source directly: every
+-- downstream model speaks this file's column vocabulary, so an upstream rename
+-- or type change is absorbed here in one place instead of rippling through the
+-- project. Anything that filters rows or encodes an opinion belongs in
+-- int_service_requests_cleaned, not here.
+
 with source as (
 
     select * from {{ source('silver', 'service_requests') }}

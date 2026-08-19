@@ -4,9 +4,39 @@
         schema              = 'gold',
         unique_key          = 'service_request_id',
         incremental_strategy = 'merge',
-        cluster_by          = ["cast(created_date as date)"]
+        cluster_by          = ["cast(created_date as date)"],
+        post_hook           = "delete from {{ this }}
+                               where service_request_id in
+                                 (select service_request_id from {{ ref('stg_service_requests') }}
+                                  where service_request_id not in
+                                    (select service_request_id from {{ ref('int_service_requests_cleaned') }}))"
     )
 }}
+
+-- The post_hook closes the merge strategy's delete blindness: when Silver
+-- CORRECTS a request so it now fails the quality filter in
+-- int_service_requests_cleaned (closed_date moved before created_date), the
+-- row disappears from the merge source and an ordinary incremental run would
+-- keep its stale pre-correction values forever — diverging from what a
+-- --full-refresh builds. The reconciliation delete removes fact rows that are
+-- PRESENT in staging but ABSENT from the cleaned intermediate — i.e., rows
+-- the quality filter currently quarantines — restoring
+-- incremental ≡ full-refresh. Scoped through staging deliberately: rows
+-- outside Silver's current coverage are untouched, so a Silver source that
+-- carries a rolling window (the local mirror's live mode) never loses
+-- accumulated history. NOT IN is NULL-safe here because service_request_id
+-- is a not_null-tested surrogate on both sides; the anti-join costs one
+-- staging scan per run.
+
+-- The center of the star schema and the single source of truth at full detail.
+-- Grain: one row per service request (~22M rows), carrying foreign keys to
+-- dim_agency (point-in-time SCD2), dim_date, and dim_location, plus the core
+-- measures (resolution_days, is_resolved, is_overdue). Built incrementally:
+-- each run merges only the rows Silver has touched since the last watermark,
+-- so daily runs stay minutes, not hours. All dimension joins are LEFT on
+-- principle — a complaint with a bad agency code or un-geocodable address is
+-- still counted (NULL key) rather than silently dropped. Rows are stamped with
+-- schema_version at merge time; see ADR 006 for the evolution contract.
 
 with requests as (
 
@@ -64,7 +94,7 @@ joined as (
         -- ── Coordinates ───────────────────────────────────────────────────────
         -- Carried through to Gold so geo analysis (heat maps, spatial joins)
         -- doesn't have to reach back into Silver. NULL where the address
-        -- couldn't be geocoded (~15% of records).
+        -- couldn't be geocoded (~15% at last manual measure; see docs/CLAIMS.md).
         r.latitude,
         r.longitude,
 

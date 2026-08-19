@@ -6,9 +6,19 @@
         materialized        = 'incremental',
         schema              = 'gold',
         unique_key          = 'service_request_id',
-        incremental_strategy = 'delete+insert'
+        incremental_strategy = 'delete+insert',
+        post_hook           = "delete from {{ this }}
+                               where service_request_id in
+                                 (select service_request_id from {{ ref('stg_service_requests') }}
+                                  where service_request_id not in
+                                    (select service_request_id from {{ ref('int_service_requests_cleaned') }}))"
     )
 }}
+
+{# Reconciliation delete: removes fact rows the quality filter currently
+   quarantines (present in staging, absent from int), keeping incremental ≡
+   full-refresh without touching history outside Silver's rolling window
+   (mirrors dbt/). #}
 
 with requests as (
 
@@ -49,6 +59,9 @@ joined as (
         r.descriptor,
         r.channel_type,
 
+        r.latitude,
+        r.longitude,
+
         r.created_date,
         r.closed_date,
         r.resolution_action_updated_date,
@@ -66,7 +79,8 @@ joined as (
             else false
         end                                                                     as is_overdue,
 
-        r._loaded_at
+        r._loaded_at,
+        r.schema_version
 
     from requests r
 

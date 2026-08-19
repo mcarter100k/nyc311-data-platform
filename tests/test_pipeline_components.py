@@ -29,9 +29,19 @@ def parse_python(path):
 
 
 def file_contains(path, *strings):
-    """Return True if the file contains ALL of the given strings."""
+    """Return True if the file's CODE contains ALL of the given strings.
+
+    Strips `#` comments line-by-line before matching: a plain substring search
+    over the whole file is satisfied by prose in comment blocks, so an
+    assertion like "the notebook calls select_quarantine" would keep passing
+    after the actual call was deleted, as long as a comment still mentioned it.
+    (Naive strip: a '#' inside a string literal truncates that line — none of
+    the asserted strings contain or follow an in-string '#', so this trade
+    is safe here and vastly better than matching comments.)
+    """
     with open(path) as f:
-        content = f.read()
+        code_lines = [line.split("#", 1)[0] for line in f]
+    content = "\n".join(code_lines)
     return all(s in content for s in strings)
 
 

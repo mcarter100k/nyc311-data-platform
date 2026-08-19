@@ -290,8 +290,26 @@ def stage3_silver() -> None:
          "pipeline_stage": "silver"},
     ]
     dq_df = pd.DataFrame(dq_rows)
-    con.execute("CREATE OR REPLACE TABLE silver.data_quality_log AS SELECT * FROM dq_df")
-    print(f"  silver.data_quality_log: {len(dq_rows)} checks recorded for {run_date}")
+    # Append, don't replace: the DQ log accumulates across runs (mirroring the
+    # cloud spec, where 03_silver.py appends per run) so fct_data_quality's
+    # 7-day rolling window has real history when the database persists between
+    # scheduled runs. Idempotent per run_date: re-running today replaces
+    # today's checks instead of duplicating the (run_date, check_name) grain.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS silver.data_quality_log (
+            run_date VARCHAR, check_name VARCHAR, records_checked BIGINT,
+            records_failed BIGINT, failure_rate DOUBLE, pipeline_stage VARCHAR)
+    """)
+    con.execute("DELETE FROM silver.data_quality_log WHERE run_date = ?", [run_date])
+    con.execute("""
+        INSERT INTO silver.data_quality_log
+        SELECT run_date, check_name, records_checked,
+               records_failed, failure_rate, pipeline_stage
+        FROM dq_df
+    """)
+    n_dq = con.execute("SELECT COUNT(*) FROM silver.data_quality_log").fetchone()[0]
+    print(f"  silver.data_quality_log: {len(dq_rows)} checks recorded for "
+          f"{run_date} ({n_dq} rows across all runs)")
     con.close()
 
 
@@ -317,7 +335,7 @@ def _run_dbt(args: list[str]) -> int:
     return subprocess.run(cmd, cwd=LOCAL_DIR).returncode
 
 
-def stage4_gold() -> None:
+def stage4_gold(incremental: bool = False) -> None:
     _banner("Stage 4 — Gold  (dbt build: models + snapshot + tests in DAG order)")
 
     print("\n  Installing dbt packages...")
@@ -327,12 +345,22 @@ def stage4_gold() -> None:
     # intermediate model it reads (a bare `dbt snapshot` first fails on a
     # fresh database — the model does not exist yet), and each model's tests
     # run right after it builds.
-    print("\n  Building Gold (full refresh)...")
-    rc_build = _run_dbt(["build", "--full-refresh"])
+    #
+    # Incremental mode (DB existed before this run): plain `dbt build`, so the
+    # fact merges only fresh rows, snapshot history accumulates across runs,
+    # and the scheduled daily run exercises the SAME incremental path the
+    # Snowflake spec describes — not a daily from-scratch rebuild.
+    if incremental:
+        print("\n  Building Gold (incremental — existing database)...")
+        rc_build = _run_dbt(["build"])
+    else:
+        print("\n  Building Gold (full refresh — fresh database)...")
+        rc_build = _run_dbt(["build", "--full-refresh"])
     if rc_build != 0:
         print(f"\n  ERROR: dbt build exited {rc_build} — see output above")
         sys.exit(rc_build)
-    print("\n  Gold built; all dbt tests passed.")
+    print("\n  Gold built; all dbt tests passed (model, source, and singular"
+          " tests run inside dbt build — see local/models/*.yml and local/tests/).")
 
 
 # ── Stage 5: Results ───────────────────────────────────────────────────────────
@@ -448,6 +476,11 @@ def main() -> None:
     args = parser.parse_args()
     start = args.stage or 1
 
+    # Captured BEFORE any stage runs: stage 2/3 create the file, so testing
+    # later would always report an existing DB. An existing database means a
+    # prior run's Gold state is present → build incrementally on top of it.
+    db_existed = DUCKDB_PATH.exists()
+
     if start <= 1:
         if args.live:
             stage1_live()
@@ -458,7 +491,7 @@ def main() -> None:
     if start <= 3:
         stage3_silver()
     if start <= 4:
-        stage4_gold()
+        stage4_gold(incremental=db_existed)
     if start <= 5:
         stage5_results()
 
