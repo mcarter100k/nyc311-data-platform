@@ -236,7 +236,7 @@ jobs:
 
       # Configure the Pages upload context. Must run before upload-pages-artifact.
       - name: Configure GitHub Pages
-        uses: actions/configure-pages@1f0c5cde4bc74cd7e1254d0cb4de8d49e9068c7d # v4
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       # Upload dbt/target/ as the Pages artifact. The deploy job picks this up.
       # The artifact name is always 'github-pages' (fixed by the Pages API).
