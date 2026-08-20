@@ -12,7 +12,7 @@
 #     SNOWFLAKE_USER       — service user with SYSADMIN role
 #     SNOWFLAKE_PASSWORD   — password (or use SNOWFLAKE_PRIVATE_KEY + SNOWFLAKE_PRIVATE_KEY_PASSPHRASE)
 #
-#   Azure (for backend + azure-infra module):
+#   Azure (remote state backend only — see backend.tf):
 #     ARM_CLIENT_ID        — service principal app ID
 #     ARM_CLIENT_SECRET    — service principal secret
 #     ARM_TENANT_ID        — Azure AD tenant
@@ -31,11 +31,6 @@ terraform {
       source  = "Snowflake-Labs/snowflake"
       version = "~> 0.89.0"
     }
-
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = "~> 3.90"
-    }
   }
 }
 
@@ -45,11 +40,6 @@ provider "snowflake" {
   # SYSADMIN is used for provisioning; application roles (LOADER, TRANSFORMER, REPORTER)
   # are created by this configuration and assigned to service users separately.
   role = var.snowflake_role
-}
-
-provider "azurerm" {
-  features {}
-  # Credentials sourced from ARM_* environment variables (see header above).
 }
 
 # ---------------------------------------------------------------------------
@@ -66,13 +56,6 @@ module "snowflake_foundation" {
   auto_suspend_seconds = var.auto_suspend_seconds
 }
 
-# ---------------------------------------------------------------------------
-# azure-infra module (ADLS Gen2 + Databricks workspace)
-# Uncommment when building the ingestion layer.
-# ---------------------------------------------------------------------------
-
-# module "azure_infra" {
-#   source = "./modules/azure-infra"
 #
 #   environment         = var.environment
 #   resource_group_name = var.resource_group_name

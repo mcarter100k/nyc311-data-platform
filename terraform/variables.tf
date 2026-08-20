@@ -56,12 +56,14 @@ variable "auto_suspend_seconds" {
 }
 
 # ---------------------------------------------------------------------------
-# Azure (used by azure-infra module — activate when building ingestion layer)
+# Azure — remote state backend only (see backend.tf). The azure-infra module
+# that consumed these was deleted with the Databricks path; they are retained
+# because backend.tf still stores state in Azure Blob.
 # ---------------------------------------------------------------------------
 
 
 variable "resource_group_name" {
-  description = "Name of the Azure resource group. Must already exist or be created by the azure-infra module."
+  description = "Name of the Azure resource group. Must already exist; nothing in this configuration creates it."
   type        = string
   default     = "nyc311-data-platform-rg"
 }

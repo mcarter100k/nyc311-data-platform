@@ -8,49 +8,49 @@ operated, and the decisions worth arguing about.
 
 ## Architecture
 
-![Architecture Diagram](../architecture/architecture-diagram.png)
+```mermaid
+flowchart TD
+    API["NYC Open Data · Socrata API<br/><i>311 service requests · ~22M rows · daily</i>"]
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  NYC Open Data — Socrata API (data.cityofnewyork.us)                │
-│  311 Service Requests · 22M+ rows (2020–present) · daily            │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │ paginated JSON / REST
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Azure Data Lake Storage Gen2 — Raw Zone                            │
-│  Partitioned by ingest_date — immutable, append-only archive        │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │ file load
-                               ▼
-┌──────────────────────────────────────────────────────┐
-│  Bronze layer                     │
-│  Raw types only · audit columns · no data loss       │
-└──────────────────────────────┬───────────────────────┘
-                               │ Delta MERGE on unique_key
-                               ▼
-┌──────────────────────────────────────────────────────┐
-│  Silver layer                     │
-│  Deduplication · borough standardization · quality   │
-│  filters · resolution_days · _silver_timestamp       │
-│  (Silver → Snowflake sync: deferred — ADR 008)       │
-└──────────────────────────────┬───────────────────────┘
-                               │ dbt incremental MERGE
-                               ▼
-┌──────────────────────────────────────────────────────┐
-│  Snowflake — GOLD Schema                             │
-│  dim_agency · dim_date · dim_location                │
-│  fct_service_requests · fct_daily_volume             │
-│  fct_data_quality · tested before publish (WAP)      │
-└──────────────────────────────┬───────────────────────┘
-                               │
-                               ▼
-                    BI / Reporting Tools
+    subgraph INGEST["Ingest — local_runner.py"]
+        S1["stage 1 · fetch<br/><i>paginated, 7-day created window, 150k cap</i>"]
+        S2["stage 2 · bronze<br/><i>raw JSON → table, audit columns, no coercion</i>"]
+        S3["stage 3 · silver<br/><i>dedup · types · borough · quarantine · DQ log</i>"]
+    end
+
+    subgraph GOLD["Gold — dbt"]
+        STG["staging<br/><i>rename + cast only</i>"]
+        INT["intermediate<br/><i>business rules: categories, closure types</i>"]
+        MRT["marts<br/><i>3 facts · 3 dims · SCD2 snapshot</i>"]
+    end
+
+    OUT["BI / SQL<br/><i>DuckDB locally · Snowflake in the spec</i>"]
+    SLO{{"SLO gate<br/><i>freshness &lt; 26h · loaded ≥ 98% of published</i>"}}
+
+    API -->|"REST"| S1 --> S2 --> S3
+    S3 -->|"source()"| STG --> INT --> MRT --> OUT
+    MRT --> SLO
+    SLO -->|"breach"| ISSUE["GitHub issue<br/><i>tracked, assignable</i>"]
+
+    CFG[("config/borough_variants.csv")] -.->|"read directly"| S3
+    CFG -.->|"dbt seed"| INT
+
+    classDef ext fill:#e8eef2,stroke:#5A6E74,color:#182226
+    classDef gate fill:#f7f0de,stroke:#8F6400,color:#182226
+    classDef cfg fill:#e6f2eb,stroke:#2E7D4F,color:#182226
+    class API,OUT ext
+    class SLO,ISSUE gate
+    class CFG cfg
 ```
 
-**Orchestration:** the Airflow DAG ([nyc311_local.py](../airflow/dags/nyc311_local.py)) runs the pipeline as seven tasks with a source gate at the front — nothing starts until the API is confirmed live. It executes for real ([smoke-tested green](../docs/adr/010-scheduled-operation.md)); the scheduled daily run remains GitHub Actions, because a laptop scheduler misses any run fired while the machine is asleep.
+**Reading it:** the only boundary that matters is `source()` — everything left of
+it is Python that owns I/O and row-level cleaning; everything right of it is SQL
+that owns meaning. `silver_transformations.py` sits inside stage 3 and holds the
+logic, so it can be unit-tested without a database.
 
-**Infrastructure:** Terraform provisions the Snowflake objects (database, 5 schemas — including the GOLD_AUDIT write-audit-publish area and SNAPSHOTS for SCD2 state — warehouse, 4 roles, 35+ grants) in a single `terraform apply`. One apply-time step remains outside Terraform: the OWNERSHIP transfer the schema swap requires (ADR 009).
+The borough mapping is drawn dotted because it is *configuration, not code*: one
+CSV read directly by the Python transform and loaded as a dbt seed, so the two
+engines cannot disagree.
 
 ---
 
