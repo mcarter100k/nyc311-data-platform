@@ -542,12 +542,40 @@ def main() -> None:
         help="Start from stage N and run through stage 5 (skips earlier stages)",
     )
     parser.add_argument(
+        "--only",
+        type=int,
+        choices=[1, 2, 3, 4, 5],
+        metavar="N",
+        help="Run ONLY stage N and stop, instead of running N through 5. Used by "
+             "the Airflow DAG, which maps one task per stage so a failure names "
+             "the failing stage directly.",
+    )
+    parser.add_argument(
         "--live",
         action="store_true",
         help=f"Fetch the trailing {LIVE_DAYS} days of live data (row-capped, "
              f":updated_at watermark) instead of the oldest --rows sample",
     )
     args = parser.parse_args()
+
+    # --only runs a single stage and returns. Stage 1 still honours --live/--rows;
+    # stage 4 decides incremental-vs-full-refresh from whether the DB pre-exists,
+    # exactly as a full run would.
+    if args.only:
+        db_existed = DUCKDB_PATH.exists()
+        if args.only == 1:
+            stage1_live() if args.live else stage1_ingest(args.rows)
+        elif args.only == 2:
+            stage2_bronze()
+        elif args.only == 3:
+            stage3_silver()
+        elif args.only == 4:
+            stage4_gold(incremental=db_existed)
+        elif args.only == 5:
+            stage5_results()
+        _banner("Complete")
+        return
+
     start = args.stage or 1
 
     # Captured BEFORE any stage runs: stage 2/3 create the file, so testing
