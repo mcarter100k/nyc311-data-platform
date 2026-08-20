@@ -27,11 +27,12 @@ with source as (
         created_date,
         closed_date,
         status,
-        -- Address identity. Upper+trim only: the source is already one
-        -- free-text field, and heavier normalisation (abbreviation folding,
-        -- geocoding) would be a separate, testable concern rather than a
-        -- side effect buried in this model.
-        upper(trim(incident_address))                                           as address_key
+        -- upper + trim + collapse internal whitespace. DuckDB needs the 'g'
+        -- flag; Snowflake's regexp_replace is global by default. The POSIX class
+        -- avoids backslash escaping, which silently produced a literal '\\s' and
+        -- matched nothing. Suffix folding
+        -- measured and rejected — it buys 6 strings. See dbt/.
+        regexp_replace(upper(trim(incident_address)), '[[:space:]]+', ' ', 'g')        as address_key
 
     from {{ ref('int_service_requests_cleaned') }}
 
