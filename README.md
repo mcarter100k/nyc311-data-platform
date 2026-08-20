@@ -85,13 +85,13 @@ The distinction is enforced, not asserted: [scripts/check_claims.py](scripts/che
 | End-to-end pipeline on DuckDB: ingest → bronze → silver → dbt gold | [local/local_runner.py](local/local_runner.py) |
 | Runs daily against the live API, gated by two SLOs | [daily-run.yml](.github/workflows/daily-run.yml), [ADR 010](docs/adr/010-scheduled-operation.md) |
 | Airflow orchestrates it locally — 7-task DAG, verified with `airflow dags test`, all tasks green (a demonstration; GitHub Actions remains the scheduler) | [nyc311_local.py](airflow/dags/nyc311_local.py) |
-| Three parallel required CI checks on every PR | [ci.yml](.github/workflows/ci.yml), [ADR 011](docs/adr/011-parallel-ci-tiers.md) |
+| Three parallel CI checks, **enforced** by branch protection declared in Terraform | [ci.yml](.github/workflows/ci.yml), [terraform/github/](terraform/github/), [ADR 012](docs/adr/012-github-repo-as-code.md) |
 | Silver transform logic unit-tested against fixtures | [tests/unit/](tests/unit/), [local/silver_transformations.py](local/silver_transformations.py) |
-| Terraform passes `terraform validate` in CI | [terraform.yml](.github/workflows/terraform.yml) |
+| Terraform **applied** — this repo's labels, branch protection and Pages are declared and live | [terraform/github/](terraform/github/), [ADR 012](docs/adr/012-github-repo-as-code.md) |
 
 | Deferred — specified, never provisioned | Where |
 |---|---|
-| A Snowflake account | [terraform/](terraform/) — the module is validated in CI, never applied |
+| A Snowflake account | [terraform/](terraform/) — the warehouse module is validated in CI, never applied. The GitHub module beside it *is* applied |
 | Loading Silver into Snowflake | the dbt project targets Snowflake; the load mechanism is an open decision ([ADR 008](docs/adr/008-prototype-scope.md)) |
 
 Nothing here claims to run in a cloud account. Everything that claims to run, runs.
@@ -148,6 +148,7 @@ ADRs document the reasoning behind major technology choices: the alternatives we
 | [009](docs/adr/009-publish-grants-under-schema-swap.md) | Symmetric grants on GOLD and GOLD_AUDIT | The publish swap keeps REPORTER access; grants follow renamed objects |
 | [010](docs/adr/010-scheduled-operation.md) | Scheduled daily operation with written SLOs | The pipeline runs live daily; a breach files a tracked issue |
 | [011](docs/adr/011-parallel-ci-tiers.md) | Three parallel required CI checks, not one sequential job | A red check names its failure class; wall time is the slowest tier |
+| [012](docs/adr/012-github-repo-as-code.md) | The repository's own infrastructure is Terraform, and it is applied | Labels, branch protection and Pages declared and applied; "required checks" became true rather than aspirational |
 
 ---
 
@@ -174,9 +175,10 @@ local/          the pipeline — ingest, pandas Silver (silver_transformations.p
 dbt/            Snowflake dbt project (models, snapshots, macros, tests)
 airflow/dags/   nyc311_local.py — the 7-task DAG, smoke-tested green
 terraform/      Snowflake foundation — 5 schemas, 4 roles, grant matrix (validated, not applied)
+terraform/github/  this repo's own infrastructure — labels, branch protection, Pages (applied)
 config/         borough_variants.csv — one mapping, read by Python and dbt alike
 scripts/        SLO checks, claim checker, model-drift guard
-docs/           ARCHITECTURE · SLO · CLAIMS · BACKLOG · adr/ (<!--claim:adr_count-->11<!--/claim-->) · postmortems/
+docs/           ARCHITECTURE · SLO · CLAIMS · BACKLOG · adr/ (<!--claim:adr_count-->12<!--/claim-->) · postmortems/
 tests/          105 pytest tests across three tiers
 ```
 

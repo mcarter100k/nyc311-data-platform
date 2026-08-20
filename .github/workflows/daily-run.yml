@@ -106,9 +106,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          gh label create upstream-stall \
-            --description "Source feed published abnormally little data — not a pipeline failure" \
-            --color D93F0B --force || true
 
           {
             echo "## Upstream publish stall — $(date -u +%F)"
@@ -118,6 +115,7 @@ jobs:
             cat upstream_report.md
           } > stall_body.md
 
+          # Label declared in terraform/github, not created here.
           # Same one-open-issue dedup pattern as the breach stream, separate
           # label: this thread tracks the CITY's outage, not our failures.
           existing=$(gh issue list --label upstream-stall --state open \
@@ -137,9 +135,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          gh label create daily-run-breach \
-            --description "Scheduled daily run failed or missed an SLO" \
-            --color B60205 --force || true
 
           {
             echo "## Daily run failed — $(date -u +%F)"
@@ -155,6 +150,10 @@ jobs:
               echo "or dbt tests) — see the run log above for the failing stage."
             fi
           } > breach_body.md
+
+          # Labels are declared in terraform/github (applied), not created here.
+          # They were previously `gh label create ... --force || true` on every
+          # run: infrastructure made as a job side effect, with failure swallowed.
 
           # One open issue per breach stream: comment on the existing one
           # rather than opening a duplicate every day a breach persists.
