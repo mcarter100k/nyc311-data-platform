@@ -118,3 +118,41 @@ def test_app_token_used_when_present_absent_otherwise(monkeypatch):
     get = FakeGet([[{"unique_key": "1"}]])
     fetch_live_records(get=get)
     assert get.calls[0]["headers"]["X-App-Token"] == "tok-123"
+
+
+# ── fetch_source_count_yesterday — the SLO-2 reconciliation capture ──────────
+
+from local_runner import fetch_source_count_yesterday  # noqa: E402
+
+
+def test_source_count_queries_yesterday_utc_window():
+    get = FakeGet([[{"n": "319"}]])
+    result = fetch_source_count_yesterday(get=get)
+
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
+    where = get.calls[0]["params"]["$where"]
+    assert result["target_date"] == yesterday
+    assert result["source_count"] == 319
+    assert f"'{yesterday}T00:00:00.000'" in where and f"'{yesterday}T23:59:59.999'" in where, (
+        "Source count must cover exactly yesterday's UTC calendar day — the same "
+        "day SLO-2 reconciles against."
+    )
+    assert get.calls[0]["params"]["$select"] == "count(*) as n"
+
+
+def test_source_count_failure_fails_loudly_after_one_retry():
+    calls = []
+
+    def failing_get(url, params=None, headers=None, timeout=None):
+        calls.append(1)
+        raise ConnectionError("boom")
+
+    with pytest.raises(RuntimeError, match="after one retry"):
+        fetch_source_count_yesterday(get=failing_get)
+    assert len(calls) == 2, "exactly one retry — the run must be red, never gate-blind"
+
+
+def test_source_count_empty_payload_is_a_failure():
+    get = FakeGet([[]])
+    with pytest.raises(RuntimeError, match="no count"):
+        fetch_source_count_yesterday(get=get)

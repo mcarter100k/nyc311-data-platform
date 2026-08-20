@@ -4,6 +4,7 @@
         schema              = 'gold',
         unique_key          = 'service_request_id',
         incremental_strategy = 'merge',
+        on_schema_change    = 'append_new_columns',
         cluster_by          = ["cast(created_date as date)"],
         post_hook           = "delete from {{ this }}
                                where service_request_id in

@@ -7,6 +7,7 @@
         schema              = 'gold',
         unique_key          = 'service_request_id',
         incremental_strategy = 'delete+insert',
+        on_schema_change    = 'append_new_columns',
         post_hook           = "delete from {{ this }}
                                where service_request_id in
                                  (select service_request_id from {{ ref('stg_service_requests') }}
