@@ -17,6 +17,10 @@ Checked claims:
                  dbt-duckdb are absent, so collection alone would undercount
                  and vary by environment)
     adr_count    markdown files in docs/adr/
+    adr table    every ADR on disk has a row in the README table (the count
+                 marker alone let the table fall 2 ADRs behind)
+    dag tasks    README task count == DAG operators == EXPECTED_TASKS in tests
+    tf counts    README schema/role counts == the Terraform module
     fct_models   dbt/models/marts/fct_*.sql files
 
 Run:  python scripts/check_claims.py
@@ -143,11 +147,87 @@ def check_links(readme_text: str) -> list:
     return errors
 
 
+def check_adr_table(readme_text: str) -> list:
+    """Every ADR on disk must have a row in the README's ADR TABLE.
+
+    The adr_count marker only checks the DIRECTORY count. That let the table
+    fall two ADRs behind while the count claim stayed green: 11 files on disk,
+    9 rows in the table. Counting a directory is not the same as documenting it.
+
+    Scoped to the table block on purpose: an earlier version searched the whole
+    README and was vacuous, because ADRs are also linked from prose elsewhere —
+    deleting a table row left those references and the check still passed.
+    """
+    errors = []
+    start = readme_text.find("## Architecture Decision Records")
+    if start == -1:
+        return ["README has no '## Architecture Decision Records' section"]
+    end = readme_text.find("\n## ", start + 1)
+    table = readme_text[start: end if end != -1 else len(readme_text)]
+
+    for path in sorted(glob.glob(os.path.join(ROOT, "docs", "adr", "*.md"))):
+        fname = os.path.basename(path)
+        if f"docs/adr/{fname}" not in table:
+            errors.append(
+                f"ADR {fname.split('-')[0]} ({fname}) has no row in the README ADR "
+                f"table — the table is behind the docs/adr/ directory"
+            )
+    return errors
+
+
+def check_airflow_task_count(readme_text: str) -> list:
+    """DAG operators == EXPECTED_TASKS == the count stated for the cloud DAG.
+
+    The code-to-code half (DAG vs test) is the load-bearing one: it cannot be
+    satisfied by prose. The README half is matched against the specific
+    'N-task cloud DAG' phrase rather than a bare 'N-task' substring, which an
+    earlier version used and which was vacuous — the repo tree names two DAGs
+    and the other line kept the check green.
+    """
+    errors = []
+    dag = open(os.path.join(ROOT, "airflow", "dags", "nyc311_pipeline.py")).read()
+    n_dag = len(re.findall(r"task_id\s*=\s*[\"']", dag))
+
+    tests = open(os.path.join(ROOT, "tests", "test_pipeline_components.py")).read()
+    block = re.search(r"EXPECTED_TASKS\s*=\s*\[(.*?)\]", tests, re.DOTALL)
+    n_test = len(re.findall(r"[\"'][a-z_]+[\"']", block.group(1))) if block else -1
+
+    if n_dag != n_test:
+        errors.append(
+            f"Airflow task count mismatch: nyc311_pipeline.py defines {n_dag} tasks, "
+            f"EXPECTED_TASKS lists {n_test}"
+        )
+    if f"{n_dag}-task cloud DAG" not in readme_text:
+        errors.append(
+            f"README does not state '{n_dag}-task cloud DAG' — the DAG defines {n_dag} tasks"
+        )
+    return errors
+
+
+def check_terraform_counts(readme_text: str) -> list:
+    """Schema / role counts claimed in the README vs the Terraform module."""
+    errors = []
+    tf = open(os.path.join(
+        ROOT, "terraform", "modules", "snowflake-foundation", "main.tf")).read()
+    for label, pattern, phrase in (
+        ("schemas", r'^resource "snowflake_schema"', "{n} schemas"),
+        ("roles", r'^resource "snowflake_role"', "{n} roles"),
+    ):
+        n = len(re.findall(pattern, tf, re.MULTILINE))
+        if phrase.format(n=n) not in readme_text:
+            errors.append(
+                f"README does not state '{phrase.format(n=n)}' — Terraform defines {n} {label}"
+            )
+    return errors
+
+
 def main() -> int:
     readme_text = open(README).read()
     expected = expected_values()
     errors = (check_markers(readme_text, expected) + check_links(readme_text)
-              + check_slo_doc_sync())
+              + check_slo_doc_sync() + check_adr_table(readme_text)
+              + check_airflow_task_count(readme_text)
+              + check_terraform_counts(readme_text))
 
     if errors:
         print("README claim check FAILED:")
