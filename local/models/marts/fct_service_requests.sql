@@ -69,10 +69,18 @@ joined as (
 
         r.status,
         r.resolution_description,
+        r.closure_type,
 
         r.resolution_days,
 
         case when r.status = 'Closed' then true else false end                  as is_resolved,
+
+        case
+            when r.closure_type in ('Resolved on Scene', 'Enforcement Action', 'Work Performed')
+                then true
+            else false
+        end                                                                     as is_actioned,
+
 
         case
             when r.resolution_days is null then null

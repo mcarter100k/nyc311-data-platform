@@ -221,6 +221,22 @@ models:
       - name: is_overdue
         description: "TRUE when resolution_days > 30. NULL for open requests."
 
+      - name: closure_type
+        description: >
+          How the request was closed (see int_service_requests_cleaned). The
+          companion to status: status says the ticket is finished, closure_type
+          says what finished it.
+        tests:
+          - not_null
+
+      - name: is_actioned
+        description: >
+          TRUE when closure_type is Resolved on Scene, Enforcement Action or
+          Work Performed — i.e. the city did something. A request can be
+          is_resolved = TRUE and is_actioned = FALSE; that is the majority case.
+        tests:
+          - not_null
+
       - name: _loaded_at
         description: >
           Silver load timestamp (_silver_timestamp) carried forward from the
@@ -287,6 +303,18 @@ models:
               expression: "between 0 and 1"
               config:
                 where: "pct_resolved is not null"
+
+      - name: pct_actioned
+        description: >
+          Fraction of requests where the city actually did something (0.0-1.0).
+          The gap between pct_resolved and pct_actioned is the share of closures
+          that found no violation, found nothing, were duplicates, or were
+          handed off.
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "between 0 and 1"
+              config:
+                where: "pct_actioned is not null"
 
       - name: overdue_requests
         description: "Count of requests in this group where resolution_days > 30."

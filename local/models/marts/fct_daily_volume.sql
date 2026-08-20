@@ -41,6 +41,11 @@ aggregated as (
             sum(case when f.is_resolved then 1.0 else 0.0 end) / count(*),
             4
         )                                                                       as pct_resolved,
+
+        round(
+            sum(case when f.is_actioned then 1.0 else 0.0 end) / count(*),
+            4
+        )                                                                       as pct_actioned,
         sum(case when f.is_overdue = true then 1 else 0 end)                   as overdue_requests
 
     from fct f

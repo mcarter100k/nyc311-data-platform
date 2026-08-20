@@ -43,23 +43,60 @@ models:
       - name: complaint_category
         description: >
           Grouped complaint category derived from complaint_type via CASE WHEN
-          pattern matching. Used for dashboard filtering and aggregate reporting.
+          pattern matching (21 operational categories plus 'Other'). Categories
+          follow how the city is organised, so each maps to an accountable
+          agency. 'Other' is held under 5% by the
+          assert_complaint_classification_coverage singular test.
         tests:
           - not_null
           - accepted_values:
               values:
                 - 'Noise'
                 - 'Heat & Hot Water'
-                - 'Street Light'
+                - 'Animals'
                 - 'Rodent'
+                - 'Abandoned Vehicle'
+                - 'Taxi & For-Hire Vehicle'
                 - 'Illegal Parking'
+                - 'Street Light'
+                - 'Traffic & Signals'
                 - 'Sanitation'
-                - 'Water'
+                - 'Illegal Dumping'
+                - 'Parks & Trees'
+                - 'Street Condition'
                 - 'Graffiti'
                 - 'Homeless Services'
-                - 'Street Condition'
-                - 'Parks & Trees'
+                - 'Environmental Hazard'
+                - 'Construction & Building Code'
+                - 'Water & Sewer'
+                - 'Housing & Building Maintenance'
+                - 'Public Safety & Quality of Life'
+                - 'Consumer & Business'
                 - 'Other'
+
+      - name: closure_type
+        description: >
+          How the request was closed, derived from the templated
+          resolution_description text. 'Closed' status alone does not mean the
+          problem was fixed: on one week of live data only 36.7% of closed
+          requests describe any action. Action outcomes are Resolved on Scene,
+          Enforcement Action and Work Performed; the rest closed without the
+          city doing anything. 'Unspecified' covers null text plus boilerplate
+          that states no outcome ("see notes", "status is on our website").
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - 'Resolved on Scene'
+                - 'Enforcement Action'
+                - 'Work Performed'
+                - 'No Violation Found'
+                - 'No Condition Found'
+                - 'Access Failed'
+                - 'Duplicate'
+                - 'Referred Elsewhere'
+                - 'Pending'
+                - 'Unspecified'
 
       - name: resolution_days
         description: >
