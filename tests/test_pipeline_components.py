@@ -17,7 +17,6 @@ direction.
 import ast
 import os
 import subprocess
-import sys
 import yaml
 import pytest
 
@@ -66,25 +65,6 @@ EXPECTED_TASKS = [
     "check_slos",
     "upstream_stall_check",
 ]
-
-
-@pytest.mark.parametrize("module_name", ["local_runner", "reconcile", "silver_transformations"])
-def test_local_module_imports_cleanly(module_name):
-    """Every module in local/ must import — nothing else in the suite imports them all.
-
-    Added after a cleanup deleted an import from local_runner that ruff reported
-    as unused. It was unused *there*, but reconcile.py imported it from
-    local_runner as a re-export, so reconcile broke at its import line — and the
-    whole suite stayed green, because no test imports reconcile. A pipeline
-    module that cannot be imported is broken no matter what it contains, and
-    that was previously untested.
-    """
-    import importlib
-
-    local_dir = os.path.join(ROOT, "local")
-    if local_dir not in sys.path:
-        sys.path.insert(0, local_dir)
-    importlib.import_module(module_name)
 
 
 def test_local_dag_is_valid_python():

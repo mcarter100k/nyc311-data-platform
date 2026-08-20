@@ -62,17 +62,35 @@ def skippable_tier_test_count() -> int:
     for path in (glob.glob(os.path.join(ROOT, "tests", "unit", "test_*.py"))
                  + glob.glob(os.path.join(ROOT, "tests", "local", "test_*.py"))):
         tree = ast.parse(open(path).read(), filename=path)
+
+        # Module-level list/tuple constants, so a parametrize over a NAMED list
+        # expands too. Only expanding inline literals silently undercounted:
+        # `@parametrize("m", LOCAL_MODULES)` scored 1 instead of len(LOCAL_MODULES),
+        # and the failure mode is a claim-checker that is quietly wrong about the
+        # number it exists to police. Naming the list is the more readable
+        # pattern and is used by the tests either way.
+        constants = {}
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and isinstance(node.value, (ast.List, ast.Tuple)):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        constants[target.id] = len(node.value.elts)
+
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                 n = 1
                 for deco in node.decorator_list:
-                    # Expand pytest.mark.parametrize first-arg lists so a future
-                    # parametrized unit test is counted the way pytest counts it.
-                    if (isinstance(deco, ast.Call)
+                    # Expand pytest.mark.parametrize argument lists so a
+                    # parametrized test is counted the way pytest counts it.
+                    if not (isinstance(deco, ast.Call)
                             and getattr(deco.func, "attr", "") == "parametrize"
-                            and len(deco.args) >= 2
-                            and isinstance(deco.args[1], (ast.List, ast.Tuple))):
-                        n *= max(1, len(deco.args[1].elts))
+                            and len(deco.args) >= 2):
+                        continue
+                    arg = deco.args[1]
+                    if isinstance(arg, (ast.List, ast.Tuple)):
+                        n *= max(1, len(arg.elts))
+                    elif isinstance(arg, ast.Name) and arg.id in constants:
+                        n *= max(1, constants[arg.id])
                 total += n
     return total
 
