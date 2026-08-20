@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import csv
 import json
 import os
 import subprocess
@@ -44,19 +45,20 @@ PAGE_SIZE        = 1_000
 LIVE_DAYS    = 7
 LIVE_ROW_CAP = 150_000
 
-BOROUGH_MAP = {
-    "BROOKLYN": "BROOKLYN", "BKLYN": "BROOKLYN", "BK": "BROOKLYN",
-    "KINGS": "BROOKLYN", "KINGS COUNTY": "BROOKLYN",
-    "MANHATTAN": "MANHATTAN", "MN": "MANHATTAN", "NEW YORK": "MANHATTAN",
-    "NEW YORK CITY": "MANHATTAN", "NYC": "MANHATTAN", "NY": "MANHATTAN",
-    "QUEENS": "QUEENS", "QN": "QUEENS", "QNS": "QUEENS",
-    "QUEENS COUNTY": "QUEENS",
-    "BRONX": "BRONX", "THE BRONX": "BRONX", "BX": "BRONX",
-    "BRONX COUNTY": "BRONX",
-    "STATEN ISLAND": "STATEN ISLAND", "SI": "STATEN ISLAND",
-    "S.I.": "STATEN ISLAND", "STATEN IS": "STATEN ISLAND",
-    "RICHMOND": "STATEN ISLAND",
-}
+# Borough spelling map, loaded from the ONE canonical file shared by every
+# layer that standardizes borough: this pandas Silver transform, the PySpark
+# Silver transform, and both dbt projects (which load it as a seed). Adding a
+# newly observed spelling is a one-line CSV edit picked up everywhere — the
+# same mapping used to be hardcoded in four places and had already drifted.
+BOROUGH_VARIANTS_CSV = LOCAL_DIR.parent / "config" / "borough_variants.csv"
+
+
+def _load_borough_map() -> dict:
+    with open(BOROUGH_VARIANTS_CSV, newline="") as fh:
+        return {r["variant"]: r["canonical"] for r in csv.DictReader(fh)}
+
+
+BOROUGH_MAP = _load_borough_map()
 
 
 def _banner(msg: str) -> None:

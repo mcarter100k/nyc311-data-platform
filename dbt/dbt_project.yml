@@ -11,6 +11,12 @@ require-dbt-version: [">=1.7.0", "<2.0.0"]
 model-paths:    ["models"]
 test-paths:     ["tests"]
 macro-paths:    ["macros"]
+# Seeds live OUTSIDE this project, in repo-root config/, because the borough
+# mapping is shared by four consumers: this project, the local DuckDB mirror,
+# the PySpark Silver transforms, and the local pandas runner. One file, one
+# source of truth — previously the same mapping was hardcoded in four places
+# and had already drifted (see docs/BACKLOG.md).
+seed-paths:     ["../config"]
 snapshot-paths: ["snapshots"]
 
 target-path:   "target"
