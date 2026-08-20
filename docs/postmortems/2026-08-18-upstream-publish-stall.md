@@ -76,6 +76,6 @@ measured numbers preserved on issue #7 and the breach-run artifacts retained
 | Action | Tracked in | Done |
 |---|---|---|
 | Close #7 when the source backfills and a scheduled run passes; finalize this postmortem (status → reviewed, add recovery timeline) | #7 | |
-| Decide on SLO-3 (source freshness: max `created_date` in Gold within N hours) — closes the SLO-1 blind spot named above | new issue on decision | |
+| Decide on SLO-3 (source freshness: max `created_date` in Gold within N hours) — closes the SLO-1 blind spot named above | [ADR 013](../adr/013-no-source-freshness-slo.md) | ✓ rejected after measurement — the blind spot is closed by a warning, not a gate |
 | Revisit SLO-2's window (T-1 vs T-2) only if several *normal* post-recovery days show T-1 chronically incomplete at 10:00 UTC — threshold changes require accumulated evidence, not one incident | #7 | |
 | Dataset-split claims correction (README, sources.yml, ADR notes) | shipped in the same PR as this postmortem | ✓ |

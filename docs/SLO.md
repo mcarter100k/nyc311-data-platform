@@ -102,3 +102,11 @@ run stays green, and a stall verdict files or updates a GitHub issue labeled `up
 so the outage stays visible to anyone reading the dashboards. Recovery is automatic while the
 gap stays inside the trailing 7-day fetch window; a day the city never publishes within that
 window is unrecoverable by the daily run.
+
+**Why this is a warning and not a third SLO.** A source-freshness gate was proposed by the
+2026-08-18 postmortem, measured, and rejected — see [ADR 013](adr/013-no-source-freshness-slo.md).
+In short: the metric that would work (`max(created_date)`) duplicates the volume cliff this
+check already detects, and the metric that would not duplicate it (the dataset's publish stamp)
+would have read healthy throughout the very incident that motivated the proposal. The standing
+rule is **gate on what we control, warn on what we don't** — a red build nobody can act on
+trains the operator to ignore red builds.
