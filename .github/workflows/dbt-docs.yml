@@ -241,7 +241,7 @@ jobs:
       # Upload dbt/target/ as the Pages artifact. The deploy job picks this up.
       # The artifact name is always 'github-pages' (fixed by the Pages API).
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           # Path is relative to the repository root.
           path: dbt/target
