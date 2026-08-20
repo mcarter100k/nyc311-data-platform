@@ -128,7 +128,7 @@ Gold is a Kimball star: <!--claim:fct_models-->4<!--/claim--> fact tables, 3 dim
 
 ## Test Suite
 
-Two populations, deliberately not summed: **<!--claim:test_count-->109<!--/claim--> pytest tests** that need no cloud account, and **100 dbt data tests** that run against the warehouse during `dbt build`. The pytest count is recomputed in CI.
+Two populations, deliberately not summed: **<!--claim:test_count-->109<!--/claim--> pytest tests** that need no cloud account, and **110 dbt data tests** that run against the warehouse during `dbt build`. The pytest count is recomputed in CI.
 
 | Tier | Count | What it proves |
 |---|---|---|

@@ -164,7 +164,7 @@ written down either way, because "we considered it" is not discoverable.
 
 ---
 
-## fct_complaint_recurrence needs two things it cannot have yet
+## fct_complaint_recurrence needs history — address normalisation RESOLVED 2026-08-20
 
 **History.** The model emits `days_to_next_same_complaint` with no baked-in
 window, so it already supports any threshold — but seven days of loaded history
@@ -172,12 +172,27 @@ supports only a 3-day rate. At 30+ days of accumulated runs it becomes a real
 30-day metric with **no code change**, because the window is a var and the
 censoring is exposed via `observation_days`. Nothing to do but let it run.
 
-**Address normalization.** `address_key` is `upper(trim(incident_address))` and
-nothing more. `100 MAIN ST` and `100 MAIN STREET` are different keys, so
-recurrence is **undercounted** by an unmeasured amount. Fixing it means either a
-normalization step (abbreviation folding, suffix rules) or geocoding to a
-BBL/BIN. Worth measuring the size of the gap before choosing — a quick count of
-near-duplicate address strings would size it.
+**Address normalisation — RESOLVED 2026-08-20.** Measured before choosing, which
+changed the answer. Of 33,469 distinct address strings, only 232 collapse under
+normalisation at all (0.69%) — and **226 of those 232 are internal whitespace**
+(`WEST   86 STREET` vs `WEST 86 STREET`), not suffix variants. Whitespace is 97%
+of the available gain and changes the key for **4.71% of tickets**; suffix
+folding (`STREET`→`ST`, `AVENUE`→`AVE`, …) buys **six more strings** and was
+deliberately skipped — an abbreviation table is a maintenance surface that six
+strings does not pay for.
+
+`address_key` now collapses internal whitespace. The headline recurrence figures
+did **not** move at this data size, which is worth stating: the fix is correct
+and the effect was nil, and reporting it as an improvement would be dishonest.
+
+One bug worth recording: the first attempt used `'\\s+'`, which SQL reads as a
+literal backslash — it matched nothing, raised nothing, and left 475 rows
+unnormalised while the build stayed green. Replaced with the POSIX class
+`[[:space:]]+`, which no layer can mangle, and guarded by
+`assert_address_key_is_normalised` because a step that can silently do nothing
+needs an assertion on its output.
+
+Geocoding to a BBL/BIN remains the real fix and a separate concern.
 
 ---
 

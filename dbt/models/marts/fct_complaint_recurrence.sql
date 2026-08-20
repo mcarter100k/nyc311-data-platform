@@ -45,11 +45,16 @@ with source as (
         created_date,
         closed_date,
         status,
-        -- Address identity. Upper+trim only: the source is already one
-        -- free-text field, and heavier normalisation (abbreviation folding,
-        -- geocoding) would be a separate, testable concern rather than a
-        -- side effect buried in this model.
-        upper(trim(incident_address))                                           as address_key
+        -- Address identity: upper, trim, and collapse internal whitespace.
+        -- Measured before choosing: of 33,469 distinct address strings, runs of
+        -- internal spaces account for 226 of the 232 collapsible duplicates —
+        -- 97% of the available gain — and change the key for 4.71% of tickets
+        -- ('WEST   86 STREET' vs 'WEST 86 STREET'). Suffix folding
+        -- (STREET->ST, AVENUE->AVE, ...) was measured too and buys SIX more
+        -- strings; it is deliberately not done, because an abbreviation table
+        -- is a maintenance surface and 6 strings does not pay for one.
+        -- Geocoding to a BBL/BIN remains the real fix and a separate concern.
+        regexp_replace(upper(trim(incident_address)), '[[:space:]]+', ' ')             as address_key
 
     from {{ ref('int_service_requests_cleaned') }}
 
