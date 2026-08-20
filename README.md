@@ -128,7 +128,7 @@ Gold is a Kimball star: <!--claim:fct_models-->4<!--/claim--> fact tables, 3 dim
 
 ## Test Suite
 
-Two populations, deliberately not summed: **<!--claim:test_count-->109<!--/claim--> pytest tests** that need no cloud account, and **110 dbt data tests** that run against the warehouse during `dbt build`. The pytest count is recomputed in CI.
+Two populations, deliberately not summed: **<!--claim:test_count-->112<!--/claim--> pytest tests** that need no cloud account, and **110 dbt data tests** that run against the warehouse during `dbt build`. The pytest count is recomputed in CI.
 
 | Tier | Count | What it proves |
 |---|---|---|
@@ -193,7 +193,7 @@ terraform/github/  this repo's own infrastructure — labels, branch protection,
 config/         borough_variants.csv — one mapping, read by Python and dbt alike
 scripts/        SLO checks, claim checker, model-drift guard
 docs/           ARCHITECTURE · SLO · CLAIMS · BACKLOG · adr/ (<!--claim:adr_count-->13<!--/claim-->) · postmortems/
-tests/          109 pytest tests across three tiers
+tests/          112 pytest tests across three tiers
 ```
 
 ---

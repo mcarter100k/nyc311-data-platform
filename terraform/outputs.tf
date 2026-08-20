@@ -43,6 +43,6 @@ output "snowflake_reporter_role" {
 }
 
 output "snowflake_loader_role" {
-  description = "Snowflake LOADER role name — assigned to the Databricks ingestion service account for BRONZE write"
+  description = "Snowflake LOADER role name — assigned to the ingestion service account for BRONZE write"
   value       = module.snowflake_foundation.role_names["loader"]
 }

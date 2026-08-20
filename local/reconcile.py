@@ -38,7 +38,10 @@ from pathlib import Path
 import duckdb
 
 sys.path.insert(0, str(Path(__file__).parent))
-from local_runner import BOROUGH_MAP, DUCKDB_PATH, RAW_FILE, SOCRATA_ENDPOINT
+from local_runner import DUCKDB_PATH, RAW_FILE, SOCRATA_ENDPOINT
+# BOROUGH_MAP comes from its owner, not second-hand via local_runner. The
+# re-export made local_runner's import list read as if it used the map itself.
+from silver_transformations import BOROUGH_MAP
 
 failures = []
 
