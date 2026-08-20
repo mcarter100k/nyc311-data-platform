@@ -14,7 +14,6 @@ Usage:
 """
 
 import argparse
-import csv
 import json
 import os
 import subprocess
@@ -48,7 +47,6 @@ LIVE_ROW_CAP = 150_000
 # Silver transformation logic lives in silver_transformations.py so it can be
 # unit-tested without a database. This module owns I/O only.
 from silver_transformations import (          # noqa: E402
-    BOROUGH_MAP,
     compute_dq_metrics,
     compute_resolution_days,
     deduplicate_on_unique_key,
@@ -56,7 +54,6 @@ from silver_transformations import (          # noqa: E402
     parse_timestamps,
     quarantine_mask,
     standardize_borough,
-    standardize_borough_value as _standardize_borough,
 )
 
 
@@ -278,7 +275,10 @@ def stage3_silver() -> None:
     # Write DQ log
     run_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     dq_rows = compute_dq_metrics(df_bronze, df, df_derived, run_date)
-    dq_df = pd.DataFrame(dq_rows)
+    # noqa is correct here, not a silencer: DuckDB's replacement scan resolves
+    # `FROM dq_df` in the INSERT below against this local variable, so the name
+    # IS the interface. Static analysis cannot see a reference inside SQL text.
+    dq_df = pd.DataFrame(dq_rows)  # noqa: F841
     # Append, don't replace: the DQ log accumulates across runs (mirroring the
     # cloud spec, where 03_silver.py appends per run) so fct_data_quality's
     # 7-day rolling window has real history when the database persists between
@@ -337,14 +337,20 @@ def _run_dbt(args: list[str]) -> int:
         "--no-version-check",
     ]
     print(f"\n  $ dbt {' '.join(args)}")
-    return subprocess.run(cmd, cwd=LOCAL_DIR).returncode
+    return subprocess.run(cmd, cwd=LOCAL_DIR, check=False).returncode
 
 
 def stage4_gold(incremental: bool = False) -> None:
     _banner("Stage 4 — Gold  (dbt build: models + snapshot + tests in DAG order)")
 
     print("\n  Installing dbt packages...")
-    _run_dbt(["deps"])
+    # Check this exit code. A failed `deps` does not stop the build below — it
+    # fails later on a missing macro, which reads as a broken model rather than
+    # as "the package install failed". Surface the real cause here.
+    rc_deps = _run_dbt(["deps"])
+    if rc_deps != 0:
+        print(f"\n  ERROR: dbt deps exited {rc_deps} — packages not installed")
+        sys.exit(rc_deps)
 
     # dbt build resolves the whole DAG: the agency snapshot runs AFTER the
     # intermediate model it reads (a bare `dbt snapshot` first fails on a

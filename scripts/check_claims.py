@@ -36,7 +36,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 README = os.path.join(ROOT, "README.md")
 
-MARKER_RE = re.compile(r"<!--claim:([a-z_]+)-->(.*?)<!--/claim-->", re.S)
+MARKER_RE = re.compile(r"<!--claim:([a-z_]+)-->(.*?)<!--/claim-->", re.DOTALL)
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 
 
@@ -44,7 +44,7 @@ def structural_test_count() -> int:
     out = subprocess.run(
         [sys.executable, "-m", "pytest", "tests/", "--ignore=tests/unit",
          "--ignore=tests/local", "--collect-only", "-q"],
-        cwd=ROOT, capture_output=True, text=True,
+        cwd=ROOT, capture_output=True, text=True, check=False,
     )
     m = re.search(r"(\d+) tests? collected", out.stdout)
     if not m:
@@ -62,17 +62,35 @@ def skippable_tier_test_count() -> int:
     for path in (glob.glob(os.path.join(ROOT, "tests", "unit", "test_*.py"))
                  + glob.glob(os.path.join(ROOT, "tests", "local", "test_*.py"))):
         tree = ast.parse(open(path).read(), filename=path)
+
+        # Module-level list/tuple constants, so a parametrize over a NAMED list
+        # expands too. Only expanding inline literals silently undercounted:
+        # `@parametrize("m", LOCAL_MODULES)` scored 1 instead of len(LOCAL_MODULES),
+        # and the failure mode is a claim-checker that is quietly wrong about the
+        # number it exists to police. Naming the list is the more readable
+        # pattern and is used by the tests either way.
+        constants = {}
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and isinstance(node.value, (ast.List, ast.Tuple)):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        constants[target.id] = len(node.value.elts)
+
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                 n = 1
                 for deco in node.decorator_list:
-                    # Expand pytest.mark.parametrize first-arg lists so a future
-                    # parametrized unit test is counted the way pytest counts it.
-                    if (isinstance(deco, ast.Call)
+                    # Expand pytest.mark.parametrize argument lists so a
+                    # parametrized test is counted the way pytest counts it.
+                    if not (isinstance(deco, ast.Call)
                             and getattr(deco.func, "attr", "") == "parametrize"
-                            and len(deco.args) >= 2
-                            and isinstance(deco.args[1], (ast.List, ast.Tuple))):
-                        n *= max(1, len(deco.args[1].elts))
+                            and len(deco.args) >= 2):
+                        continue
+                    arg = deco.args[1]
+                    if isinstance(arg, (ast.List, ast.Tuple)):
+                        n *= max(1, len(arg.elts))
+                    elif isinstance(arg, ast.Name) and arg.id in constants:
+                        n *= max(1, constants[arg.id])
                 total += n
     return total
 
@@ -109,7 +127,7 @@ def check_markers(readme_text: str, expected: dict) -> list:
 
 
 SLO_DOC = os.path.join(ROOT, "docs", "SLO.md")
-SLO_BLOCK_RE = re.compile(r"<!--slo-sql:([^\s>]+)-->\s*```sql\n(.*?)```", re.S)
+SLO_BLOCK_RE = re.compile(r"<!--slo-sql:([^\s>]+)-->\s*```sql\n(.*?)```", re.DOTALL)
 
 
 def check_slo_doc_sync() -> list:
@@ -237,7 +255,7 @@ def main() -> int:
 
     for name, value in expected.items():
         print(f"  ✓ claim:{name} = {value}")
-    print(f"  ✓ all relative README links resolve")
+    print("  ✓ all relative README links resolve")
     print("README claim check passed.")
     return 0
 

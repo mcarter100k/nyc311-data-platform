@@ -3,11 +3,15 @@ Pipeline Component Tests — NYC 311 Data Platform
 
 Tests the non-dbt pieces of the pipeline without needing live cloud credentials:
 
-  1. Databricks notebooks  — Python syntax validity and required patterns
-  2. Airflow DAG           — syntax validity, task count, dependency chain
-  3. Terraform             — HCL syntax validity via terraform validate
-  4. GitHub Actions        — workflow YAML structure
-  5. profiles.yml.example  — connection config correctness
+  1. Airflow DAG           — syntax validity, task count, dependency chain
+  2. Terraform             — HCL syntax validity via terraform validate
+  3. GitHub Actions        — workflow YAML structure
+  4. profiles.yml.example  — connection config correctness
+
+A fifth category — Databricks notebooks — was removed with the Databricks path;
+this header listed it for some time after the tests themselves were gone, which
+is the failure mode `file_contains` below exists to prevent in the other
+direction.
 """
 
 import ast
@@ -115,6 +119,7 @@ def test_terraform_validate():
             cwd=TERRAFORM_DIR,
             capture_output=True,
             text=True,
+            check=False,   # returncode drives the skip below
         )
     except FileNotFoundError:
         pytest.skip("terraform is not installed — skipping HCL validation.")
@@ -126,6 +131,7 @@ def test_terraform_validate():
         cwd=TERRAFORM_DIR,
         capture_output=True,
         text=True,
+        check=False,   # returncode drives the pytest.fail below
     )
     if result.returncode != 0:
         pytest.fail(f"terraform validate failed:\n{result.stdout}\n{result.stderr}")
@@ -143,7 +149,7 @@ def test_terraform_outputs_dont_reference_commented_azure_module():
     active_lines = [line for line in content.splitlines()
                     if "module.azure_infra" in line and not line.strip().startswith("#")]
     assert not active_lines, (
-        f"outputs.tf has active references to module.azure_infra (which is commented out):\n"
+        "outputs.tf has active references to module.azure_infra (which is commented out):\n"
         + "\n".join(active_lines)
     )
 

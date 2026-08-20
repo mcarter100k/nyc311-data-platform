@@ -49,7 +49,7 @@ whatever python happens to be on PATH.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from airflow.sdk import DAG
 from airflow.providers.standard.operators.bash import BashOperator
@@ -80,7 +80,10 @@ with DAG(
     # 06:00 UTC, matching the cloud spec's cadence. See the scope note above:
     # on a laptop this fires only while the scheduler process is running.
     schedule="0 6 * * *",
-    start_date=datetime(2026, 8, 1),
+    # Explicitly UTC. Airflow assumes UTC for a naive datetime, so this changes
+    # nothing today — it states the assumption the `schedule` above depends on
+    # rather than inheriting it.
+    start_date=datetime(2026, 8, 1, tzinfo=timezone.utc),
     catchup=False,
     max_active_runs=1,
     tags=["nyc311", "local", "duckdb", "demo"],

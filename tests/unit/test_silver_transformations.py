@@ -117,7 +117,7 @@ def test_resolution_days_calculation():
         "status":       ["Closed", "Closed", "Open", "Closed", "Closed"],
     })
     out = compute_resolution_days(parse_timestamps(df))
-    got = dict(zip(out["id"], out["resolution_days"]))
+    got = dict(zip(out["id"], out["resolution_days"], strict=True))
 
     assert got["r1"] == 4
     assert got["r2"] == 0, "Same-day close must be 0, not null — null would hide it from SLA metrics."
@@ -125,7 +125,7 @@ def test_resolution_days_calculation():
     assert pd.isna(got["r4"]), "No created_date means the interval is uncomputable."
     assert got["r5"] == -5, "Closed-before-created must surface as negative, not be suppressed here."
 
-    resolved = dict(zip(out["id"], out["is_resolved"]))
+    resolved = dict(zip(out["id"], out["is_resolved"], strict=True))
     assert resolved["r1"] is True or resolved["r1"] == True   # noqa: E712
     assert resolved["r3"] == False                             # noqa: E712
 
@@ -145,7 +145,7 @@ def test_deduplication():
 
     assert len(out) == 3, f"Expected 3 unique keys, got {len(out)}"
     assert out["unique_key"].is_unique
-    got = dict(zip(out["unique_key"], out["_ingest_timestamp"]))
+    got = dict(zip(out["unique_key"], out["_ingest_timestamp"], strict=True))
     assert got["a"] == "2024-01-02T00:00", "Must keep the LATEST ingest, not an arbitrary row."
     assert got["c"] == "2024-01-03T00:00"
 

@@ -1,0 +1,6 @@
+# Developer / CI tooling that is not a pipeline runtime dependency.
+# Pinned like every other requirements file so Dependabot's pip ecosystem
+# tracks it (see tests/unit/requirements.txt for the same rationale).
+#
+# ruff runs in ci.yml's fast-gate job; its rule set lives in ruff.toml.
+ruff==0.16.3
