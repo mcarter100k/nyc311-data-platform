@@ -32,13 +32,14 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values:
-                - 'BROOKLYN'
-                - 'MANHATTAN'
-                - 'QUEENS'
-                - 'BRONX'
-                - 'STATEN ISLAND'
-                - 'UNSPECIFIED'
+              arguments:
+                values:
+                  - 'BROOKLYN'
+                  - 'MANHATTAN'
+                  - 'QUEENS'
+                  - 'BRONX'
+                  - 'STATEN ISLAND'
+                  - 'UNSPECIFIED'
 
       - name: complaint_category
         description: >
@@ -50,29 +51,30 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values:
-                - 'Noise'
-                - 'Heat & Hot Water'
-                - 'Animals'
-                - 'Rodent'
-                - 'Abandoned Vehicle'
-                - 'Taxi & For-Hire Vehicle'
-                - 'Illegal Parking'
-                - 'Street Light'
-                - 'Traffic & Signals'
-                - 'Sanitation'
-                - 'Illegal Dumping'
-                - 'Parks & Trees'
-                - 'Street Condition'
-                - 'Graffiti'
-                - 'Homeless Services'
-                - 'Environmental Hazard'
-                - 'Construction & Building Code'
-                - 'Water & Sewer'
-                - 'Housing & Building Maintenance'
-                - 'Public Safety & Quality of Life'
-                - 'Consumer & Business'
-                - 'Other'
+              arguments:
+                values:
+                  - 'Noise'
+                  - 'Heat & Hot Water'
+                  - 'Animals'
+                  - 'Rodent'
+                  - 'Abandoned Vehicle'
+                  - 'Taxi & For-Hire Vehicle'
+                  - 'Illegal Parking'
+                  - 'Street Light'
+                  - 'Traffic & Signals'
+                  - 'Sanitation'
+                  - 'Illegal Dumping'
+                  - 'Parks & Trees'
+                  - 'Street Condition'
+                  - 'Graffiti'
+                  - 'Homeless Services'
+                  - 'Environmental Hazard'
+                  - 'Construction & Building Code'
+                  - 'Water & Sewer'
+                  - 'Housing & Building Maintenance'
+                  - 'Public Safety & Quality of Life'
+                  - 'Consumer & Business'
+                  - 'Other'
 
       - name: closure_type
         description: >
@@ -86,17 +88,18 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values:
-                - 'Resolved on Scene'
-                - 'Enforcement Action'
-                - 'Work Performed'
-                - 'No Violation Found'
-                - 'No Condition Found'
-                - 'Access Failed'
-                - 'Duplicate'
-                - 'Referred Elsewhere'
-                - 'Pending'
-                - 'Unspecified'
+              arguments:
+                values:
+                  - 'Resolved on Scene'
+                  - 'Enforcement Action'
+                  - 'Work Performed'
+                  - 'No Violation Found'
+                  - 'No Condition Found'
+                  - 'Access Failed'
+                  - 'Duplicate'
+                  - 'Referred Elsewhere'
+                  - 'Pending'
+                  - 'Unspecified'
 
       - name: resolution_days
         description: >
@@ -105,7 +108,8 @@ models:
           this model and should never appear here.
         tests:
           - dbt_utils.expression_is_true:
-              expression: ">= 0"
+              arguments:
+                expression: ">= 0"
               config:
                 where: "resolution_days is not null"
 

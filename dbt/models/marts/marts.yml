@@ -128,7 +128,8 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: ['BROOKLYN', 'MANHATTAN', 'QUEENS', 'BRONX', 'STATEN ISLAND', 'UNSPECIFIED']
+              arguments:
+                values: ['BROOKLYN', 'MANHATTAN', 'QUEENS', 'BRONX', 'STATEN ISLAND', 'UNSPECIFIED']
       - name: community_board
         description: "Community board designation or 'UNKNOWN' when absent."
         tests:
@@ -178,8 +179,9 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('dim_date')
-              field: date_id
+              arguments:
+                to: ref('dim_date')
+                field: date_id
 
       - name: location_id
         description: >
@@ -209,7 +211,8 @@ models:
         description: "Integer days between created_date and closed_date. NULL for open requests."
         tests:
           - dbt_utils.expression_is_true:
-              expression: ">= 0"
+              arguments:
+                expression: ">= 0"
               config:
                 where: "resolution_days is not null"
 
@@ -291,7 +294,8 @@ models:
         tests:
           - not_null
           - dbt_utils.expression_is_true:
-              expression: "> 0"
+              arguments:
+                expression: "> 0"
 
       - name: avg_resolution_days
         description: "Average resolution days for closed requests in this group. NULL if no requests were closed."
@@ -300,7 +304,8 @@ models:
         description: "Fraction of requests at Closed status (0.0–1.0)."
         tests:
           - dbt_utils.expression_is_true:
-              expression: "between 0 and 1"
+              arguments:
+                expression: "between 0 and 1"
               config:
                 where: "pct_resolved is not null"
 
@@ -312,7 +317,8 @@ models:
           handed off.
         tests:
           - dbt_utils.expression_is_true:
-              expression: "between 0 and 1"
+              arguments:
+                expression: "between 0 and 1"
               config:
                 where: "pct_actioned is not null"
 
