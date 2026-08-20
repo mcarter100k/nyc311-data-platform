@@ -43,22 +43,35 @@ models:
       - name: complaint_category
         description: >
           Grouped complaint category derived from complaint_type via CASE WHEN
-          pattern matching. Used for dashboard filtering and aggregate reporting.
+          pattern matching (21 operational categories plus 'Other'). Categories
+          follow how the city is organised, so each maps to an accountable
+          agency. 'Other' is held under 5% by the
+          assert_complaint_classification_coverage singular test.
         tests:
           - not_null
           - accepted_values:
               values:
                 - 'Noise'
                 - 'Heat & Hot Water'
-                - 'Street Light'
+                - 'Animals'
                 - 'Rodent'
+                - 'Abandoned Vehicle'
+                - 'Taxi & For-Hire Vehicle'
                 - 'Illegal Parking'
+                - 'Street Light'
+                - 'Traffic & Signals'
                 - 'Sanitation'
-                - 'Water'
+                - 'Illegal Dumping'
+                - 'Parks & Trees'
+                - 'Street Condition'
                 - 'Graffiti'
                 - 'Homeless Services'
-                - 'Street Condition'
-                - 'Parks & Trees'
+                - 'Environmental Hazard'
+                - 'Construction & Building Code'
+                - 'Water & Sewer'
+                - 'Housing & Building Maintenance'
+                - 'Public Safety & Quality of Life'
+                - 'Consumer & Business'
                 - 'Other'
 
       - name: resolution_days
