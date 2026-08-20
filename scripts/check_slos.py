@@ -54,7 +54,7 @@ def main() -> int:
         rel = con.sql(open(sql_file).read())
         cols = rel.columns
         row = rel.fetchone()
-        values = dict(zip(cols, row)) if row else {}
+        values = dict(zip(cols, row, strict=True)) if row else {}
         ok = values.get("pass") is True  # NULL and missing both count as breach
 
         line = "  ".join(f"{c}={values.get(c)}" for c in cols)

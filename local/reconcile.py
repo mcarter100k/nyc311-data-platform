@@ -38,7 +38,10 @@ from pathlib import Path
 import duckdb
 
 sys.path.insert(0, str(Path(__file__).parent))
-from local_runner import BOROUGH_MAP, DUCKDB_PATH, RAW_FILE, SOCRATA_ENDPOINT
+from local_runner import DUCKDB_PATH, RAW_FILE, SOCRATA_ENDPOINT
+# BOROUGH_MAP comes from its owner, not second-hand via local_runner. The
+# re-export made local_runner's import list read as if it used the map itself.
+from silver_transformations import BOROUGH_MAP
 
 failures = []
 
@@ -67,7 +70,8 @@ def main() -> int:
 
     raw = json.load(open(RAW_FILE))
     con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
-    one = lambda q: con.sql(q).fetchone()[0]
+    def one(q):
+        return con.sql(q).fetchone()[0]
 
     # Deduplicate the raw records the same way Silver does (one row per
     # unique_key) so the independent recompute covers the same population.

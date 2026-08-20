@@ -2,4 +2,4 @@
 # inline workflow pin, so Dependabot's pip ecosystem tracks it.
 # The tier tests local/silver_transformations.py — pure pandas, no Spark.
 pandas==3.0.5
-pytest
+pytest==9.1.1

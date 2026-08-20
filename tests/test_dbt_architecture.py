@@ -192,15 +192,31 @@ def test_staging_depends_only_on_source(models):
     """
     Staging must read from the Silver source, not from other dbt models.
     Staging is the boundary between raw data and the dbt transformation graph.
+
+    Classified on FULL manifest node ids, not the short names `_dep_names`
+    returns. A dbt source id looks like `source.nyc311.silver.service_requests`
+    and a model id like `model.nyc311.int_service_requests_cleaned`; shortening
+    them to the last segment discards exactly the prefix that tells the two
+    apart. The earlier version of this test shortened first and then filtered on
+    `not startswith("source")`, which no short name can ever satisfy — so its
+    `model_deps` set was unconditionally non-empty, and the assertion that would
+    have used it was never written. It asserted only that the model does not
+    depend on itself, which is trivially true for any staging model however
+    wired, and the test passed while checking nothing.
     """
-    deps = _dep_names(models["stg_service_requests"])
-    model_deps = {d for d in deps if not d.startswith("source")}
-    # deps on other models should be empty
-    assert "stg_service_requests" not in deps
-    # source node names contain the word 'silver'
-    source_deps = {d for d in models["stg_service_requests"]
-                   .get("depends_on", {}).get("nodes", []) if "source" in d}
-    assert len(source_deps) >= 1, "stg_service_requests must depend on the Silver source."
+    nodes = models["stg_service_requests"].get("depends_on", {}).get("nodes", [])
+    model_deps = sorted(n for n in nodes if n.startswith("model."))
+    source_deps = sorted(n for n in nodes if n.startswith("source."))
+
+    assert not model_deps, (
+        f"stg_service_requests must read the Silver source only, but depends on "
+        f"model(s): {model_deps}. Staging is the boundary between raw data and "
+        f"the dbt graph; a model dependency here moves that boundary."
+    )
+    assert len(source_deps) >= 1, (
+        "stg_service_requests must depend on the Silver source; its depends_on "
+        f"lists no source node (got: {nodes})."
+    )
 
 
 def test_intermediate_depends_on_staging(models):

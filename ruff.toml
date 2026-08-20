@@ -1,0 +1,65 @@
+# ruff — Python linting for the pipeline, checkers, DAG and tests.
+#
+# Kept as ruff.toml rather than pyproject.toml deliberately: this repo is not a
+# installable package, and a pyproject.toml would additionally become pytest's
+# rootdir anchor and pip's build surface. This file configures one tool.
+#
+# The rule set is CURATED, not ruff's default. The default run over this repo
+# produced 51 findings, of which the great majority were style opinions about
+# deliberate house formatting and two were flatly wrong (see below). A linter
+# whose output is mostly noise gets ignored, which costs more than not having
+# one. What is selected here is the set that found real defects on first run:
+# dead imports left by a refactor, a discarded subprocess exit code, a naive
+# datetime in a scheduled DAG, and shebangs on non-executable files.
+#
+# Formatting is NOT enforced. `ruff format` would rewrite 15 files and fight
+# the hand-alignment used throughout for comment tables and SQL blocks.
+
+target-version = "py310"
+line-length = 100        # advisory; E501 is deliberately not selected
+
+extend-exclude = [
+    ".venv",
+    ".venv-airflow",
+    "target",
+    "dbt_packages",
+    "airflow/home",
+    "logs",
+]
+
+[lint]
+select = [
+    "F",     # pyflakes — undefined names, unused imports, broken f-strings
+    "E4",    # import placement/shadowing
+    "E7",    # statement-level errors, incl. E712 comparison-to-True/False
+    "E9",    # syntax and runtime errors
+    "B",     # bugbear — mutable defaults, loop-variable capture, silent bugs
+    "DTZ",   # naive datetimes; a scheduled pipeline must be explicit about UTC
+    "EXE",   # shebang present iff the file is executable
+    "PLW",   # pylint warnings, incl. subprocess.run without an explicit check
+    "UP",    # pyupgrade — keep syntax current with the pinned interpreter
+    "FURB",  # refurb — dated idioms with clearer modern equivalents
+]
+
+ignore = [
+    # Several modules must extend sys.path before importing a sibling (local/
+    # is not a package). The imports are correctly placed given that constraint.
+    "E402",
+]
+
+# Not selected, and why — so a future reader does not "helpfully" add them:
+#   E1/E2/E3, E501  whitespace and line length; the long lines here are aligned
+#                   comment tables and SQL, and wrapping them loses the shape
+#   I001            import sorting; several import blocks are anchored to
+#                   explanatory comments that a re-sort would separate
+#   SIM115          open() without a context manager; every instance is a
+#                   one-shot open(path).read() in a checker script
+#   RUF100          "unused noqa"; the directives here document intent and
+#                   should survive a rule being toggled off
+#   BLE001          blind except; the two instances are deliberate top-level
+#                   handlers that report and exit
+
+[lint.per-file-ignores]
+# Tests assert on exact boolean identity to pin numpy/pandas bool semantics,
+# where `is True` and `== True` genuinely differ.
+"tests/**" = ["E712"]

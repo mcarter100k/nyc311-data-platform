@@ -61,7 +61,7 @@ def test_window_and_params_come_from_the_shared_builder():
     expected_date = (datetime.now(timezone.utc) - timedelta(days=LIVE_DAYS)).date().isoformat()
     assert get.calls[0]["params"] == build_page_params("created_window", expected_date, 0), (
         "Live fetch must build its query through ingest_config.build_page_params "
-        "for the trailing-{}-day window — not through a private param dict.".format(LIVE_DAYS)
+        f"for the trailing-{LIVE_DAYS}-day window — not through a private param dict."
     )
     # created_date, NOT :updated_at: the source mass re-stamps :updated_at
     # nightly (~540k rows/day vs ~53k/week created — ADR 010), so a capped

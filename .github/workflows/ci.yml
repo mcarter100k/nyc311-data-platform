@@ -77,7 +77,16 @@ jobs:
       - name: Install test dependencies
         run: |
           pip install pytest pyyaml
+          pip install -r requirements-dev.txt
           pip install pytest-github-actions-annotate-failures || true
+
+      # Python lint. Runs inside fast-gate rather than as a fourth required
+      # check: it shares this job's checkout and interpreter, costs ~1s, and a
+      # separate tier would mean another branch-protection context to declare
+      # in terraform/github for no extra signal. Rule set is curated in
+      # ruff.toml — see the rationale block at the top of that file.
+      - name: ruff (Python lint)
+        run: ruff check . --output-format=github
 
       # The unit and local tiers have their own jobs; collecting them here
       # would only re-report their conftest skips as noise.
