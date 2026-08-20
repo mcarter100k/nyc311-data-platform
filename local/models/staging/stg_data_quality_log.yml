@@ -13,9 +13,10 @@ models:
       # Grain guarantee: duplicate (run_date, check_name) rows would silently
       # corrupt the rolling averages and breach flags in fct_data_quality.
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - run_date
-            - check_name
+          arguments:
+            combination_of_columns:
+              - run_date
+              - check_name
     columns:
       - name: run_date
         description: >

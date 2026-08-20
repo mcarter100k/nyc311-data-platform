@@ -24,4 +24,5 @@ seeds:
         tests:
           - not_null
           - accepted_values:
-              values: ['BROOKLYN', 'MANHATTAN', 'QUEENS', 'BRONX', 'STATEN ISLAND', 'UNSPECIFIED']
+              arguments:
+                values: ['BROOKLYN', 'MANHATTAN', 'QUEENS', 'BRONX', 'STATEN ISLAND', 'UNSPECIFIED']
