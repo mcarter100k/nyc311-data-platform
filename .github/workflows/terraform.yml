@@ -21,11 +21,19 @@ concurrency:
 
 jobs:
   validate:
-    name: Format check and validate
+    name: Format check and validate (${{ matrix.dir }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Two independent root modules: the Snowflake foundation (specified,
+        # never applied — applying needs a paid account) and the GitHub repo
+        # config (applied for real). Both must validate; neither needs creds to.
+        dir: [terraform, terraform/github]
+
     defaults:
       run:
-        working-directory: terraform
+        working-directory: ${{ matrix.dir }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

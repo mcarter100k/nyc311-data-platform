@@ -15,8 +15,11 @@ logs/
 *.log
 
 # ── Terraform ─────────────────────────────────────────────────────────────────
-# Provider binaries — restored by `terraform init`
-terraform/.terraform/
+# Provider binaries — restored by `terraform init`. Pattern is deliberately
+# path-agnostic: the original `terraform/.terraform/` matched only the root
+# module, so a second root module (terraform/github/) would have committed a
+# 24MB provider binary.
+**/.terraform/
 
 # .terraform.lock.hcl is intentionally committed — it pins provider versions
 # for reproducible runs across machines and CI.
@@ -67,3 +70,9 @@ local/logs/
 .env
 .env.*
 local/.user.yml
+
+# Terraform state can contain resource metadata and tokens. Path-agnostic so
+# every root module is covered.
+**/*.tfstate
+**/*.tfstate.backup
+tfplan
