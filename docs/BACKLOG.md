@@ -129,24 +129,43 @@ uninformative rather than wrong.
 
 **Options.** (a) Move the window to T-2 and state why. (b) Keep T-1 and accept
 that the reconciliation makes it safe. (c) Move the schedule later than the
-source's publish. Needs one more day of observation before choosing.
+source's publish.
+
+**Update 2026-08-20 — first clean post-recovery observation, plus a mechanism.**
+The 10:24 run measured T-1 (Aug 19) at **372 rows** against a trailing median of
+10,494.5. Separately, the source was probed directly at 08:26: `max(created_date)`
+was `2026-08-19 02:26` — **30.0 h stale** — while the dataset's own publish stamp
+`rowsUpdatedAt` was `2026-08-20 01:46`, only 6.7 h old. The source publishes daily
+carrying data to roughly *the previous* morning, so at 10:00 UTC T-1 holds only
+the couple of hours before that publish. 372 rows is what ~2.4 h of a ~10k day
+looks like.
+
+That is a mechanism, not just a correlation, and it argues the pattern is
+structural rather than incident residue. But it is still **one** clean
+post-recovery day; the criterion written into the postmortem was *several*, and
+lowering that bar retroactively is exactly the reasoning error the criterion
+exists to prevent. Keep accumulating. If the pattern holds, option (a) with the
+mechanism recorded is the likely answer.
 
 ---
 
-## The 2026-08-18 postmortem is still marked draft, and its exit criterion is met
+## ~~The 2026-08-18 postmortem is still marked draft, and its exit criterion is met~~ — RESOLVED 2026-08-20
 
-`docs/postmortems/2026-08-18-upstream-publish-stall.md` says *"draft — incident
-ongoing at time of writing; finalize when the source backfills and a scheduled
-run passes."* The source **has** backfilled (Aug 17 → 10,473, Aug 18 → 10,833).
+Its exit criterion was *"finalize when the source backfills **and** a scheduled
+run passes."* Both halves are now met: the source backfilled on 2026-08-19
+(Aug 17 → 10,473, Aug 18 → 10,833), and the 2026-08-20 10:24 scheduled run — the
+first under the redesigned SLO logic — passed.
 
-**To do:** status → reviewed, add the recovery timeline, close issue #7, and
-record that the control which shipped (SLO-2 as source reconciliation plus the
-non-gating upstream-stall check) was validated by this recovery.
+**Resolved 2026-08-20.** Status → reviewed, recovery timeline added, issue #7
+closed, and a *Did the control work* section added recording the measurement
+that matters: Aug 19 published **372** rows against a trailing median of
+**10,494.5**. Under the SLO-2 that existed during the incident that day computes
+to 3.5% of median and **breaches**; under SLO-2 as reconciliation it computes
+**372/372 and passes**. Same day, two readings, and the second is the correct
+one — the pipeline loaded every row the city published.
 
-**Note:** the first scheduled run under the new SLO logic has not happened yet —
-the last daily run (2026-08-19 10:22) used the old median-based SLO-2. Today's
-10:00 UTC run is the first real exercise of it, and should be cited in the
-finalized postmortem.
+The upstream-stall warning fired on the same run and filed issue #40 while the
+run stayed green. That is the designed outcome, not a compromise.
 
 ---
 
