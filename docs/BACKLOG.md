@@ -150,17 +150,32 @@ finalized postmortem.
 
 ---
 
-## Decide SLO-3, or record why it is not needed
+## ~~Decide SLO-3, or record why it is not needed~~ — RESOLVED 2026-08-20
 
 The postmortem proposed a third SLO for *source* freshness (max `created_date`
 in Gold within N hours), to close the blind spot that SLO-1 measures our own
 load stamp and is therefore minutes old after any successful run.
 
-The picture changed after SLO-2 became a reconciliation: source staleness is now
-*detected* by `check_upstream_stall.py`, but only as a **warning** — nothing
-gates on it. The open question is whether a stalled source should ever be able
-to leave the run green. Both answers are defensible; the decision should be
-written down either way, because "we considered it" is not discoverable.
+**Resolved 2026-08-20 — rejected, recorded as [ADR 013](adr/013-no-source-freshness-slo.md).**
+Measuring the source before deciding settled it. On an ordinary day at 08:26 UTC,
+`max(created_date)` was **30.0 h** stale while the dataset's own publish stamp
+(`rowsUpdatedAt`) was **6.7 h** old — the file was published this morning
+carrying nothing newer than yesterday morning. A gate must pick one of those two
+columns, and each fails differently: `max(created_date)` would work but merely
+duplicates the volume cliff `check_upstream_stall.py` already catches (Aug 18
+held 0 rows against a ~10,000 median), while the publish stamp reports whether
+the file was *touched*, not whether it gained data — during the stall Aug 17 sat
+at 410 rows and later backfilled to 10,473, so a publish-stamp gate would have
+read healthy through the whole incident.
+
+The metric that works is redundant; the metric that is not redundant does not
+work. Source staleness stays a warning. The standing principle: **gate on what we
+control, warn on what we don't.**
+
+**One gap left open knowingly:** the warning's floor is 40% of the trailing
+median, so a *partial* stall — the city publishing half a normal day — passes
+both SLOs and the warning. Not observed; recorded in the ADR so it is met as a
+known limit rather than a surprise.
 
 ---
 
