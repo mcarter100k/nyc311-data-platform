@@ -17,7 +17,7 @@ with source as (
 -- The raw source contains a wide variety of borough strings: mixed case,
 -- abbreviations, legacy county names, and UNSPECIFIED sentinels. The mapping
 -- is NOT hardcoded here — it is a seed loaded from repo-root
--- config/borough_variants.csv, the same file the PySpark and pandas Silver
+-- config/borough_variants.csv, the same file the pandas Silver
 -- transforms read. That file is the single source of truth; this CASE
 -- previously held its own 19-variant copy while Python held 24, which is
 -- exactly the drift the shared seed removes.

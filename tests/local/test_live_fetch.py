@@ -4,7 +4,7 @@ Unit tests for local_runner.fetch_live_records — the daily-run fetch path.
 The API is mocked; nothing here touches the network. The contract under test:
 
   - the query window and pagination come from the ONE existing param builder
-    (databricks/notebooks/ingest_config.build_page_params) — a second param
+    (local/ingest_config.build_page_params) — a second param
     builder growing here is the failure these tests exist to block;
   - the hard row cap is enforced, and hitting it FAILS the run (a normal week
     is nowhere near it, so cap-hit means upstream anomaly, not success);
@@ -22,7 +22,7 @@ import pytest
 pytest.importorskip("pandas", reason="pandas not installed — skipping live-fetch tests")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-for p in (os.path.join(ROOT, "local"), os.path.join(ROOT, "databricks", "notebooks")):
+for p in (os.path.join(ROOT, "local"), os.path.join(ROOT, "local")):
     if p not in sys.path:
         sys.path.insert(0, p)
 

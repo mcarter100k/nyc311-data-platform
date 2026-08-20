@@ -32,7 +32,7 @@ models:
                 - invalid_resolution_days
                 - unrecognized_borough
       - name: pipeline_stage
-        description: "Always 'silver' for checks written by 03_silver.py."
+        description: "Always 'silver' for checks written by the Silver transform."
         tests:
           - not_null
       - name: records_checked
@@ -71,6 +71,6 @@ models:
         tests:
           - not_null
       - name: is_rolling_threshold_breached
-        description: "TRUE when the 7-day rolling average exceeds the DQ_THRESHOLDS defined in 03_silver.py."
+        description: "TRUE when the 7-day rolling average exceeds the thresholds the Silver transform warns on."
         tests:
           - not_null

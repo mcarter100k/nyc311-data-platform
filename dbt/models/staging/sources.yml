@@ -3,11 +3,10 @@ version: 2
 sources:
   - name: silver
     description: >
-      Cleaned and typed Silver layer produced by the Databricks Bronze→Silver PySpark
-      pipeline. Tables in this schema are deduplicated, fully typed, and partitioned
-      by ingestion date in ADLS. They must be synced into this Snowflake schema by a
-      mechanism that is an open design decision (Snowpipe, the Databricks Snowflake
-      connector, or external tables — see docs/adr/008-prototype-scope.md). Whatever
+      Cleaned and typed Silver layer produced by the Bronze→Silver transform
+      (local/silver_transformations.py). Tables in this schema are deduplicated and fully typed. They must be loaded
+      into this Snowflake schema by a mechanism that is an open design decision
+      (Snowpipe, external tables, or a loader job — see docs/adr/008-prototype-scope.md). Whatever
       is chosen must land rows less than one hour after _silver_timestamp is stamped,
       or the fct_service_requests incremental watermark silently loses them.
     database: "{{ env_var('SNOWFLAKE_DATABASE', 'NYC311_DB') }}"
@@ -19,8 +18,8 @@ sources:
           One row per NYC 311 service request after deduplication on unique_key.
           Covers 2020-01-01 to present (~22M rows; in Dec 2025 the city split
           2010-2019 into a separate historical dataset).
-          Schema mirrors the NYC Open Data Socrata export with Databricks type inference
-          applied: strings remain VARCHAR, timestamps are TIMESTAMP_NTZ.
+          Schema mirrors the NYC Open Data Socrata export with types applied by the
+          Silver transform: strings remain VARCHAR, timestamps are TIMESTAMP_NTZ.
         loaded_at_field: _silver_timestamp
         freshness:
           warn_after:  {count: 24, period: hour}
@@ -78,7 +77,7 @@ sources:
 
       - name: data_quality_log
         description: >
-          One row per data quality check per pipeline run date. Written by 03_silver.py
+          One row per data quality check per pipeline run date. Written by the Silver transform
           before the Silver MERGE so a MERGE failure still preserves the quality snapshot.
           Consumed by fct_data_quality in Gold to surface 7-day rolling trends and
           threshold breaches across all pipeline runs.
@@ -94,4 +93,4 @@ sources:
           - name: failure_rate
             description: "records_failed / records_checked. Range 0.0–1.0."
           - name: pipeline_stage
-            description: "Always 'silver' for records written by 03_silver.py."
+            description: "Always 'silver' for records written by the Silver transform."

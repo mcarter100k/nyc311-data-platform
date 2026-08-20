@@ -7,7 +7,7 @@ the _loaded_at watermark with its 1-hour lookback, snapshot rename detection,
 and the SCD2 point-in-time agency join.
 
 Skips wholesale when duckdb or the dbt-duckdb adapter is not installed
-(mirrors the pyspark importorskip pattern in tests/unit/conftest.py).
+(mirrors the importorskip pattern used by the unit tier).
 """
 
 import os

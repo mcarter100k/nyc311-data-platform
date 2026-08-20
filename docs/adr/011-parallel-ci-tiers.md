@@ -81,3 +81,15 @@ per ecosystem; majors arrive solo so breaking bumps are never buried.
   gating CI stay separate surfaces.
 - The README badge tracks the `CI` workflow as a whole; per-job status lives
   in the PR checks UI.
+
+
+---
+
+## Amendment 2026-08-20 — the unit tier changed engine, not purpose
+
+The `unit-pyspark` job is now simply `unit`: it tests
+`local/silver_transformations.py` (pandas) instead of a PySpark module for a
+deployment that never existed. Three parallel required checks, unchanged in
+shape — fast-gate, unit, behavioral-duckdb — and the tier no longer needs a JVM,
+so it is faster and has one less moving part. The zero-skip enforcement that
+makes the tier meaningful is unchanged.

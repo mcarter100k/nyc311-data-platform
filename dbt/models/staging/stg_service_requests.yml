@@ -105,7 +105,7 @@ models:
       - name: _loaded_at
         description: >
           Timestamp from Silver's _silver_timestamp column — the moment the
-          PySpark Silver notebook last wrote or updated this row. Used as the
+          Silver transform last wrote or updated this row. Used as the
           incremental watermark in fct_service_requests: on each dbt run, only
           rows where _loaded_at exceeds the previous run's max are merged in.
         tests:

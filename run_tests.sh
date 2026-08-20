@@ -2,7 +2,7 @@
 # run_tests.sh — NYC 311 Pipeline Test Runner
 #
 # Runs the full structural and behavioral test suite without requiring
-# live cloud credentials (Snowflake, Databricks, Azure).
+# live cloud credentials (Snowflake).
 #
 # Usage:
 #   ./run_tests.sh            — run all tests
@@ -11,8 +11,8 @@
 #
 # Prerequisites:
 #   pip install -r dbt/requirements.txt pytest pyyaml
-#   Optional: pyspark (Silver unit tests), dbt-duckdb (local gold tests) —
-#   both tiers skip cleanly when their dependency is absent.
+#   Optional: dbt-duckdb (local gold tests) — that tier skips cleanly when
+#   the dependency is absent.
 
 set -e
 

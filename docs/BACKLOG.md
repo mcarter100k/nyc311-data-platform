@@ -15,7 +15,7 @@ here as vague intentions.
 
 | Layer | Where | Variants known |
 |---|---|---|
-| Silver | `local/local_runner.py` `BOROUGH_MAP` (and `databricks/notebooks/silver_transformations.py` `KNOWN_BOROUGH_VARIANTS`) | 24 — includes `KINGS COUNTY`, `NY`, `QUEENS COUNTY`, `BRONX COUNTY`, `RICHMOND` |
+| Silver | `local/silver_transformations.py` | 24 — includes `KINGS COUNTY`, `NY`, `QUEENS COUNTY`, `BRONX COUNTY`, `RICHMOND` |
 | dbt | `int_service_requests_cleaned.sql` Step 1 | 19 — **missing all five of the above** |
 
 Silver runs first and **overwrites** the `borough` column with its normalized
@@ -50,10 +50,10 @@ side is the one that loses information.
 
 **Resolved 2026-08-20 — none of the three options above.** Investigation found
 the problem was larger than recorded: the mapping existed in **four** places,
-not two. `silver_transformations.py` held two independent copies (the
-`KNOWN_BOROUGH_VARIANTS` set AND a hardcoded `.isin()` chain inside
-`standardize_borough`), plus `local_runner.py`'s `BOROUGH_MAP`, plus the dbt
-`CASE`. Databricks and pandas agreed on 24 variants; dbt knew only 19.
+not two. the PySpark module held two independent copies (a `KNOWN_BOROUGH_VARIANTS`
+set AND a hardcoded `.isin()` chain), plus `local_runner.py`'s `BOROUGH_MAP`,
+plus the dbt `CASE`. The Python copies agreed on 24 variants; dbt knew only 19.
+(The PySpark module has since been removed with the Databricks path.)
 
 Rather than syncing the copies — which decays — the mapping became **data**:
 `config/borough_variants.csv`, one file with one row per spelling, read by all

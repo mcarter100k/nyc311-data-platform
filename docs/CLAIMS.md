@@ -8,15 +8,7 @@ README. Counts and links are additionally checked mechanically in CI by
 | Claim | Enforcing code | Verifying test |
 |---|---|---|
 | Pipeline runs end-to-end locally on DuckDB | `local/local_runner.py` (5 stages) | `tests/local/test_local_gold.py` (dbt build against seeded DuckDB) |
-| 7-task DAG: gate → ingest → bronze → silver → build → publish → notify | `airflow/dags/nyc311_pipeline.py:489-498` | `tests/test_pipeline_components.py::test_airflow_dag_contains_expected_task` |
 | dbt stage is write-audit-publish: build+test in GOLD_AUDIT, atomic swap into GOLD | `dbt/macros/generate_schema_name.sql` (audit_suffix), `dbt/macros/publish_gold.sql` | `tests/test_pipeline_components.py::test_airflow_dag_uses_write_audit_publish` |
-| HttpSensor gates on HTTP 200 + non-empty body | `airflow/dags/nyc311_pipeline.py:262-265` | `tests/test_pipeline_components.py::test_airflow_dag_has_http_sensor_gate` |
-| Ingest is rerun-safe: existing partition skips the API call | `databricks/notebooks/01_ingest_raw.py:83-96` | `tests/test_pipeline_components.py::test_ingest_notebook_has_idempotency_check` (structure-level) |
-| Silver dedups deterministically on unique_key, newest `_ingest_timestamp` wins | `databricks/notebooks/silver_transformations.py:109-124` | `tests/unit/test_silver_transformations.py::test_deduplication` (behavioral, crafted duplicate) |
-| Silver writes via Delta MERGE on unique_key (upsert, retry-safe) | `databricks/notebooks/03_silver.py:404-413` | `tests/test_pipeline_components.py::test_silver_notebook_uses_delta_merge` (structure-level) |
-| resolution_days: NULL for open requests, 0 for same-day, negative preserved for quarantine | `databricks/notebooks/silver_transformations.py:86-106` | `tests/unit/test_silver_transformations.py::test_resolution_days_calculation` |
-| Replay checksum is row-order independent | `databricks/notebooks/silver_transformations.py:132-162` | `tests/unit/test_silver_transformations.py::test_unique_key_checksum_is_order_independent` |
-| Borough variants collapse to 5 canonical names + UNSPECIFIED | `databricks/notebooks/silver_transformations.py:44-83` | `tests/unit/test_silver_transformations.py::test_borough_standardization` |
 | fct_service_requests is incremental MERGE on service_request_id, clustered on cast(created_date as date) | `dbt/models/marts/fct_service_requests.sql:1-9` | `tests/test_dbt_architecture.py::test_fct_service_requests_is_incremental`, `::test_fct_service_requests_cluster_key` |
 | Incremental watermark is `_loaded_at` (pipeline time) with a 1-hour lookback | `dbt/models/marts/fct_service_requests.sql:118-128` | `tests/local/test_local_gold.py::test_incremental_lookback_picks_up_late_arriving_row` |
 | Agency FK is assigned point-in-time on the SCD2 validity window; rebuilds are idempotent, no fan-out | `dbt/models/marts/fct_service_requests.sql:100-110`, `dbt/models/marts/dim_agency.sql` (valid_from) | `tests/local/test_local_gold.py::test_scd2_rename_versions_and_point_in_time_assignment`, `::test_no_fanout_and_full_refresh_idempotent` |
@@ -27,19 +19,13 @@ README. Counts and links are additionally checked mechanically in CI by
 | Every model lands in the GOLD schema (no gold_gold) | `dbt/macros/generate_schema_name.sql` | `tests/test_dbt_architecture.py::test_all_models_land_in_gold_schema` |
 | LOADER role cannot UPDATE/TRUNCATE Bronze (append-only at the grant layer) | `terraform/modules/snowflake-foundation/main.tf:218-228` | `tests/test_pipeline_components.py::test_terraform_loader_bronze_grants_no_truncate` |
 | Terraform validates without cloud credentials | whole `terraform/` tree | `tests/test_pipeline_components.py::test_terraform_validate` (behavioral, subprocess) |
-| No hardcoded credentials: secret scopes / env_var() / ARM_* env | `databricks/notebooks/01_ingest_raw.py:57-59`, `dbt/profiles.yml.example`, `terraform/main.tf:8-20` | `tests/test_pipeline_components.py::test_profiles_example_uses_env_vars_for_credentials` |
 | Source freshness keys on `_silver_timestamp`, not business dates | `dbt/models/staging/sources.yml:20-23` | `tests/test_dbt_architecture.py::test_source_freshness_uses_silver_timestamp` |
-| Incremental ingest watermarks on Socrata `:updated_at`, so post-creation updates are re-fetched | `databricks/notebooks/ingest_config.py::build_page_params` | `tests/test_ingest_config.py::test_incremental_watermark_is_updated_at_not_created_date` |
 | Status changes propagate through the fct incremental upsert — verified under DuckDB's delete+insert strategy; the Snowflake `merge` strategy is unverified (no warehouse) | `dbt/models/marts/fct_service_requests.sql` (merge on service_request_id), `local/models/marts/fct_service_requests.sql` (delete+insert) | `tests/local/test_local_gold.py::test_upsert_propagates_status_change` |
-| Full-load batch flushes survive the final write | `databricks/notebooks/ingest_config.py::final_output_path` | `tests/test_ingest_config.py::test_full_load_final_batch_never_overwrites_partition_root` |
-| Quarantine writes target a column the rows carry (`_run_date`) | `databricks/notebooks/silver_transformations.py::quarantine_partition_predicate` | `tests/unit/test_silver_quarantine.py::test_replace_where_predicate_references_a_column_the_rows_carry` |
-| Quarantine selects exactly the critical failures, with reasons | `databricks/notebooks/silver_transformations.py::select_quarantine` | `tests/unit/test_silver_quarantine.py::test_select_quarantine_picks_exactly_the_critical_failures` |
 | Publish swap keeps reporter access (symmetric grants — spec) | `docs/adr/009-publish-grants-under-schema-swap.md` (Terraform follow-up listed there) | none until the Terraform lands — tracked in ADR 009 |
 | Scheduled to run daily against the live API (spec until the badge is green — the badge IS the live status) | `.github/workflows/daily-run.yml` (cron 10:00 UTC + workflow_dispatch) | self-verifying: the workflow badge and run history |
 | Live fetch is capped, single-retry, and fails on zero rows — red or fully green, never partial | `local/local_runner.py::fetch_live_records` | `tests/local/test_live_fetch.py` (6 mocked tests) |
 | SLO breach or pipeline failure files/updates a GitHub issue with the measured numbers | breach step in `.github/workflows/daily-run.yml` | none until the first real breach — will be observed, not simulated |
 | docs/SLO.md shows byte-identical copies of the executable SLO queries | `scripts/check_claims.py::check_slo_doc_sync` | CI claim check (demonstrated failing on a perturbed doc) |
-| The PySpark unit tier runs in CI with zero skips — a skip or empty collection is a red build | `unit-pyspark` job in `.github/workflows/ci.yml` (junit zero-skip gate) | the job itself; negative-tested red in the restructure PR |
 | README counts (tests, ADRs, fact models) and links match the repo | marker system in `README.md` | `scripts/check_claims.py` in CI (`.github/workflows/ci.yml`) |
 | Gold output agrees with the source, not just with itself: layer conservation, independently recomputed metrics, exact timestamps, live API spot-check | the full transform stack (`local_runner.py` + `local/models/`) | `local/reconcile.py` — run after any local pipeline run; exit 0 = reconciled |
 | The local/ DuckDB mirror tracks the dbt/ models — every intentional dialect divergence is registered; unregistered drift fails the build | `scripts/model_drift_baseline.json` (the divergence register) | `scripts/check_model_drift.py` in CI (`.github/workflows/ci.yml`) |
@@ -49,10 +35,18 @@ README. Counts and links are additionally checked mechanically in CI by
 Claims removed because no enforcing code exists (see ADR 008 and the audit):
 
 - "updated automatically every morning" / any live-schedule claim — no deployment.
-- "syncs to Snowflake via Snowpipe or the Databricks Snowflake connector" — no sync
+- "syncs to Snowflake via Snowpipe or the the transform layer Snowflake connector" — no sync
   code exists; the mechanism is an open decision (ADR 008).
 - "zero silent failures" — DQ threshold breaches warn by design and do not fail.
 - "runs in under 5 seconds on any machine" — depended on a hardcoded venv path and on
   the unit tier silently skipping.
 - "0.02% of records dropped" and other dataset statistics — not reproducible from the repo.
 - "cost-scalability analysis" — the document does not exist.
+
+
+---
+
+*Amendment 2026-08-20 — the Databricks path and the `azure-infra` Terraform
+stub were removed. Claims that referenced unrun notebooks, the cloud DAG, or
+Azure resources were deleted rather than restated: a claim whose subject no
+longer exists cannot be evidenced.*

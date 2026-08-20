@@ -2,7 +2,7 @@
 
 Pulls real NYC 311 data from the Socrata API and runs the complete
 Bronze → Silver → Gold pipeline on your laptop using DuckDB.
-No cloud credentials, no Databricks, no Snowflake needed.
+No cloud credentials, no the cloud spec, no Snowflake needed.
 
 ---
 

@@ -2,7 +2,7 @@
 Pure request-building logic for the Socrata ingest notebook (01_ingest_raw.py).
 
 No Databricks or Spark APIs — unit-testable with plain Python, following the
-same notebook/module split as silver_transformations.py.
+same module split as silver_transformations.py: logic here, I/O in the caller.
 
 The incremental watermark deliberately keys on Socrata's system field
 `:updated_at` (row last modified), NOT `created_date` (when the complaint was

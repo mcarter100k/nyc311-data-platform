@@ -17,7 +17,7 @@ import sys
 
 _NOTEBOOKS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "databricks", "notebooks",
+    "local",
 )
 if _NOTEBOOKS_DIR not in sys.path:
     sys.path.insert(0, _NOTEBOOKS_DIR)

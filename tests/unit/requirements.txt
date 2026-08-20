@@ -1,5 +1,5 @@
-# Dependencies for the unit-pyspark CI tier (ci.yml). Kept in a requirements
-# file, not an inline workflow pin, so Dependabot's pip ecosystem tracks it.
-# pyspark 3.5.1 + Temurin 17 is the verified combination (ADR 011).
-pyspark==4.2.0
+# Dependencies for the unit tier (ci.yml). Kept in a requirements file, not an
+# inline workflow pin, so Dependabot's pip ecosystem tracks it.
+# The tier tests local/silver_transformations.py — pure pandas, no Spark.
+pandas==3.0.5
 pytest

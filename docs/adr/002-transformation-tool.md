@@ -113,3 +113,16 @@ The `generate_surrogate_key` macro changed behavior between dbt_utils 0.x and 1.
 hash inputs are now consistently lowercased and cast to string). Any upgrade must be
 accompanied by a reconciliation check on surrogate keys already loaded into production
 Gold tables, since key values will differ for previously computed rows.
+
+
+---
+
+## Amendment 2026-08-20 — the PySpark side was removed
+
+This ADR chose dbt over continued PySpark for Gold, with Spark retained for
+Bronze/Silver. The Databricks path was later removed entirely: it was specified
+but never provisioned, and its transform module was imported only by a notebook
+that never ran and by its own tests — while the pandas transform that runs
+daily had no unit tests at all. The decision recorded here still holds; the
+alternative it was weighed against no longer exists in the repo. Silver logic
+now lives in `local/silver_transformations.py`, and the tests moved onto it.
