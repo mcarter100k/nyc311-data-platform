@@ -45,7 +45,7 @@ In that state, you can't answer a basic question like "which borough has the wor
 
 ## What This Demonstrates
 
-This project was built to show what a senior data engineer / principal architect produces — not just working code, but the reasoning behind every decision.
+This project documents not just working code, but the reasoning behind every architectural decision — the trade-offs considered, the option chosen, and what it costs.
 
 | Skill Area | What You'll Find Here |
 |---|---|
@@ -140,7 +140,7 @@ Loads raw JSON into a Delta table using Databricks Auto Loader. Auto Loader chec
 ### Silver — `03_silver.py`
 Applies the data quality rules that make analysis trustworthy:
 - Deduplication on `unique_key` (the city's natural key) removes duplicates created by API pagination overlap
-- 15+ borough name variants are standardized to five canonical forms
+- 24 borough name variants are standardized to five canonical forms, from one shared mapping ([config/borough_variants.csv](config/borough_variants.csv)) read by the PySpark transform, the pandas runner, and both dbt projects
 - Records where the closed date precedes the created date are quarantined and logged ([03_silver.py:291](databricks/notebooks/03_silver.py#L291)) — data entry errors that would corrupt resolution time metrics
 - `resolution_days` is calculated as a null-safe value: null for open requests, never zero
 
@@ -191,31 +191,48 @@ Provisions the Snowflake hierarchy from scratch (all five schemas — BRONZE, SI
 ---
 
 <a name="test-suite"></a>
-## Test Suite — <!--claim:test_count-->120<!--/claim--> Tests, Zero Live Credentials Required
+## Operating This Platform
 
-The suite has three tiers, none of which connects to Snowflake, Databricks, or Azure (the total above is recomputed by `scripts/check_claims.py` in CI — the build fails if this section drifts):
+This platform is operated, not just built. It runs daily against a live API, it has written service level objectives, it has had a real incident, and the incident produced a control.
 
-- **Structural tests** assert the compiled dbt manifest, DAG, Terraform, and workflow files, plus pure-Python unit tests of the ingest request contract ([tests/test_ingest_config.py](tests/test_ingest_config.py)). They run in a few seconds.
-- **PySpark unit tests** execute the Silver transformation functions against a local SparkSession with crafted inputs. They skip automatically when pyspark is not installed ([tests/unit/conftest.py:31](tests/unit/conftest.py#L31)).
-- **Local-gold behavioral tests** build the dbt project twice against a seeded DuckDB database and assert incremental semantics: the `_loaded_at` watermark and its 1-hour lookback boundary, snapshot rename detection, the SCD2 point-in-time agency join, and update propagation through the merge ([tests/local/test_local_gold.py](tests/local/test_local_gold.py)). They skip when dbt-duckdb is not installed.
+**Service level objectives** ([docs/SLO.md](docs/SLO.md), evaluated by [scripts/check_slos.py](scripts/check_slos.py) after every scheduled build):
+
+| SLO | Measures | Threshold |
+|---|---|---|
+| **SLO-1 freshness** | age of the newest `_loaded_at` in `gold.fct_service_requests` | < 26 hours — one daily cycle plus 2h grace. Measures *our* pipeline's liveness, not source staleness |
+| **SLO-2 completeness** | rows we loaded vs rows the city actually **published** for yesterday | ≥ 98%. The source's own count is captured at fetch time; the 2% absorbs documented quarantine and dedup removals |
+
+The executable queries live in [scripts/slo/](scripts/slo/); CI fails if `docs/SLO.md` and those files drift apart.
+
+**Breach automation.** A failed run or SLO breach files a `daily-run-breach` GitHub issue with the measured numbers and run URL; a persisting breach comments on the open issue instead of duplicating it ([daily-run.yml](.github/workflows/daily-run.yml)). An issue beats an email: it is a tracked, assignable work item with history that a postmortem can link to.
+
+**A real incident.** On 2026-08-18 the city's publish process left Aug 17 ~96% incomplete, then published nothing for 21+ hours. Every pipeline stage ran green; only the source-facing check saw it, on the tier's first scheduled day. SLO-2 detected it and auto-filed [issue #7](https://github.com/mcarter100k/nyc311-data-platform/issues/7). The control that followed: SLO-2 was **redefined as a source reconciliation** — it now asks whether we loaded everything the city published, so an upstream outage no longer reddens our reliability signal, while a separate non-gating [upstream-stall check](scripts/check_upstream_stall.py) keeps the outage visible. [Full postmortem](docs/postmortems/2026-08-18-upstream-publish-stall.md).
+
+**A self-audit finding.** The ingestion watermark keyed on `created_date`, fetching each record exactly once — on the day it was filed. But 311 requests mutate after creation (status flips to Closed days later), so every downstream update path was unreachable and resolution metrics would only ever have counted same-day closures. Found by systematic self-audit, not by a failure. The watermark now keys on `:updated_at`, guarded by two tests: [one asserting the predicate](tests/test_ingest_config.py), [one proving an update reaches Gold](tests/local/test_local_gold.py).
+
+---
+
+## Test Suite — <!--claim:test_count-->120<!--/claim--> pytest tests, Zero Live Credentials Required
+
+Two separate populations, deliberately not summed: **120 pytest tests** that run without any cloud account, and **100 dbt data tests** that run against the warehouse during `dbt build`. The pytest count is recomputed by [scripts/check_claims.py](scripts/check_claims.py) in CI — the build fails if this section drifts from the repo.
+
+The pytest suite has three tiers, and they verify genuinely different things:
+
+**Structural — 98 tests.** Assert *configuration correctness* against the compiled dbt manifest, the DAG, Terraform, and workflow files: schema resolution, incremental strategy and unique key, DAG lineage from `ref()`/`source()`, source freshness pointing at the pipeline timestamp rather than the business date, Terraform validity, workflow permissions, and the LOADER-has-no-TRUNCATE append-only contract.
+
+*What they catch:* config drift and silent contract violations, in CI, in seconds — a model that would land in the wrong schema, a watermark keyed on the wrong column, a role that quietly gained write access. *What they do not catch:* whether a transformation produces correct output. A model can be perfectly configured and still compute the wrong number; that is the next tier's job.
+
+**Unit — 7 tests.** Execute the Silver transformation functions against a local SparkSession with crafted inputs and assert exact outputs ([tests/unit/](tests/unit/)). Real logic, real Spark, no cluster. This tier is why the transformation code lives in `silver_transformations.py` rather than inside the notebook — notebooks are not unit-testable.
+
+**Behavioral — 15 tests.** Build the real dbt project twice against a seeded DuckDB database and assert on *output rows*, not config ([tests/local/](tests/local/)): the `_loaded_at` watermark and its 1-hour lookback boundary, snapshot rename detection, the SCD2 point-in-time agency join, update propagation through the merge, and the reconciliation delete that keeps incremental and `--full-refresh` identical.
+
+**dbt data tests — 100** (96 generic + 4 singular). Uniqueness, not-null, accepted-values, referential integrity, and Gold-integrity assertions, run by `dbt build` in dependency order — each model's tests execute immediately after it builds, so a failure stops downstream models. These run against the warehouse, not on a laptop; they are the population the local suite cannot replace.
 
 ```bash
-./run_tests.sh          # full suite (unit tier skips without pyspark)
+./run_tests.sh          # full pytest suite (tiers skip cleanly without pyspark / dbt-duckdb)
 ./run_tests.sh dbt      # dbt architecture tests only
 ./run_tests.sh pipeline # pipeline component tests only
 ```
-
-Tests cover:
-- dbt schema resolution (models land in the correct Snowflake schemas)
-- Incremental strategy configuration and watermark correctness
-- DAG lineage (every model's `ref()` and `source()` dependency chain)
-- Source freshness config points to the pipeline timestamp, not the business event date
-- Databricks notebooks use secret scopes, paginate correctly, deduplicate, and assert non-zero row counts
-- Airflow DAG has the HttpSensor gate, reschedule mode, and all 7 expected tasks
-- Terraform HCL passes `terraform validate` — the configuration is deployable
-- The LOADER role has no TRUNCATE on Bronze tables (append-only contract enforced in code)
-- GitHub Actions workflow has the correct permissions and artifact upload steps
-- `profiles.yml.example` uses `env_var()` for all credentials and configures RSA key-pair auth for prod
 
 ---
 
@@ -243,8 +260,11 @@ nyc311-data-platform/
 │   ├── macros/                        # generate_schema_name, generate_date_spine
 │   └── tests/                         # Singular data quality test
 │
-├── airflow/dags/nyc311_pipeline.py    # 7-task orchestration DAG (spec — not deployed)
-├── tests/                             # structural + PySpark unit suite (count checked in CI)
+├── airflow/dags/
+│   ├── nyc311_pipeline.py            # 7-task cloud DAG (spec — not deployed)
+│   └── nyc311_local.py               # 7-task DAG that runs the local pipeline
+├── config/borough_variants.csv        # shared borough mapping (dbt seed + Python)
+├── tests/                             # 120 pytest tests, three tiers (count checked in CI)
 ├── scripts/check_claims.py            # CI guard: README counts/links vs the repo
 ├── docs/adr/                          # <!--claim:adr_count-->11<!--/claim--> architecture decision records
 ├── docs/CLAIMS.md                     # claim → enforcing code → verifying test
@@ -256,25 +276,27 @@ nyc311-data-platform/
 
 ## Architecture Decision Records
 
-ADRs document the reasoning behind major technology choices — written to be defensible in a principal-level interview.
+ADRs document the reasoning behind major technology choices: the alternatives weighed, the decision, and the consequences accepted.
 
-| ADR | Decision |
-|---|---|
-| [001](docs/adr/001-warehouse-selection.md) | Snowflake over Databricks SQL — ETL/BI workload isolation, adapter maturity |
-| [002](docs/adr/002-transformation-tool.md) | dbt over continued PySpark for the Gold layer |
-| [003](docs/adr/003-iac-approach.md) | Terraform as the single IaC surface across three providers |
-| [004](docs/adr/004-medallion-vs-elt.md) | Medallion layering over direct ELT — one failure mode per layer |
-| [005](docs/adr/005-orchestration-strategy.md) | Airflow, single DAG, write-audit-publish dbt stage |
-| [006](docs/adr/006-schema-evolution.md) | Schema version stamp over runtime column detection |
-| [007](docs/adr/007-scd-type-2-dim-agency.md) | dbt snapshot (check strategy) for agency SCD Type 2; point-in-time fact join |
-| [008](docs/adr/008-prototype-scope.md) | Prototype scope — cloud services specified, not provisioned |
-| [009](docs/adr/009-publish-grants-under-schema-swap.md) | Symmetric grants on GOLD/GOLD_AUDIT so the publish swap keeps reporter access |
+| ADR | Decision | Outcome |
+|---|---|---|
+| [001](docs/adr/001-warehouse-selection.md) | Snowflake over Databricks SQL for the serving layer | ETL and BI workloads isolated on separate warehouses; dbt adapter maturity |
+| [002](docs/adr/002-transformation-tool.md) | dbt over continued PySpark for the Gold layer | Gold logic becomes testable SQL with lineage; Spark stays for Bronze/Silver |
+| [003](docs/adr/003-iac-approach.md) | Terraform as the single IaC surface across three providers | One state file, one plan; drift detection is an apply-time step, not CI |
+| [004](docs/adr/004-medallion-vs-elt.md) | Medallion layering over direct ELT | One failure mode per layer, so a break is isolated to a known stage |
+| [005](docs/adr/005-orchestration-strategy.md) | Airflow, single DAG, write-audit-publish dbt stage | Sensor gate before paid compute; Gold never serves unvalidated data |
+| [006](docs/adr/006-schema-evolution.md) | Schema version stamp over runtime column detection | Each fact row records the contract that built it; additive changes need no bump |
+| [007](docs/adr/007-scd-type-2-dim-agency.md) | dbt snapshot (check strategy) for agency SCD Type 2 | Point-in-time fact join; a 2021 request keeps its 2021 agency name |
+| [008](docs/adr/008-prototype-scope.md) | Cloud services specified, not provisioned | Every cloud claim in this repo is scoped as spec, never as running |
+| [009](docs/adr/009-publish-grants-under-schema-swap.md) | Symmetric grants on GOLD and GOLD_AUDIT | The publish swap keeps REPORTER access; grants follow renamed objects |
+| [010](docs/adr/010-scheduled-operation.md) | Scheduled daily operation with written SLOs | The pipeline runs live daily; a breach files a tracked issue |
+| [011](docs/adr/011-parallel-ci-tiers.md) | Three parallel required CI checks, not one sequential job | A red check names its failure class; wall time is the slowest tier |
 
 ---
 
 ## Design Decisions Worth Discussing
 
-These are the decisions most likely to generate substantive conversation in a senior or principal-level interview.
+These are the decisions where the trade-off was genuinely close, and where the reasoning matters more than the result.
 
 **`is_overdue` is NULL for open requests, not FALSE.**
 `fct_service_requests` uses a three-valued flag: TRUE (closed in > 30 days), FALSE (closed in ≤ 30 days), NULL (still open). A boolean FALSE would cause `COUNT(*) FILTER (WHERE NOT is_overdue)` to count open requests as "on time" — silently inflating the resolution rate. NULL forces analysts to explicitly decide whether to include or exclude open requests, which is the correct default for a mixed-status fact table.
@@ -352,7 +374,7 @@ cd .. && ./run_tests.sh
 ## Contact
 
 **Marquis Carter**
-Data Engineer · Principal Architect
+Data Engineer
 marq.dcarter@gmail.com
 [LinkedIn](https://www.linkedin.com/in/marquis-c-45132325b/) · [GitHub](https://github.com/mcarter100k)
 
