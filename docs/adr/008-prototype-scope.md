@@ -73,3 +73,19 @@ against the 1-hour watermark constraint above, and add a smoke-test workflow tha
   ("the DAG specifies a daily 06:00 UTC run") or scoped to the local runner.
 - The pytest suite and the local DuckDB path are the only places where "it works" may be
   asserted without qualification.
+
+
+---
+
+## Amendment 2026-08-20 — scope narrowed to Snowflake alone
+
+This ADR scoped Azure, Databricks, and Snowflake as specified-not-provisioned.
+Two of the three are now simply gone: the Databricks notebooks and the
+`azure-infra` Terraform stub were deleted rather than carried as unverifiable
+claims. What remains deferred is one thing — a Snowflake account. The dbt
+project targets Snowflake and is validated in CI; the mechanism that would load
+Silver into it remains an open decision.
+
+The reasoning for deletion: unrun *logic* is a liability, because it invites
+claims nothing can verify. Unapplied *declarative* config (the Terraform
+module) is a design document, and is labelled as one.

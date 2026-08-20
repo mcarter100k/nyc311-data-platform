@@ -50,7 +50,7 @@ renamed as (
         -- ── Metadata ─────────────────────────────────────────────────────────
         open_data_channel_type::varchar                                         as channel_type,
         -- Use Silver's own load timestamp, not dbt's run timestamp.
-        -- _silver_timestamp is written by 03_silver.py on every INSERT and UPDATE,
+        -- _silver_timestamp is written by the Silver transform on every write,
         -- so it reflects when Silver last touched this row — critical for the
         -- incremental filter in fct_service_requests.
         _silver_timestamp::timestamp_ntz                                         as _loaded_at,

@@ -4,8 +4,8 @@ name: CI
 #   fast-gate         — contract drift: dbt parse, structural pytest, claim /
 #                       mirror checkers, workflow lint. Fails when the repo
 #                       stops agreeing with itself.
-#   unit-pyspark      — Silver transform logic on a real SparkSession. Fails
-#                       when the transformation code is wrong.
+#   unit              — Silver transform logic (pandas) against fixtures.
+#                       Fails when the transformation code is wrong.
 #   behavioral-duckdb — the dbt models built twice against seeded DuckDB.
 #                       Fails when Gold semantics (watermark, SCD2 join,
 #                       upsert) regress.
@@ -118,8 +118,8 @@ jobs:
           tar -xzf actionlint.tar.gz actionlint
           ./actionlint -color
 
-  unit-pyspark:
-    name: unit-pyspark
+  unit:
+    name: unit
     runs-on: ubuntu-latest
 
     steps:
@@ -130,25 +130,17 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
-        with:
-          distribution: temurin
-          java-version: "17"
 
-      # Pinned in tests/unit/requirements.txt (not inline) so Dependabot's
-      # pip ecosystem can see and update it — an inline workflow pin is
-      # invisible to all dependency automation. 3.5.1 + Temurin 17 is the
-      # combination the tier was verified against. Recorded in ADR 011.
-      - name: Install pyspark and test dependencies
+      # Pinned in tests/unit/requirements.txt so Dependabot tracks it. The
+      # tier tests local/silver_transformations.py — pure pandas, no JVM.
+      - name: Install test dependencies
         run: pip install -r tests/unit/requirements.txt
 
-      - name: PySpark unit tests
+      - name: Unit tests
         run: pytest tests/unit -v -ra --junitxml=unit-report.xml
 
-      # tests/unit/conftest.py importorskips pyspark so laptops without it
-      # skip gracefully — which is exactly how this tier silently never ran
-      # in CI before this workflow existed. Here, a skip (or an empty
-      # collection) is a red build, never a pass.
+      # The tier importorskips pandas so a bare laptop skips gracefully. Here,
+      # a skip (or an empty collection) is a red build, never a pass.
       - name: Enforce zero skips
         run: |
           python - << 'EOF'

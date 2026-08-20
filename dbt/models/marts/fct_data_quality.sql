@@ -15,7 +15,7 @@
 --   first_seen / last_seen       — when a failure type first appeared and most
 --                                  recently recurred; drives SLA conversations
 --   is_rolling_threshold_breached — true when the 7-day average exceeds the same
---                                  threshold used by 03_silver.py to warn; this
+--                                  threshold used by the Silver transform to warn; this
 --                                  column is the intended BI alert trigger
 --
 -- Materialized as a full table refresh (not incremental) because:
@@ -103,7 +103,7 @@ final as (
         f.last_seen,
         coalesce(f.total_days_with_failures, 0)                     as total_days_with_failures,
 
-        -- Mirrors the thresholds in 03_silver.py DQ_THRESHOLDS.
+        -- Mirrors the thresholds the Silver transform warns on.
         -- When this flips to true in a BI dashboard, it means the 7-day
         -- rolling average has been elevated long enough to be a real trend,
         -- not a one-day anomaly.

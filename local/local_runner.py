@@ -45,20 +45,19 @@ PAGE_SIZE        = 1_000
 LIVE_DAYS    = 7
 LIVE_ROW_CAP = 150_000
 
-# Borough spelling map, loaded from the ONE canonical file shared by every
-# layer that standardizes borough: this pandas Silver transform, the PySpark
-# Silver transform, and both dbt projects (which load it as a seed). Adding a
-# newly observed spelling is a one-line CSV edit picked up everywhere — the
-# same mapping used to be hardcoded in four places and had already drifted.
-BOROUGH_VARIANTS_CSV = LOCAL_DIR.parent / "config" / "borough_variants.csv"
-
-
-def _load_borough_map() -> dict:
-    with open(BOROUGH_VARIANTS_CSV, newline="") as fh:
-        return {r["variant"]: r["canonical"] for r in csv.DictReader(fh)}
-
-
-BOROUGH_MAP = _load_borough_map()
+# Silver transformation logic lives in silver_transformations.py so it can be
+# unit-tested without a database. This module owns I/O only.
+from silver_transformations import (          # noqa: E402
+    BOROUGH_MAP,
+    compute_dq_metrics,
+    compute_resolution_days,
+    deduplicate_on_unique_key,
+    drop_quarantined,
+    parse_timestamps,
+    quarantine_mask,
+    standardize_borough,
+    standardize_borough_value as _standardize_borough,
+)
 
 
 def _banner(msg: str) -> None:
@@ -96,7 +95,7 @@ def fetch_live_records(days: int = LIVE_DAYS, cap: int = LIVE_ROW_CAP, get=None)
     """Fetch rows created-or-updated in the trailing `days` window.
 
     Query parameters come from the ONE existing param builder
-    (databricks/notebooks/ingest_config.build_page_params), in its
+    (local/ingest_config.build_page_params), in its
     created_window mode: :updated_at is mass re-stamped nightly (~540k
     rows/day measured vs ~53k/week created — ADR 010), so the daily run
     windows on created_date and re-pulls the whole window, which still
@@ -105,7 +104,6 @@ def fetch_live_records(days: int = LIVE_DAYS, cap: int = LIVE_ROW_CAP, get=None)
     zero rows is a failure — the scheduled run must be red or fully green,
     never partially loaded.
     """
-    sys.path.insert(0, str(LOCAL_DIR.parent / "databricks" / "notebooks"))
     from ingest_config import SOCRATA_URL, build_page_params
 
     if get is None:
@@ -163,7 +161,6 @@ def fetch_source_count_yesterday(get=None) -> dict:
     missing capture would otherwise silently degrade the SLO gate.
     `get` is injectable for tests.
     """
-    sys.path.insert(0, str(LOCAL_DIR.parent / "databricks" / "notebooks"))
     from ingest_config import SOCRATA_URL
 
     if get is None:
@@ -247,72 +244,27 @@ def stage2_bronze() -> None:
 
 # ── Stage 3: Silver ────────────────────────────────────────────────────────────
 
-def _standardize_borough(val) -> str:
-    if pd.isna(val) or str(val).strip() == "":
-        return "UNSPECIFIED"
-    return BOROUGH_MAP.get(str(val).upper().strip(), "UNSPECIFIED")
-
-
 def stage3_silver() -> None:
     _banner("Stage 3 — Silver  (clean, dedup, derive → DuckDB silver schema)")
     con = duckdb.connect(str(DUCKDB_PATH))
 
-    df = con.execute("SELECT * FROM bronze.service_requests").df()
-    n_bronze = len(df)
-    print(f"  bronze rows: {n_bronze:,}")
+    # Every transformation below is a call into silver_transformations, which
+    # is unit-tested in tests/unit/. This function owns only I/O and logging.
+    df_bronze = con.execute("SELECT * FROM bronze.service_requests").df()
+    print(f"  bronze rows: {len(df_bronze):,}")
 
-    # Null rates on raw bronze data (pre-dedup)
-    n_null_uk = df["unique_key"].isna().sum() if "unique_key" in df.columns else n_bronze
-    n_null_cd = df["created_date"].isna().sum() if "created_date" in df.columns else 0
+    df = deduplicate_on_unique_key(df_bronze)
+    print(f"  after dedup: {len(df):,} rows "
+          f"({len(df_bronze) - len(df):,} duplicates removed)")
 
-    # Deduplication: keep latest _ingest_timestamp per unique_key
-    if "unique_key" in df.columns:
-        df = (
-            df.sort_values("_ingest_timestamp", ascending=False)
-              .drop_duplicates(subset=["unique_key"], keep="first")
-              .reset_index(drop=True)
-        )
-    n_deduped = len(df)
-    print(f"  after dedup: {n_deduped:,} rows ({n_bronze - n_deduped:,} duplicates removed)")
+    df = standardize_borough(df)
+    df = compute_resolution_days(parse_timestamps(df))
 
-    # Borough standardization (before timestamp parsing for unrecognized count)
-    df["borough"] = df.get("borough", pd.Series(dtype=str)).apply(_standardize_borough)
-    n_unrecognized = (df["borough"] == "UNSPECIFIED").sum()
-
-    # Timestamp parsing — coerce bad values to NaT. Parse NAIVE, not utc=True:
-    # Socrata sends naive NYC-local timestamps, and the cloud spec stores them
-    # as TIMESTAMP_NTZ (no zone). Labeling them UTC here made the downstream
-    # ::timestamp cast shift every value by the machine's UTC offset — caught
-    # by source reconciliation as wrong calendar dates for after-midnight rows.
-    for col in ("created_date", "closed_date", "resolution_action_updated_date"):
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
-        else:
-            df[col] = pd.NaT
-
-    # resolution_days: integer, NULL for open requests
-    has_both = df["closed_date"].notna() & df["created_date"].notna()
-    df["resolution_days"] = pd.NA
-    if has_both.any():
-        df.loc[has_both, "resolution_days"] = (
-            (df.loc[has_both, "closed_date"] - df.loc[has_both, "created_date"])
-            .dt.days
-            .astype("Int64")
-        )
-
-    # is_resolved
-    df["is_resolved"] = df.get("status", pd.Series(dtype=str)) == "Closed"
-
-    # Quarantine records with negative resolution_days (data entry errors).
-    # to_numeric, not astype(float): the column is nullable Int64 and astype
-    # raises on pd.NA; to_numeric keeps NA as NaN, which compares False.
-    invalid_mask = df["resolution_days"].notna() & (
-        pd.to_numeric(df["resolution_days"], errors="coerce") < 0
-    )
-    n_invalid = int(invalid_mask.sum())
+    df_derived = df
+    n_invalid = int(quarantine_mask(df_derived).sum())
     if n_invalid:
         print(f"  quarantining {n_invalid:,} records with negative resolution_days")
-    df = df[~invalid_mask].reset_index(drop=True)
+    df = drop_quarantined(df_derived)
 
     # Silver timestamp
     df["_silver_timestamp"] = datetime.now(timezone.utc).isoformat()
@@ -325,28 +277,7 @@ def stage3_silver() -> None:
 
     # Write DQ log
     run_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    dq_rows = [
-        {"run_date": run_date, "check_name": "null_rate_unique_key",
-         "records_checked": n_bronze, "records_failed": int(n_null_uk),
-         "failure_rate": round(int(n_null_uk) / max(n_bronze, 1), 6),
-         "pipeline_stage": "silver"},
-        {"run_date": run_date, "check_name": "null_rate_created_date",
-         "records_checked": n_bronze, "records_failed": int(n_null_cd),
-         "failure_rate": round(int(n_null_cd) / max(n_bronze, 1), 6),
-         "pipeline_stage": "silver"},
-        {"run_date": run_date, "check_name": "duplicate_rate",
-         "records_checked": n_bronze, "records_failed": n_bronze - n_deduped,
-         "failure_rate": round((n_bronze - n_deduped) / max(n_bronze, 1), 6),
-         "pipeline_stage": "silver"},
-        {"run_date": run_date, "check_name": "invalid_resolution_days",
-         "records_checked": n_deduped, "records_failed": n_invalid,
-         "failure_rate": round(n_invalid / max(n_deduped, 1), 6),
-         "pipeline_stage": "silver"},
-        {"run_date": run_date, "check_name": "unrecognized_borough",
-         "records_checked": n_deduped, "records_failed": int(n_unrecognized),
-         "failure_rate": round(int(n_unrecognized) / max(n_deduped, 1), 6),
-         "pipeline_stage": "silver"},
-    ]
+    dq_rows = compute_dq_metrics(df_bronze, df, df_derived, run_date)
     dq_df = pd.DataFrame(dq_rows)
     # Append, don't replace: the DQ log accumulates across runs (mirroring the
     # cloud spec, where 03_silver.py appends per run) so fct_data_quality's

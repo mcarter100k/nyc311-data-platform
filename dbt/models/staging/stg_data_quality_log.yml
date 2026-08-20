@@ -4,7 +4,7 @@ models:
   - name: stg_data_quality_log
     description: >
       Thin staging view over the Silver data_quality_log source table, which is
-      written by 03_silver.py before the Silver MERGE (one row per quality check
+      written by the Silver transform before the Silver write (one row per quality check
       per pipeline run date). A pure passthrough — no renames or casts are needed —
       that exists so fct_data_quality, its only consumer, reads through the staging
       layer instead of referencing the source directly, keeping source isolation
@@ -44,4 +44,4 @@ models:
           rolling-average and threshold-breach logic in fct_data_quality.
 
       - name: pipeline_stage
-        description: "Pipeline layer that produced the check. Always 'silver' for rows written by 03_silver.py."
+        description: "Pipeline layer that produced the check. Always 'silver' for rows written by the Silver transform."

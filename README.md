@@ -42,7 +42,7 @@ These are the decisions where the trade-off was genuinely close, and where the r
 `fct_service_requests` uses a three-valued flag: TRUE (closed in > 30 days), FALSE (closed in ≤ 30 days), NULL (still open). A boolean FALSE would cause `COUNT(*) FILTER (WHERE NOT is_overdue)` to count open requests as "on time" — silently inflating the resolution rate. NULL forces analysts to explicitly decide whether to include or exclude open requests, which is the correct default for a mixed-status fact table.
 
 **The HttpSensor is a cost gate, not just a health check.**
-The sensor validates HTTP 200 and a non-empty JSON body before any Databricks cluster starts. If the Socrata API is up but the daily refresh hasn't completed, the sensor waits. The cost of a five-minute sensor timeout is zero. The cost of a cluster spinning up, pulling an incomplete dataset, and writing a partial Bronze partition is a manual replay job plus incident investigation.
+The sensor validates HTTP 200 and a non-empty JSON body before any downstream work starts. If the Socrata API is up but the daily refresh hasn't completed, the sensor waits. The cost of a five-minute sensor timeout is zero. The cost of proceeding — pulling an incomplete dataset and writing a partial Bronze partition — is a manual replay plus an incident investigation. On a warehouse billed by the second, that gap is also money.
 
 **`FUTURE TABLES` grants interact with schema-swap publishing — and the interaction has to be designed, not assumed.**
 `SELECT ON FUTURE TABLES` lets any table dbt creates inherit reporter permissions without a Terraform re-apply ([main.tf:471-481](terraform/modules/snowflake-foundation/main.tf#L471-L481)). But Snowflake grants attach to the schema *object*, and the write-audit-publish swap renames objects — so grants defined only on GOLD stop covering it after the first publish. [ADR 009](docs/adr/009-publish-grants-under-schema-swap.md) resolves this: the grant matrix is specified symmetrically on both GOLD and GOLD_AUDIT, keeping the single atomic swap (the alternative — per-table view swaps — was rejected because it reintroduces the cross-table inconsistency window WAP exists to eliminate).
@@ -86,14 +86,13 @@ The distinction is enforced, not asserted: [scripts/check_claims.py](scripts/che
 | Runs daily against the live API, gated by two SLOs | [daily-run.yml](.github/workflows/daily-run.yml), [ADR 010](docs/adr/010-scheduled-operation.md) |
 | Airflow orchestrates it locally — 7-task DAG, verified with `airflow dags test`, all tasks green (a demonstration; GitHub Actions remains the scheduler) | [nyc311_local.py](airflow/dags/nyc311_local.py) |
 | Three parallel required CI checks on every PR | [ci.yml](.github/workflows/ci.yml), [ADR 011](docs/adr/011-parallel-ci-tiers.md) |
-| Silver transforms unit-tested on a real SparkSession | [tests/unit/](tests/unit/) |
+| Silver transform logic unit-tested against fixtures | [tests/unit/](tests/unit/), [local/silver_transformations.py](local/silver_transformations.py) |
 | Terraform passes `terraform validate` in CI | [terraform.yml](.github/workflows/terraform.yml) |
 
 | Deferred — specified, never provisioned | Where |
 |---|---|
-| Azure, Databricks, Snowflake accounts | [terraform/](terraform/) — never applied |
-| Cloud-scheduled runs | [nyc311_pipeline.py](airflow/dags/nyc311_pipeline.py) — the 7-task cloud DAG is a schedule spec |
-| Databricks Silver → Snowflake sync | mechanism is an open decision ([ADR 008](docs/adr/008-prototype-scope.md)) |
+| A Snowflake account | [terraform/](terraform/) — the module is validated in CI, never applied |
+| Loading Silver into Snowflake | the dbt project targets Snowflake; the load mechanism is an open decision ([ADR 008](docs/adr/008-prototype-scope.md)) |
 
 Nothing here claims to run in a cloud account. Everything that claims to run, runs.
 
@@ -104,8 +103,8 @@ Nothing here claims to run in a cloud account. Everything that claims to run, ru
 Bronze → Silver → Gold, where **three layers are a debugging protocol, not an architecture pattern**: each layer has exactly one failure mode, so a break is isolated to a known stage rather than hunted across a monolith.
 
 ```
-Socrata API → ADLS raw → Bronze (Delta) → Silver (Delta) → Snowflake GOLD (dbt star schema) → BI
-                 PySpark / pandas ────────┘        └──────── dbt: staging → intermediate → marts
+Socrata API → raw JSON → Bronze → Silver → GOLD (dbt star schema) → BI
+                 pandas ──────────────────┘        └──────── dbt: staging → intermediate → marts
 ```
 
 Gold is a Kimball star: <!--claim:fct_models-->3<!--/claim--> fact tables, 3 dimensions, and a 21-year calendar spine (2010–2030). Terraform provisions the Snowflake side — 5 schemas (including `GOLD_AUDIT` for write-audit-publish and `SNAPSHOTS` for SCD2 state), 4 roles, and a least-privilege grant matrix enforced as code.
@@ -116,18 +115,18 @@ Gold is a Kimball star: <!--claim:fct_models-->3<!--/claim--> fact tables, 3 dim
 
 ## Test Suite
 
-Two populations, deliberately not summed: **<!--claim:test_count-->120<!--/claim--> pytest tests** that need no cloud account, and **100 dbt data tests** that run against the warehouse during `dbt build`. The pytest count is recomputed in CI.
+Two populations, deliberately not summed: **<!--claim:test_count-->105<!--/claim--> pytest tests** that need no cloud account, and **100 dbt data tests** that run against the warehouse during `dbt build`. The pytest count is recomputed in CI.
 
 | Tier | Count | What it proves |
 |---|---|---|
-| **Structural** | 98 | Configuration correctness — schema resolution, incremental strategy, DAG lineage, freshness target, Terraform validity, the LOADER-has-no-TRUNCATE contract |
-| **Unit** | 7 | Silver transformation *logic*, against a real local SparkSession |
+| **Structural** | 83 | Configuration correctness — schema resolution, incremental strategy, DAG lineage, freshness target, Terraform validity, the LOADER-has-no-TRUNCATE contract |
+| **Unit** | 7 | Silver transformation *logic* ([local/silver_transformations.py](local/silver_transformations.py)) against hand-built fixtures |
 | **Behavioral** | 15 | Gold *semantics* — builds the dbt project twice on seeded DuckDB and asserts on output rows: watermark lookback, SCD2 point-in-time join, update propagation |
 
 The structural tier is the largest and the weakest, and it is worth saying so: it catches config drift and silent contract violations in seconds, but **a model can be perfectly configured and still compute the wrong number.** That is what the other two tiers are for.
 
 ```bash
-./run_tests.sh          # full pytest suite (tiers skip cleanly without pyspark / dbt-duckdb)
+./run_tests.sh          # full pytest suite (the behavioral tier skips without dbt-duckdb)
 ```
 
 ---
@@ -139,7 +138,7 @@ ADRs document the reasoning behind major technology choices: the alternatives we
 | ADR | Decision | Outcome |
 |---|---|---|
 | [001](docs/adr/001-warehouse-selection.md) | Snowflake over Databricks SQL for the serving layer | ETL and BI workloads isolated on separate warehouses; dbt adapter maturity |
-| [002](docs/adr/002-transformation-tool.md) | dbt over continued PySpark for the Gold layer | Gold logic becomes testable SQL with lineage; Spark stays for Bronze/Silver |
+| [002](docs/adr/002-transformation-tool.md) | dbt over hand-written transform code for the Gold layer | Gold logic becomes testable SQL with lineage and documentation |
 | [003](docs/adr/003-iac-approach.md) | Terraform as the single IaC surface across three providers | One state file, one plan; drift detection is an apply-time step, not CI |
 | [004](docs/adr/004-medallion-vs-elt.md) | Medallion layering over direct ELT | One failure mode per layer, so a break is isolated to a known stage |
 | [005](docs/adr/005-orchestration-strategy.md) | Airflow, single DAG, write-audit-publish dbt stage | Sensor gate before paid compute; Gold never serves unvalidated data |
@@ -171,15 +170,14 @@ Cloud deployment steps, which require your own Azure + Snowflake accounts, are i
 ## Repository map
 
 ```
-local/          the pipeline that actually runs — pandas Silver + DuckDB Gold
+local/          the pipeline — ingest, pandas Silver (silver_transformations.py), DuckDB Gold
 dbt/            Snowflake dbt project (models, snapshots, macros, tests)
-databricks/     PySpark Bronze/Silver notebooks + unit-testable transform module
-airflow/dags/   nyc311_local.py (runs) · nyc311_pipeline.py (7-task cloud DAG, spec)
-terraform/      Snowflake foundation — 5 schemas, 4 roles, grant matrix
+airflow/dags/   nyc311_local.py — the 7-task DAG, smoke-tested green
+terraform/      Snowflake foundation — 5 schemas, 4 roles, grant matrix (validated, not applied)
 config/         borough_variants.csv — one mapping, read by Python and dbt alike
 scripts/        SLO checks, claim checker, model-drift guard
 docs/           ARCHITECTURE · SLO · CLAIMS · BACKLOG · adr/ (<!--claim:adr_count-->11<!--/claim-->) · postmortems/
-tests/          120 pytest tests across three tiers
+tests/          105 pytest tests across three tiers
 ```
 
 ---
