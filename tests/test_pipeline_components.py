@@ -139,6 +139,7 @@ def test_terraform_validate():
             cwd=TERRAFORM_DIR,
             capture_output=True,
             text=True,
+            check=False,   # returncode drives the skip below
         )
     except FileNotFoundError:
         pytest.skip("terraform is not installed — skipping HCL validation.")
@@ -150,6 +151,7 @@ def test_terraform_validate():
         cwd=TERRAFORM_DIR,
         capture_output=True,
         text=True,
+        check=False,   # returncode drives the pytest.fail below
     )
     if result.returncode != 0:
         pytest.fail(f"terraform validate failed:\n{result.stdout}\n{result.stderr}")
@@ -167,7 +169,7 @@ def test_terraform_outputs_dont_reference_commented_azure_module():
     active_lines = [line for line in content.splitlines()
                     if "module.azure_infra" in line and not line.strip().startswith("#")]
     assert not active_lines, (
-        f"outputs.tf has active references to module.azure_infra (which is commented out):\n"
+        "outputs.tf has active references to module.azure_infra (which is commented out):\n"
         + "\n".join(active_lines)
     )
 

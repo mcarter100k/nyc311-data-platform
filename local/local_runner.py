@@ -275,7 +275,10 @@ def stage3_silver() -> None:
     # Write DQ log
     run_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     dq_rows = compute_dq_metrics(df_bronze, df, df_derived, run_date)
-    dq_df = pd.DataFrame(dq_rows)
+    # noqa is correct here, not a silencer: DuckDB's replacement scan resolves
+    # `FROM dq_df` in the INSERT below against this local variable, so the name
+    # IS the interface. Static analysis cannot see a reference inside SQL text.
+    dq_df = pd.DataFrame(dq_rows)  # noqa: F841
     # Append, don't replace: the DQ log accumulates across runs (mirroring the
     # cloud spec, where 03_silver.py appends per run) so fct_data_quality's
     # 7-day rolling window has real history when the database persists between
@@ -334,7 +337,7 @@ def _run_dbt(args: list[str]) -> int:
         "--no-version-check",
     ]
     print(f"\n  $ dbt {' '.join(args)}")
-    return subprocess.run(cmd, cwd=LOCAL_DIR).returncode
+    return subprocess.run(cmd, cwd=LOCAL_DIR, check=False).returncode
 
 
 def stage4_gold(incremental: bool = False) -> None:

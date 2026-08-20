@@ -36,7 +36,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 README = os.path.join(ROOT, "README.md")
 
-MARKER_RE = re.compile(r"<!--claim:([a-z_]+)-->(.*?)<!--/claim-->", re.S)
+MARKER_RE = re.compile(r"<!--claim:([a-z_]+)-->(.*?)<!--/claim-->", re.DOTALL)
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 
 
@@ -44,7 +44,7 @@ def structural_test_count() -> int:
     out = subprocess.run(
         [sys.executable, "-m", "pytest", "tests/", "--ignore=tests/unit",
          "--ignore=tests/local", "--collect-only", "-q"],
-        cwd=ROOT, capture_output=True, text=True,
+        cwd=ROOT, capture_output=True, text=True, check=False,
     )
     m = re.search(r"(\d+) tests? collected", out.stdout)
     if not m:
@@ -109,7 +109,7 @@ def check_markers(readme_text: str, expected: dict) -> list:
 
 
 SLO_DOC = os.path.join(ROOT, "docs", "SLO.md")
-SLO_BLOCK_RE = re.compile(r"<!--slo-sql:([^\s>]+)-->\s*```sql\n(.*?)```", re.S)
+SLO_BLOCK_RE = re.compile(r"<!--slo-sql:([^\s>]+)-->\s*```sql\n(.*?)```", re.DOTALL)
 
 
 def check_slo_doc_sync() -> list:
@@ -237,7 +237,7 @@ def main() -> int:
 
     for name, value in expected.items():
         print(f"  ✓ claim:{name} = {value}")
-    print(f"  ✓ all relative README links resolve")
+    print("  ✓ all relative README links resolve")
     print("README claim check passed.")
     return 0
 

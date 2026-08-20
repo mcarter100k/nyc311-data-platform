@@ -70,7 +70,8 @@ def main() -> int:
 
     raw = json.load(open(RAW_FILE))
     con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
-    one = lambda q: con.sql(q).fetchone()[0]
+    def one(q):
+        return con.sql(q).fetchone()[0]
 
     # Deduplicate the raw records the same way Silver does (one row per
     # unique_key) so the independent recompute covers the same population.

@@ -132,7 +132,7 @@ Two populations, deliberately not summed: **<!--claim:test_count-->112<!--/claim
 
 | Tier | Count | What it proves |
 |---|---|---|
-| **Structural** | 86 | Configuration correctness — schema resolution, incremental strategy, DAG lineage, freshness target, Terraform validity, the LOADER-has-no-TRUNCATE contract |
+| **Structural** | 89 | Configuration correctness — schema resolution, incremental strategy, DAG lineage, freshness target, Terraform validity, module importability, the LOADER-has-no-TRUNCATE contract |
 | **Unit** | 7 | Silver transformation *logic* ([local/silver_transformations.py](local/silver_transformations.py)) against hand-built fixtures |
 | **Behavioral** | 16 | Gold *semantics* — builds the dbt project twice on seeded DuckDB and asserts on output rows: watermark lookback, SCD2 point-in-time join, update propagation |
 

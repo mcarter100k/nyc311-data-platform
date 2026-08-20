@@ -75,7 +75,8 @@ def _dbt(args, profiles_dir):
         "--project-dir", LOCAL_PROJECT,
         "--no-version-check",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=LOCAL_PROJECT)
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=LOCAL_PROJECT,
+                            check=False)
     assert result.returncode == 0, (
         f"dbt {' '.join(args)} failed:\n{result.stdout[-4000:]}\n{result.stderr[-2000:]}"
     )
