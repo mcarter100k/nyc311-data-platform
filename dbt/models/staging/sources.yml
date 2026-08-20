@@ -20,10 +20,14 @@ sources:
           2010-2019 into a separate historical dataset).
           Schema mirrors the NYC Open Data Socrata export with types applied by the
           Silver transform: strings remain VARCHAR, timestamps are TIMESTAMP_NTZ.
-        loaded_at_field: _silver_timestamp
-        freshness:
-          warn_after:  {count: 24, period: hour}
-          error_after: {count: 48, period: hour}
+        # dbt 1.12 moved these under `config`. They are source-FRESHNESS
+        # settings rather than source properties — the distinction the
+        # deprecation draws. Behaviour is unchanged.
+        config:
+          loaded_at_field: _silver_timestamp
+          freshness:
+            warn_after:  {count: 24, period: hour}
+            error_after: {count: 48, period: hour}
         columns:
           - name: unique_key
             description: "Natural key from NYC Open Data. Numeric string, unique per service request."

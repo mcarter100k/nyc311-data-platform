@@ -87,14 +87,15 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values:
-                - 'Open'
-                - 'Closed'
-                - 'Pending'
-                - 'In Progress'
-                - 'Assigned'
-                - 'Started'
-                - 'Unspecified'
+              arguments:
+                values:
+                  - 'Open'
+                  - 'Closed'
+                  - 'Pending'
+                  - 'In Progress'
+                  - 'Assigned'
+                  - 'Started'
+                  - 'Unspecified'
 
       - name: resolution_description
         description: "Free-text description written by the agency explaining how the request was resolved."

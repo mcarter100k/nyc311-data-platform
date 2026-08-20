@@ -12,9 +12,10 @@ models:
       source table is small (5 checks x pipeline days).
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - run_date
-            - check_name
+          arguments:
+            combination_of_columns:
+              - run_date
+              - check_name
     columns:
       - name: run_date
         description: "Pipeline run date matching the Silver widget value."
@@ -25,12 +26,13 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values:
-                - null_rate_unique_key
-                - null_rate_created_date
-                - duplicate_rate
-                - invalid_resolution_days
-                - unrecognized_borough
+              arguments:
+                values:
+                  - null_rate_unique_key
+                  - null_rate_created_date
+                  - duplicate_rate
+                  - invalid_resolution_days
+                  - unrecognized_borough
       - name: pipeline_stage
         description: "Always 'silver' for checks written by the Silver transform."
         tests:
@@ -48,7 +50,8 @@ models:
         tests:
           - not_null
           - dbt_utils.expression_is_true:
-              expression: "between 0 and 1"
+              arguments:
+                expression: "between 0 and 1"
       - name: rolling_7d_avg_failure_rate
         description: >
           Average failure_rate over the 7-calendar-day window ending on
@@ -57,7 +60,8 @@ models:
         tests:
           - not_null
           - dbt_utils.expression_is_true:
-              expression: "between 0 and 1"
+              arguments:
+                expression: "between 0 and 1"
       - name: rolling_7d_day_count
         description: "Number of run_dates with data inside the 7-calendar-day window (max 7; fewer in the first week and after outages)."
         tests:
