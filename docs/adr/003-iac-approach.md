@@ -99,3 +99,22 @@ and push to main so it can serve as a required check.)*
 creating databases and warehouses. `ACCOUNTADMIN` is deliberately not used for day-to-day
 provisioning — it holds billing and replication privileges that are not required and that would
 expand blast radius if the provisioning service user were compromised.
+
+
+---
+
+## Amendment 2026-08-20 — two providers, and one of them is applied
+
+This ADR argued for Terraform across **three** providers (Snowflake, AzureRM,
+Databricks). Two of those are gone: the Databricks provider was never wired up,
+and the `azure-infra` module was deleted with the Databricks path (ADR 008
+amendment). The AzureRM *provider block* has now been removed too — the only
+Azure dependency left is the state backend in `backend.tf`, which needs
+credentials but no provider.
+
+The more substantial change is that Terraform is no longer only a specification.
+`terraform/github/` is a second root module that manages this repository's own
+infrastructure — labels, branch protection, Pages — and **is applied**, with
+state on disk. The single-IaC-surface argument recorded here now has a worked
+example behind it rather than only a warehouse nobody can see. See
+[ADR 012](012-github-repo-as-code.md).
