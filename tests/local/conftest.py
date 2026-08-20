@@ -44,12 +44,17 @@ T2 = "2024-01-04 05:30:00"
 TODAY_UTC = datetime.now(timezone.utc).date().isoformat()
 
 
-def _row(unique_key, created, closed, agency, agency_name, status, ts):
+def _row(unique_key, created, closed, agency, agency_name, status, ts,
+         address="100 MAIN STREET", complaint="Noise - Residential"):
+    """One silver row. address and complaint default to a shared pair so most
+    rows land at the same location — fct_complaint_recurrence keys on
+    (address, complaint_type), and a fixture with NULL addresses would build an
+    empty table and silently pass any test written against it."""
     return (
         f"('{unique_key}', TIMESTAMP '{created}', "
         + (f"TIMESTAMP '{closed}'" if closed else "NULL")
-        + f", NULL, '{agency}', '{agency_name}', 'Noise - Residential', NULL, NULL, "
-        f"'11201', NULL, NULL, NULL, 'BROOKLYN', '02 BROOKLYN', 40.69, -73.99, "
+        + f", NULL, '{agency}', '{agency_name}', '{complaint}', NULL, NULL, "
+        f"'11201', '{address}', NULL, NULL, 'BROOKLYN', '02 BROOKLYN', 40.69, -73.99, "
         f"'{status}', NULL, 'PHONE', TIMESTAMP '{ts}')"
     )
 
@@ -119,6 +124,14 @@ def gold_db(tmp_path_factory):
              "NYPD", "New York City Police Dept", "Open", T1),
         _row("r6", "2024-01-02 12:00:00", "2024-01-02 18:00:00",
              "HPD", "Housing Preservation And Development", "Closed", T1),
+        # Recurrence pair: r7 closes on Jan 2; r8 reports the SAME complaint at
+        # the SAME address on Jan 4. fct_complaint_recurrence must measure 2 days.
+        _row("r7", "2024-01-01 09:00:00", "2024-01-02 09:00:00",
+             "DSNY", "Department of Sanitation", "Closed", T1,
+             address="9 RECURRING WAY", complaint="Dirty Condition"),
+        _row("r8", "2024-01-04 09:00:00", None,
+             "DSNY", "Department of Sanitation", "Open", T1,
+             address="9 RECURRING WAY", complaint="Dirty Condition"),
     ]))
     con.close()
 
@@ -185,6 +198,15 @@ def gold_db(tmp_path_factory):
                        valid_from, expiry_date, is_current
                 FROM gold.dim_agency ORDER BY agency_abbreviation, valid_from
             """).fetchall(),
+            "recurrence": [
+                {"unique_key": r[0], "closure_type": r[1],
+                 "days_to_next": r[2], "observation_days": r[3]}
+                for r in con.execute("""
+                    SELECT unique_key, closure_type,
+                           days_to_next_same_complaint, observation_days
+                    FROM gold.fct_complaint_recurrence
+                """).fetchall()
+            ],
             "silver_count": con.execute(
                 "SELECT COUNT(*) FROM silver.service_requests").fetchone()[0],
         }

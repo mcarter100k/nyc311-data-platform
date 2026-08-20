@@ -125,3 +125,34 @@ def test_no_fanout_and_full_refresh_idempotent(gold_db):
         "agency_id assignment differs between incremental and --full-refresh "
         "builds — the join is not a pure function of the inputs."
     )
+
+
+def test_recurrence_detects_a_repeat_and_respects_censoring(gold_db):
+    """fct_complaint_recurrence must find a genuine repeat and must NOT claim
+    a ticket did not recur when there was no time left to observe it.
+
+    The seeded timeline gives r1 a closure followed by a same-address,
+    same-type complaint, which is the signal the model exists to detect.
+    observation_days must never be negative — a negative value would mean the
+    horizon predates the closure, which would silently invert every rate
+    computed from this table."""
+    rows = gold_db["incremental"]["recurrence"]
+    assert rows, "fct_complaint_recurrence built no rows for the seeded closures."
+
+    by_key = {r["unique_key"]: r for r in rows}
+    assert "r7" in by_key, "r7 closed with an address and must appear."
+    assert by_key["r7"]["days_to_next"] == 2, (
+        f"r7 closed 2024-01-02 and the same complaint was refiled at the same "
+        f"address on 2024-01-04; expected days_to_next=2, got "
+        f"{by_key['r7']['days_to_next']}."
+    )
+
+    for r in rows:
+        assert r["observation_days"] >= 0, (
+            f"{r['unique_key']} has observation_days={r['observation_days']}; a "
+            "negative observation window inverts every rate built on this table."
+        )
+        if r["days_to_next"] is not None:
+            assert r["days_to_next"] >= 0, (
+                f"{r['unique_key']} recurs {r['days_to_next']} days BEFORE it closed."
+            )

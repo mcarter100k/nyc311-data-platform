@@ -25,6 +25,19 @@ A resolution rate of 89% and an action rate of 16% describe very different citie
 
 **The weekend city complains about different things, not more things.** Total volume barely moves (8,918/day → 9,403/day), but noise complaints **multiply 2.4×** — 1,411/day on weekdays to 3,410/day at weekends. Composition flips; volume doesn't.
 
+**And "nothing found" mostly means nothing was there.** The only test of resolution quality available from 311 alone is whether the same complaint reappears at the same address. Comparing recurrence within 3 days, excluding chronic locations and controlling for how much observation time each closure actually had:
+
+| Closed as | Recurred |
+|---|---|
+| Access Failed — the city couldn't get in | **15.3%** |
+| No Violation Found | 12.3% |
+| Work Performed | 9.2% |
+| **No Condition Found** | **8.5%** |
+
+Physical work sticks; failed access does not. But the result that matters is the last row: closures reporting *"nothing there"* recur **least**, which argues they were mostly correct — the problem had resolved itself before anyone arrived — rather than premature. That distinction is invisible in the resolution rate, and it reverses the obvious assumption.
+
+Caveats, because they are load-bearing: one week of history supports only a 3-day window, and recurrence is evidence rather than proof — a repeat can mean the fix failed *or* that the condition is legal and residents keep reporting it. Excluding chronic locations roughly halves the spread, so an unfiltered rate is not a finding. Both guards are columns on [`fct_complaint_recurrence`](dbt/models/marts/fct_complaint_recurrence.sql).
+
 Reproduce either finding in about a minute — no cloud account needed:
 
 ```bash
@@ -107,7 +120,7 @@ Socrata API → raw JSON → Bronze → Silver → GOLD (dbt star schema) → BI
                  pandas ──────────────────┘        └──────── dbt: staging → intermediate → marts
 ```
 
-Gold is a Kimball star: <!--claim:fct_models-->3<!--/claim--> fact tables, 3 dimensions, and a 21-year calendar spine (2010–2030). Terraform provisions the Snowflake side — 5 schemas (including `GOLD_AUDIT` for write-audit-publish and `SNAPSHOTS` for SCD2 state), 4 roles, and a least-privilege grant matrix enforced as code.
+Gold is a Kimball star: <!--claim:fct_models-->4<!--/claim--> fact tables, 3 dimensions, and a 21-year calendar spine (2010–2030). Terraform provisions the Snowflake side — 5 schemas (including `GOLD_AUDIT` for write-audit-publish and `SNAPSHOTS` for SCD2 state), 4 roles, and a least-privilege grant matrix enforced as code.
 
 **Full detail:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — per-layer contracts, the dbt model inventory, the stack table, and what each layer guarantees.
 
@@ -115,13 +128,13 @@ Gold is a Kimball star: <!--claim:fct_models-->3<!--/claim--> fact tables, 3 dim
 
 ## Test Suite
 
-Two populations, deliberately not summed: **<!--claim:test_count-->105<!--/claim--> pytest tests** that need no cloud account, and **100 dbt data tests** that run against the warehouse during `dbt build`. The pytest count is recomputed in CI.
+Two populations, deliberately not summed: **<!--claim:test_count-->109<!--/claim--> pytest tests** that need no cloud account, and **100 dbt data tests** that run against the warehouse during `dbt build`. The pytest count is recomputed in CI.
 
 | Tier | Count | What it proves |
 |---|---|---|
-| **Structural** | 83 | Configuration correctness — schema resolution, incremental strategy, DAG lineage, freshness target, Terraform validity, the LOADER-has-no-TRUNCATE contract |
+| **Structural** | 86 | Configuration correctness — schema resolution, incremental strategy, DAG lineage, freshness target, Terraform validity, the LOADER-has-no-TRUNCATE contract |
 | **Unit** | 7 | Silver transformation *logic* ([local/silver_transformations.py](local/silver_transformations.py)) against hand-built fixtures |
-| **Behavioral** | 15 | Gold *semantics* — builds the dbt project twice on seeded DuckDB and asserts on output rows: watermark lookback, SCD2 point-in-time join, update propagation |
+| **Behavioral** | 16 | Gold *semantics* — builds the dbt project twice on seeded DuckDB and asserts on output rows: watermark lookback, SCD2 point-in-time join, update propagation |
 
 The structural tier is the largest and the weakest, and it is worth saying so: it catches config drift and silent contract violations in seconds, but **a model can be perfectly configured and still compute the wrong number.** That is what the other two tiers are for.
 
@@ -179,7 +192,7 @@ terraform/github/  this repo's own infrastructure — labels, branch protection,
 config/         borough_variants.csv — one mapping, read by Python and dbt alike
 scripts/        SLO checks, claim checker, model-drift guard
 docs/           ARCHITECTURE · SLO · CLAIMS · BACKLOG · adr/ (<!--claim:adr_count-->12<!--/claim-->) · postmortems/
-tests/          105 pytest tests across three tiers
+tests/          109 pytest tests across three tiers
 ```
 
 ---
