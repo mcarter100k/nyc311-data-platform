@@ -238,10 +238,133 @@ with_complaint_category as (
 
 ),
 
+-- Step 4: classify how the request was closed, from the templated
+-- resolution_description text. 'Closed' != 'fixed' — see dbt/ for the full
+-- rationale and the ordering constraints.
+
+with_closure_type as (
+
+    select
+        *,
+    case
+        when resolution_description is null
+          or trim(resolution_description) = ''
+          or upper(trim(resolution_description)) = 'N/A'                    then 'Unspecified'
+
+        -- Duplicate first: unambiguous, and the phrasing appears inside otherwise
+        -- action-shaped sentences.
+        when resolution_description ilike '%duplicate%'
+          or resolution_description ilike '%already exists%'
+          or resolution_description ilike '%received an earlier complaint%'
+          or resolution_description ilike '%previously reported by another%'
+          or resolution_description ilike '%cannot open multiple service requests%' then 'Duplicate'
+
+        -- Access failed: the agency tried and could not perform the work.
+        -- '%not able to gain access%' is HPD's phrasing, '%unable to gain entry%'
+        -- is NYPD's — both mean the same outcome.
+        when resolution_description ilike '%unable to gain entry%'
+          or resolution_description ilike '%not able to gain access%'
+          or resolution_description ilike '%unable to complete the inspection%'
+          or resolution_description ilike '%could not gain access%'
+          or resolution_description ilike '%did not accept assistance%'     then 'Access Failed'
+
+        -- Pending: before every action rule, so "scheduled to be removed" and
+        -- "will inspect" are not counted as work already done.
+        when resolution_description ilike '%still open%'
+          or resolution_description ilike '%check back later%'
+          or resolution_description ilike '%will inspect%'
+          or resolution_description ilike '%will visit%'
+          or resolution_description ilike '%will determine%'
+          or resolution_description ilike '%will address%'
+          or resolution_description ilike '%will notify%'
+          or resolution_description ilike '%will be removed%'
+          or resolution_description ilike '%scheduled to be%'
+          or resolution_description ilike '%created a work order%'
+          or resolution_description ilike '%within 30 days%'
+          or resolution_description ilike '%within 120 days%'
+          or resolution_description ilike '%further investigation is required%'
+          or resolution_description ilike '%is reviewing your complaint%'
+          or resolution_description ilike '%inspection is currently in progress%' then 'Pending'
+
+        -- Enforcement: a legal instrument was issued.
+        when resolution_description ilike '%issued a summons%'
+          or resolution_description ilike '%made an arrest%'
+          or resolution_description ilike '%notice of violation%'
+          or resolution_description ilike '%violations were issued%'
+          or resolution_description ilike '%violation was issued%'
+          or resolution_description ilike '%office of administrative trials%' then 'Enforcement Action'
+
+        -- Resolved on scene. NYPD's highest-volume template states BOTH "no
+        -- criminal violation existed" AND "the condition was corrected without
+        -- the need to issue a summons" — officers settled it informally. Placed
+        -- ahead of No Violation Found deliberately: the operative outcome is that
+        -- the condition stopped, not that no law was broken. Documented as a
+        -- judgment call because the same sentence supports either reading.
+        when resolution_description ilike '%condition was corrected%'
+          or resolution_description ilike '%was corrected%'                 then 'Resolved on Scene'
+
+        -- Work performed: physical or administrative work completed.
+        when resolution_description ilike '%repaired%'
+          or resolution_description ilike '%cleaned the location%'
+          or resolution_description ilike '%collected%'
+          or resolution_description ilike '%removed the%'
+          or resolution_description ilike '%shut the running hydrant%'
+          or resolution_description ilike '%sent official written notification%'
+          or resolution_description ilike '%a report was prepared%'
+          or resolution_description ilike '%mailed you%'
+          or resolution_description ilike '%corrected the problem%'
+          or resolution_description ilike '%completed the requested%'
+          or resolution_description ilike '%accepted assistance%'
+          or resolution_description ilike '%letter was sent%'
+          or resolution_description ilike '%sent an advisory%'
+          or resolution_description ilike '%addressed the issue%'
+          or resolution_description ilike '%had been restored%'             then 'Work Performed'
+
+        -- No violation: a condition may exist, but it breaks no rule.
+        when resolution_description ilike '%no criminal violation%'
+          or resolution_description ilike '%no evidence of a criminal violation%'
+          or resolution_description ilike '%did not violate%'
+          or resolution_description ilike '%no violation%'
+          or resolution_description ilike '%action was not necessary%'
+          or resolution_description ilike '%no further action%'
+          or resolution_description ilike '%observe a violation%'
+          or resolution_description ilike '%no dsny related%'
+          or resolution_description ilike '%no work is necessary%'
+          or resolution_description ilike '%meets its standards%'           then 'No Violation Found'
+
+        -- Nothing there: the agency looked and found no condition at all.
+        when resolution_description ilike '%found no condition%'
+          or resolution_description ilike '%could not find%'
+          or resolution_description ilike '%couldn%t find%'
+          or resolution_description ilike '%did not find%'
+          or resolution_description ilike '%didn%t find%'
+          or resolution_description ilike '%observed no%'
+          or resolution_description ilike '%no condition%'
+          or resolution_description ilike '%found there was no%'            then 'No Condition Found'
+
+        -- Handed to someone else. Deliberately NARROW patterns: bare '%referred%'
+        -- and '%please contact%' appear in routine closing boilerplate ("If the
+        -- problem persists, please contact 311") and would swallow half the table.
+        when resolution_description ilike '%does not fall under the jurisdiction%'
+          or resolution_description ilike '%does not have jurisdiction%'
+          or resolution_description ilike '%referred this complaint to%'
+          or resolution_description ilike '%referred to the appropriate%'
+          or resolution_description ilike '%has forwarded the request%'
+          or resolution_description ilike '%will be referred%'
+          or resolution_description ilike '%has requested the department of%'
+          or resolution_description ilike '%out of jurisdiction%'           then 'Referred Elsewhere'
+
+        else 'Unspecified'
+    end                                                                                as closure_type
+
+    from with_complaint_category
+
+),
+
 quality_filtered as (
 
     select *
-    from with_complaint_category
+    from with_closure_type
     where resolution_days is null
        or resolution_days >= 0
 

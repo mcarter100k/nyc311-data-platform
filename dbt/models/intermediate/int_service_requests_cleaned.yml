@@ -74,6 +74,30 @@ models:
                 - 'Consumer & Business'
                 - 'Other'
 
+      - name: closure_type
+        description: >
+          How the request was closed, derived from the templated
+          resolution_description text. 'Closed' status alone does not mean the
+          problem was fixed: on one week of live data only 36.7% of closed
+          requests describe any action. Action outcomes are Resolved on Scene,
+          Enforcement Action and Work Performed; the rest closed without the
+          city doing anything. 'Unspecified' covers null text plus boilerplate
+          that states no outcome ("see notes", "status is on our website").
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - 'Resolved on Scene'
+                - 'Enforcement Action'
+                - 'Work Performed'
+                - 'No Violation Found'
+                - 'No Condition Found'
+                - 'Access Failed'
+                - 'Duplicate'
+                - 'Referred Elsewhere'
+                - 'Pending'
+                - 'Unspecified'
+
       - name: resolution_days
         description: >
           Integer days between created_date and closed_date. NULL for open

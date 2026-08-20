@@ -57,6 +57,15 @@ aggregated as (
             4
         )                                                                       as pct_resolved,
 
+        -- pct_actioned: fraction where the city actually DID something, not
+        -- merely closed the ticket. Read next to pct_resolved: the gap between
+        -- them is the share of "resolutions" that found no violation, found
+        -- nothing, were duplicates, or were handed off.
+        round(
+            sum(case when f.is_actioned then 1.0 else 0.0 end) / count(*),
+            4
+        )                                                                       as pct_actioned,
+
         -- ── Overdue metric ────────────────────────────────────────────────────
         sum(case when f.is_overdue = true then 1 else 0 end)                   as overdue_requests
 

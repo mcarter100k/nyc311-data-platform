@@ -107,6 +107,7 @@ joined as (
         -- ── Status ────────────────────────────────────────────────────────────
         r.status,
         r.resolution_description,
+        r.closure_type,
 
         -- ── Measures ──────────────────────────────────────────────────────────
         r.resolution_days,
@@ -114,6 +115,18 @@ joined as (
         -- ── Derived flags ─────────────────────────────────────────────────────
         -- is_resolved: true only for formally Closed requests; Pending/In Progress are open.
         case when r.status = 'Closed' then true else false end                  as is_resolved,
+
+        -- is_actioned: did the city actually DO something, as opposed to
+        -- closing the ticket after finding no violation / nothing there /
+        -- a duplicate? Pairs with is_resolved: a request can be
+        -- is_resolved = true and is_actioned = false, which is the majority
+        -- case (63.3% of closed requests in a one-week live sample).
+        case
+            when r.closure_type in ('Resolved on Scene', 'Enforcement Action', 'Work Performed')
+                then true
+            else false
+        end                                                                     as is_actioned,
+
 
         -- is_overdue: resolution took longer than the 30-day NYC administrative standard.
         -- NULL when resolution_days is NULL (request still open).
