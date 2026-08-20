@@ -15,7 +15,7 @@ on:
 # ── Permissions ───────────────────────────────────────────────────────────────
 # Workflow default is read-only; the deploy job elevates itself to
 # pages: write + id-token: write at the JOB level, so the build job (which
-# runs pip install and dbt compile on the checked-out ref) never holds a
+# runs pip install and dbt parse on the checked-out ref) never holds a
 # token that can publish.
 permissions:
   contents: read
@@ -56,35 +56,39 @@ jobs:
       - name: Install dbt-core and dbt-snowflake
         run: pip install -r dbt/requirements.txt
 
-      # ── IMPORTANT: why --no-compile does not skip catalog generation ─────────
-      # `dbt docs generate --no-compile` skips Jinja/SQL compilation (reading
-      # model files and resolving ref()/source() references) but STILL attempts
-      # to connect to the data warehouse to query information_schema for the
-      # catalog (column names, data types, row counts).
+      # ── IMPORTANT: why this uses `dbt parse`, not `dbt compile` ─────────────
+      # Every dbt command that resolves SQL opens a warehouse connection —
+      # including `dbt compile` and `dbt docs generate --no-compile`. With the
+      # placeholder profile below that fails:
+      #     Database Error 290404 (08001): 404 Not Found:
+      #     post placeholder.us-east-1.snowflakecomputing.com/session/v1/login-request
+      # This workflow used `dbt compile` and had therefore failed on EVERY run
+      # since the workflow was added; ci.yml already used `dbt parse` for the
+      # same reason but the fix was never carried across.
       #
-      # In CI without live Snowflake credentials, running `dbt docs generate`
-      # in any form will fail at the catalog step and exit non-zero before
-      # writing index.html. The correct CI approach is:
+      # `dbt parse` validates the whole project, resolves ref()/source() and
+      # macros, and writes manifest.json with zero network calls. The CI docs
+      # site is therefore assembled from three pieces:
       #
-      #   1. `dbt compile`   — validates all model SQL and Jinja, resolves the
-      #                        full DAG, and writes manifest.json to target/.
-      #                        Zero network connections required.
-      #   2. Stub catalog.json — a structurally valid JSON file that the dbt
-      #                          docs UI accepts; omits warehouse column
-      #                          statistics but preserves full lineage, model
-      #                          descriptions, and test coverage from the manifest.
-      #   3. Copy index.html — dbt docs generate would copy this static asset
-      #                        from the installed dbt-core package; we do the
-      #                        same without a DB connection.
+      #   1. `dbt parse`     — manifest.json: full DAG, node metadata, model
+      #                        and column descriptions, declared tests, and the
+      #                        raw (pre-Jinja-render) model SQL.
+      #   2. Stub catalog.json — structurally valid, accepted by the docs UI;
+      #                        omits warehouse column statistics.
+      #   3. Copy index.html — the static asset `dbt docs generate` would copy
+      #                        from the installed dbt-core package.
       #
-      # The resulting GitHub Pages site shows the full model lineage graph,
-      # column-level documentation, and declared tests — everything sourced
-      # from the version-controlled dbt project rather than from live data.
+      # Accepted trade-off, consistent with the stub catalog: the docs site
+      # shows lineage, descriptions, tests and raw model SQL, but the
+      # "Compiled" tab is empty because compiled_code is only populated by a
+      # command that connects. Restoring it requires real credentials.
 
       # Write a CI-only profiles.yml into the dbt/ directory.
       # The Snowflake credentials here are intentionally dummy values — they
-      # satisfy the dbt profile schema validator but are never used to open a
-      # connection (dbt compile does not connect to the database).
+      # satisfy the dbt profile schema validator. `dbt parse` never opens a
+      # connection, so they are never exercised — but note they ARE exercised
+      # (and fail) by any command that resolves SQL, which is why this
+      # workflow parses rather than compiles.
       #
       # This file is written at CI runtime and is never committed to the repo
       # (profiles.yml is in .gitignore; dbt/profiles.yml.example documents
@@ -97,9 +101,9 @@ jobs:
             outputs:
               ci:
                 type: snowflake
-                # Placeholder values — dbt compile validates the schema but
-                # does not open a Snowflake connection. Replace with real
-                # credentials (via GitHub Secrets) only if live catalog
+                # Placeholder values — `dbt parse` validates the profile
+                # schema without connecting. Replace with real credentials
+                # (via GitHub Secrets) only if compiled SQL or live catalog
                 # generation is required.
                 account: "placeholder.us-east-1"
                 user: ci_user
@@ -119,24 +123,22 @@ jobs:
             --profiles-dir . \
             --project-dir .
 
-      # dbt compile resolves the full model DAG (ref(), source(), macros, Jinja)
-      # and writes two artifacts to target/:
-      #   manifest.json  — full DAG, model SQL, node metadata, test definitions
-      #   run_results.json — empty for compile runs
-      #
-      # No Snowflake connection is opened. Snowflake-specific SQL syntax in
-      # model files (DATEDIFF, TIMESTAMP_NTZ, ZORDER) is treated as opaque
-      # SQL strings — dbt compile validates template structure, not SQL dialect.
-      - name: Compile dbt project (generates manifest.json)
+      # dbt parse resolves the full model DAG (ref(), source(), macros, Jinja)
+      # and writes manifest.json to target/ with no warehouse connection.
+      # Snowflake-specific SQL (DATEDIFF, TIMESTAMP_NTZ, ZORDER) is treated as
+      # opaque text — parse validates project and template structure, not the
+      # SQL dialect. Dialect errors surface only against a real warehouse.
+      - name: Parse dbt project (generates manifest.json, no DB connection)
         working-directory: dbt
         run: |
-          dbt compile \
+          dbt parse \
             --profiles-dir . \
             --project-dir . \
-            --target ci
+            --target ci \
+            --no-version-check
 
       # Assemble the three files that make up the dbt docs static site:
-      #   manifest.json  — already in target/ from the compile step above
+      #   manifest.json  — already in target/ from the parse step above
       #   catalog.json   — stub (no warehouse column stats; full lineage preserved)
       #   index.html     — copied from the dbt-core package's bundled static asset
       - name: Assemble dbt docs site
@@ -151,7 +153,7 @@ jobs:
           # ── 1. Verify manifest.json from compile step ─────────────────────────
           manifest_path = os.path.join(target_dir, "manifest.json")
           if not os.path.exists(manifest_path):
-              print("ERROR: target/manifest.json not found — did dbt compile succeed?",
+              print("ERROR: target/manifest.json not found — did dbt parse succeed?",
                     file=sys.stderr)
               sys.exit(1)
           with open(manifest_path) as fh:
