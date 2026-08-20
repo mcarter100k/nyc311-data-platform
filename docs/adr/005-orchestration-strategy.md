@@ -150,3 +150,16 @@ connecting it to a real Slack webhook requires adding a single Airflow Connectio
 (`slack_webhook`) and uncommenting four lines in the callback function. The `sla_miss_callback`
 is wired similarly. Both callbacks are version-controlled in the DAG file, not configured
 through a GUI.
+
+
+---
+
+## Amendment 2026-08-20 — the cloud DAG was removed; the local DAG runs
+
+The single-DAG, write-audit-publish design recorded here was written for a
+Databricks + Snowflake deployment. That DAG (`nyc311_pipeline.py`) has been
+deleted along with the Databricks path. `airflow/dags/nyc311_local.py` remains
+and actually executes: the same gate-then-build-then-verify shape, seven tasks,
+smoke-tested end to end. The HttpSensor reasoning, the sequencing, and the
+write-audit-publish argument are unchanged and still describe the intent; only
+the operators changed from Databricks jobs to the local runner's stages.

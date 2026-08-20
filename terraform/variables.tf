@@ -59,11 +59,6 @@ variable "auto_suspend_seconds" {
 # Azure (used by azure-infra module — activate when building ingestion layer)
 # ---------------------------------------------------------------------------
 
-variable "azure_location" {
-  description = "Azure region for all Azure resources (ADLS Gen2, Databricks workspace)."
-  type        = string
-  default     = "eastus2"
-}
 
 variable "resource_group_name" {
   description = "Name of the Azure resource group. Must already exist or be created by the azure-infra module."

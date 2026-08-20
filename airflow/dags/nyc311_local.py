@@ -5,16 +5,13 @@ nyc311_local
 Orchestrates the pipeline that ACTUALLY RUNS — the local DuckDB one — as a real
 Airflow DAG.
 
-Relationship to nyc311_pipeline.py
-----------------------------------
-`nyc311_pipeline` is the *specification* for the deferred cloud deployment
-(Databricks jobs + Snowflake). It cannot execute: its DatabricksRunNowOperator
-tasks reference job IDs that default to 0 because no workspace exists (ADR 008).
-It should stay PAUSED.
-
-This DAG is its executable counterpart. Same medallion sequence, same gate-then-
-build-then-verify shape, but every task shells out to the local runner, so it
-runs end to end on a laptop with no cloud credentials:
+What this DAG is
+----------------
+The medallion pipeline as a real Airflow DAG. A cloud counterpart
+(`nyc311_pipeline.py`, Databricks operators) previously sat beside it as an
+unexecutable specification; it was removed rather than carried as a claim
+nothing could verify (ADR 005, ADR 008). Every task here shells out to the
+local runner, so it runs end to end on a laptop with no cloud credentials:
 
     check_source  ->  fetch_live  ->  load_bronze  ->  load_silver
                                                             |

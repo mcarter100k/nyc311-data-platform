@@ -13,9 +13,9 @@ every relative markdown link in README.md resolves to a file on disk.
 Checked claims:
     test_count   pytest collection count of tests/ (structural, via pytest
                  --collect-only) + AST count of test functions in tests/unit
-                 and tests/local (those tiers skip wholesale when pyspark /
-                 dbt-duckdb are absent, so collection alone would undercount
-                 and vary by environment)
+                 and tests/local (that tier skips wholesale when dbt-duckdb is
+                 absent, so collection alone would undercount and vary by
+                 environment)
     adr_count    markdown files in docs/adr/
     adr table    every ADR on disk has a row in the README table (the count
                  marker alone let the table fall 2 ADRs behind)
@@ -54,7 +54,7 @@ def structural_test_count() -> int:
 
 
 def skippable_tier_test_count() -> int:
-    # Counted via AST, not pytest collection: without pyspark / dbt-duckdb
+    # Counted via AST, not pytest collection: without dbt-duckdb
     # installed these modules are reported as a single skip and their tests
     # never appear in the collection count — which would also make the total
     # depend on what happens to be installed.
@@ -185,7 +185,7 @@ def check_airflow_task_count(readme_text: str) -> list:
     and the other line kept the check green.
     """
     errors = []
-    dag = open(os.path.join(ROOT, "airflow", "dags", "nyc311_pipeline.py")).read()
+    dag = open(os.path.join(ROOT, "airflow", "dags", "nyc311_local.py")).read()
     n_dag = len(re.findall(r"task_id\s*=\s*[\"']", dag))
 
     tests = open(os.path.join(ROOT, "tests", "test_pipeline_components.py")).read()
@@ -194,12 +194,12 @@ def check_airflow_task_count(readme_text: str) -> list:
 
     if n_dag != n_test:
         errors.append(
-            f"Airflow task count mismatch: nyc311_pipeline.py defines {n_dag} tasks, "
+            f"Airflow task count mismatch: nyc311_local.py defines {n_dag} tasks, "
             f"EXPECTED_TASKS lists {n_test}"
         )
-    if f"{n_dag}-task cloud DAG" not in readme_text:
+    if f"{n_dag}-task DAG" not in readme_text:
         errors.append(
-            f"README does not state '{n_dag}-task cloud DAG' — the DAG defines {n_dag} tasks"
+            f"README does not state '{n_dag}-task DAG' — the DAG defines {n_dag} tasks"
         )
     return errors
 

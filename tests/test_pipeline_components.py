@@ -45,300 +45,56 @@ def file_contains(path, *strings):
     return all(s in content for s in strings)
 
 
-# ── 1. Databricks Notebooks ───────────────────────────────────────────────────
+# ── 1. Airflow DAG (the one that runs) ────────────────────────────────────────
 
-NOTEBOOKS = {
-    "01_ingest_raw": os.path.join(ROOT, "databricks", "notebooks", "01_ingest_raw.py"),
-    "02_bronze":     os.path.join(ROOT, "databricks", "notebooks", "02_bronze.py"),
-    "03_silver":     os.path.join(ROOT, "databricks", "notebooks", "03_silver.py"),
-}
+DAG_PATH = os.path.join(ROOT, "airflow", "dags", "nyc311_local.py")
 
-
-@pytest.mark.parametrize("name,path", NOTEBOOKS.items())
-def test_notebook_is_valid_python(name, path):
-    """
-    Each Databricks notebook must be valid Python syntax. An invalid notebook
-    will fail at import time in Databricks and block the entire pipeline run.
-    We strip the MAGIC comment lines (Databricks-specific directives) before
-    parsing since Python's ast module doesn't understand them.
-    """
-    with open(path) as f:
-        source = f.read()
-    # Strip Databricks MAGIC lines which are not valid Python
-    cleaned = "\n".join(
-        line for line in source.splitlines()
-        if not line.strip().startswith("# MAGIC")
-    )
-    try:
-        ast.parse(cleaned, filename=path)
-    except SyntaxError as e:
-        pytest.fail(f"{name} has a Python syntax error: {e}")
-
-
-def test_ingest_notebook_uses_secrets_not_hardcoded_credentials():
-    """
-    The ingest notebook must retrieve all credentials from Databricks secret scopes,
-    never from hardcoded strings. Hardcoded credentials in notebooks get committed
-    to git and are a security incident waiting to happen.
-    """
-    path = NOTEBOOKS["01_ingest_raw"]
-    assert file_contains(path, "dbutils.secrets.get"), (
-        "01_ingest_raw.py does not use dbutils.secrets.get — credentials may be hardcoded."
-    )
-
-
-def test_ingest_notebook_has_idempotency_check():
-    """
-    The ingest notebook must check whether the partition already exists before
-    calling the API. Without this, every Airflow retry re-pulls from Socrata,
-    wasting API quota and potentially writing duplicate raw files.
-    """
-    path = NOTEBOOKS["01_ingest_raw"]
-    assert file_contains(path, "force_reload", "dbutils.fs.ls"), (
-        "01_ingest_raw.py is missing the idempotency check (dbutils.fs.ls + force_reload)."
-    )
-
-
-def test_ingest_notebook_paginates():
-    """
-    The Socrata API returns a maximum of 50,000 rows per request. Pagination
-    parameters are built by ingest_config.build_page_params ($offset stepping),
-    which the notebook must import and call. Behavior of the params themselves
-    is unit-tested in tests/test_ingest_config.py.
-    """
-    config_path = os.path.join(ROOT, "databricks", "notebooks", "ingest_config.py")
-    assert file_contains(config_path, "$offset", "PAGE_SIZE"), (
-        "ingest_config.py does not implement $offset pagination."
-    )
-    assert file_contains(NOTEBOOKS["01_ingest_raw"], "build_page_params"), (
-        "01_ingest_raw.py does not call build_page_params — it may only fetch "
-        "the first 50k rows."
-    )
-
-
-def test_bronze_notebook_uses_auto_loader():
-    """
-    The Bronze notebook must use Databricks Auto Loader (cloudFiles format).
-    Auto Loader checkpoints the schema so new API columns are picked up
-    automatically without manual schema migration.
-    """
-    path = NOTEBOOKS["02_bronze"]
-    assert file_contains(path, "cloudFiles", "readStream"), (
-        "02_bronze.py does not use Auto Loader (cloudFiles). "
-        "Direct spark.read.json() has no schema evolution support."
-    )
-
-
-def test_bronze_notebook_asserts_nonzero_row_count():
-    """
-    The Bronze notebook must fail fast if it writes zero rows. A silent empty
-    write would cause Silver to raise 'no Bronze records found' — but only on
-    the next pipeline run, making the root cause harder to diagnose.
-    """
-    path = NOTEBOOKS["02_bronze"]
-    assert file_contains(path, "raise RuntimeError", "row_count == 0"), (
-        "02_bronze.py does not assert a non-zero row count after writing."
-    )
-
-
-def test_silver_notebook_deduplicates_on_unique_key():
-    """
-    Silver must call deduplicate_on_unique_key — the function that keeps the
-    most recent _ingest_timestamp row per unique_key. The implementation lives
-    in silver_transformations.py; the notebook must import and call it.
-    Without deduplication, API pagination overlap creates duplicate records that
-    propagate into every Gold mart table.
-    """
-    path = NOTEBOOKS["03_silver"]
-    assert file_contains(path, "deduplicate_on_unique_key"), (
-        "03_silver.py does not call deduplicate_on_unique_key. "
-        "Deduplication logic must be imported from silver_transformations.py."
-    )
-    transformations_path = os.path.join(
-        ROOT, "databricks", "notebooks", "silver_transformations.py"
-    )
-    assert file_contains(transformations_path, "unique_key", "row_number"), (
-        "silver_transformations.py does not implement Window-based deduplication "
-        "on unique_key — dropDuplicates gives no deterministic row selection guarantee."
-    )
-
-
-def test_silver_notebook_uses_delta_merge():
-    """
-    Silver must use Delta MERGE (not overwrite) for idempotency. MERGE on
-    unique_key means re-running the notebook for the same date updates existing
-    rows and inserts new ones — no duplicates, safe for Airflow retry.
-    The MERGE clause is built dynamically from the runtime schema so new Bronze
-    columns flow into Silver without code changes — verified by checking that
-    schema.autoMerge is enabled and that explicit update/insert expressions
-    are constructed rather than using the static UpdateAll/InsertAll shortcuts.
-    """
-    path = NOTEBOOKS["03_silver"]
-    assert file_contains(path, "DeltaTable", "whenMatchedUpdate", "whenNotMatchedInsert"), (
-        "03_silver.py does not use Delta MERGE — it may overwrite data on retry."
-    )
-    assert file_contains(path, "autoMerge"), (
-        "03_silver.py does not enable schema.autoMerge. New Bronze columns will "
-        "cause the MERGE to fail with a schema mismatch error."
-    )
-
-
-def test_silver_notebook_quarantines_negative_resolution_days():
-    """
-    Silver must quarantine records where closed_date precedes created_date
-    (data entry errors — if they reach Gold, the dbt singular test
-    assert_resolution_days_nonnegative fails and blocks the pipeline). The
-    selection logic lives in silver_transformations.select_quarantine
-    (behaviorally tested in tests/unit/test_silver_quarantine.py); the
-    notebook must call it and keep only the passing population.
-    """
-    path = NOTEBOOKS["03_silver"]
-    assert file_contains(path, "select_quarantine"), (
-        "03_silver.py does not call select_quarantine — negative "
-        "resolution_days records are not being quarantined."
-    )
-    transformations_path = os.path.join(
-        ROOT, "databricks", "notebooks", "silver_transformations.py"
-    )
-    assert file_contains(transformations_path, "negative_resolution_days", "< 0"), (
-        "silver_transformations.select_quarantine does not implement the "
-        "negative resolution_days check."
-    )
-
-
-def test_silver_notebook_writes_silver_timestamp():
-    """
-    Silver must write _silver_timestamp to every row. This column is the
-    incremental watermark used by fct_service_requests to identify new and
-    updated rows since the last dbt run.
-    """
-    path = NOTEBOOKS["03_silver"]
-    assert file_contains(path, "_silver_timestamp"), (
-        "03_silver.py does not write _silver_timestamp — "
-        "the dbt incremental watermark will have no data to filter on."
-    )
-
-
-def test_silver_transformation_checksum_uses_sort_array():
-    """
-    compute_unique_key_checksum must apply sort_array before sha2. Without the
-    explicit sort, Spark's non-deterministic row ordering produces different hashes
-    across runs of identical data — causing false DATA CONTRACT VIOLATION alerts
-    on legitimate replays. The function must also be wired into 03_silver.py.
-    """
-    transformations_path = os.path.join(
-        ROOT, "databricks", "notebooks", "silver_transformations.py"
-    )
-    assert file_contains(transformations_path, "sort_array", "compute_unique_key_checksum"), (
-        "silver_transformations.py is missing sort_array or compute_unique_key_checksum. "
-        "Without sort_array the checksum is not order-independent across Spark runs."
-    )
-    path = NOTEBOOKS["03_silver"]
-    assert file_contains(path, "compute_unique_key_checksum", "CHECKSUMS_TABLE"), (
-        "03_silver.py does not call compute_unique_key_checksum or define CHECKSUMS_TABLE."
-    )
-
-
-# ── 2. Airflow DAG ────────────────────────────────────────────────────────────
-
-DAG_PATH = os.path.join(ROOT, "airflow", "dags", "nyc311_pipeline.py")
-
+# The tasks nyc311_local must define. scripts/check_claims.py asserts this list
+# agrees with both the DAG file and the count stated in the README — three
+# places that previously stated a task count with nothing comparing them.
 EXPECTED_TASKS = [
-    "check_api_availability",
-    "ingest_raw",
+    "check_source",
+    "fetch_live",
     "load_bronze",
     "load_silver",
     "dbt_build",
-    "dbt_publish",
-    "notify_success",
-]
-
-EXPECTED_DEPENDENCY_CHAIN = [
-    ("check_api_availability", "ingest_raw"),
-    ("ingest_raw",             "load_bronze"),
-    ("load_bronze",            "load_silver"),
-    ("load_silver",            "dbt_build"),
-    ("dbt_build",              "dbt_publish"),
-    ("dbt_publish",            "notify_success"),
+    "check_slos",
+    "upstream_stall_check",
 ]
 
 
-def test_airflow_dag_is_valid_python():
-    """
-    The Airflow DAG file must be valid Python syntax. An import error in a DAG
-    file causes the entire Airflow scheduler to log parse errors every 30 seconds
-    and can delay all other DAGs from being scheduled.
-    """
-    try:
-        parse_python(DAG_PATH)
-    except SyntaxError as e:
-        pytest.fail(f"nyc311_pipeline.py has a Python syntax error: {e}")
+def test_local_dag_is_valid_python():
+    """The DAG must parse. A syntax error here is a silent scheduler failure."""
+    parse_python(DAG_PATH)
 
 
 @pytest.mark.parametrize("task_id", EXPECTED_TASKS)
-def test_airflow_dag_contains_expected_task(task_id):
-    """
-    Each expected task ID must appear in the DAG file. A missing task means
-    a pipeline stage (e.g. dbt_publish) is not being run — either data quality
-    checks go unexecuted or validated builds never reach production.
-    """
-    assert file_contains(DAG_PATH, f'"{task_id}"') or file_contains(DAG_PATH, f"'{task_id}'"), (
-        f"Task '{task_id}' not found in nyc311_pipeline.py."
+def test_local_dag_contains_expected_task(task_id):
+    """Every stage of the pipeline is a distinct task, so a red run names the
+    failing stage instead of pointing at one monolithic 'run pipeline' step."""
+    assert file_contains(DAG_PATH, f'"{task_id}"'), (
+        f"Task '{task_id}' not found in nyc311_local.py."
     )
 
 
-def test_airflow_dag_has_http_sensor_gate():
-    """
-    The pipeline must start with an HttpSensor that validates the Socrata API
-    is live and returning data. Starting ingestion without this gate wastes
-    Databricks cluster startup costs on a broken source.
-    """
-    assert file_contains(DAG_PATH, "HttpSensor", "response_check"), (
-        "nyc311_pipeline.py is missing the HttpSensor API availability gate."
+def test_local_dag_does_not_catch_up():
+    """catchup=False is load-bearing, not stylistic: the fetcher pulls a
+    trailing 7-day window, so backfilling missed intervals would re-fetch the
+    same rows repeatedly."""
+    assert file_contains(DAG_PATH, "catchup=False"), (
+        "nyc311_local must set catchup=False — see the DAG docstring and ADR 010."
     )
 
 
-def test_airflow_dag_uses_write_audit_publish():
-    """
-    The dbt stage must follow write-audit-publish: `dbt build` routed into the
-    audit schema (audit_suffix var), then the publish_gold run-operation to
-    swap the validated schema into GOLD. A run-then-test design publishes bad
-    data to GOLD before the tests get a chance to catch it.
-    """
-    assert file_contains(DAG_PATH, "dbt build", "audit_suffix"), (
-        "nyc311_pipeline.py does not run `dbt build` with the audit_suffix var — "
-        "models would be built and tested directly in production GOLD."
-    )
-    assert file_contains(DAG_PATH, "publish_gold"), (
-        "nyc311_pipeline.py is missing the publish_gold run-operation — "
-        "audited builds would never be swapped into production GOLD."
+def test_local_dag_invokes_the_pipeline_venv_explicitly():
+    """Airflow runs in its own virtualenv; the tasks must call .venv's
+    interpreter rather than whatever python is on PATH."""
+    assert file_contains(DAG_PATH, "PIPELINE_PY"), (
+        "Tasks must invoke the pipeline venv explicitly, not ambient python."
     )
 
 
-def test_airflow_dag_uses_reschedule_mode_for_sensor():
-    """
-    The HttpSensor must use mode='reschedule' so it releases the worker slot
-    between pokes. mode='poke' (the default) holds a worker slot for the entire
-    wait duration — at 300 second timeout this blocks other tasks from running.
-    """
-    assert file_contains(DAG_PATH, "reschedule"), (
-        "nyc311_pipeline.py HttpSensor does not use mode='reschedule'. "
-        "This blocks worker slots during the sensor wait period."
-    )
-
-
-def test_airflow_dag_uses_secrets_not_hardcoded_credentials():
-    """
-    The DAG must retrieve credentials from Airflow Connections or Variables,
-    never from hardcoded strings. Hardcoded credentials in DAG files are
-    visible to anyone with Airflow UI access.
-    """
-    assert file_contains(DAG_PATH, "conn_id") or file_contains(DAG_PATH, "Variable"), (
-        "nyc311_pipeline.py does not use Airflow Connections or Variables for credentials."
-    )
-
-
-# ── 3. Terraform ──────────────────────────────────────────────────────────────
+# ── 2. Terraform ──────────────────────────────────────────────────────────────
 
 TERRAFORM_DIR = os.path.join(ROOT, "terraform")
 
@@ -428,7 +184,7 @@ def test_terraform_loader_bronze_grants_no_truncate():
             in_loader_bronze_block = False
 
 
-# ── 4. GitHub Actions Workflow ────────────────────────────────────────────────
+# ── 3. GitHub Actions Workflow ────────────────────────────────────────────────
 
 WORKFLOW_PATH = os.path.join(ROOT, ".github", "workflows", "dbt-docs.yml")
 
@@ -473,7 +229,7 @@ def test_workflow_uploads_pages_artifact():
     )
 
 
-# ── 5. profiles.yml.example ───────────────────────────────────────────────────
+# ── 4. profiles.yml.example ───────────────────────────────────────────────────
 
 PROFILES_PATH = os.path.join(ROOT, "dbt", "profiles.yml.example")
 
