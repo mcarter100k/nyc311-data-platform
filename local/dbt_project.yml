@@ -9,6 +9,9 @@ model-paths:    ["models"]
 # dbt build, so "all dbt tests passed" in local_runner reflects the real suite.
 test-paths:     ["tests"]
 macro-paths:    ["macros"]
+# Shared with the Snowflake project AND the Python pipelines: one canonical
+# borough mapping outside both dbt trees (see config/borough_variants.csv).
+seed-paths:     ["../config"]
 snapshot-paths: ["snapshots"]
 
 target-path:   "target"

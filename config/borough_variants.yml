@@ -1,0 +1,28 @@
+version: 2
+
+seeds:
+  - name: borough_variants
+    description: >
+      Canonical NYC borough spelling map — the single source of truth shared by
+      every layer that standardizes borough. Loaded as a dbt seed by both the
+      Snowflake project and the DuckDB mirror, and read directly as a CSV by
+      local_runner.py (pandas Silver) and silver_transformations.py (PySpark
+      Silver). Before this file the same 24 variants were hardcoded in four
+      places and had already drifted: the dbt CASE knew only 19 of them.
+
+      Adding a newly observed spelling is a one-line edit here that every
+      engine picks up — no code change, and drift is structurally impossible.
+    columns:
+      - name: variant
+        description: >
+          Upper-cased, trimmed borough string as it appears in the source.
+          Lookups must apply upper(trim(...)) before matching.
+        tests:
+          - unique      # a duplicate variant would fan out the int_service_requests_cleaned join
+          - not_null
+      - name: canonical
+        description: "The standardized borough name this variant collapses to."
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['BROOKLYN', 'MANHATTAN', 'QUEENS', 'BRONX', 'STATEN ISLAND', 'UNSPECIFIED']
