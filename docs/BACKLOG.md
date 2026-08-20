@@ -71,7 +71,7 @@ resolve correctly instead of collapsing to UNSPECIFIED.
 
 ---
 
-## dbt 1.12 deprecation warnings will become errors on the next major
+## ~~dbt 1.12 deprecation warnings will become errors on the next major~~ — RESOLVED 2026-08-20
 
 **Found:** 2026-08-20, in the dbt-docs build log after Dependabot moved
 `dbt-core` to 1.12.x.
@@ -87,6 +87,151 @@ Every dbt invocation now emits two deprecation classes:
 next dbt major, which Dependabot will propose automatically, so that upgrade PR
 would arrive already red with a cause not obvious from its diff.
 
-**Note.** Both projects are affected: `local/` mirrors the same yml files, so
-the fix is one PR touching both trees (`check_model_drift.py` compares them).
-Roughly 18 small yml edits — mechanical but wide.
+**Resolved 2026-08-20 (#34).** The estimate of 18 sites was wrong: the real
+count was **29**, because dbt *deduplicates* its warning output — it reports one
+occurrence per type per file, not per instance. Enumerated from the files
+instead. Both classes cleared across both projects and the shared seed schema;
+`dbt parse --show-all-deprecations` now reports zero. Transformed with a
+line-based script rather than a yaml round-trip, which would have preserved
+semantics and destroyed every comment.
+
+---
+
+## SLO-2 measures T-1, and T-1 may be structurally incomplete at 10:00 UTC
+
+**Evidence, 2026-08-20.** The source backfilled after the 2026-08-18 stall, and
+the recovery exposes a publishing rhythm:
+
+| `created_date` | during the incident | now |
+|---|---|---|
+| Aug 17 | 410 | **10,473** |
+| Aug 18 | 0 | **10,833** |
+| Aug 19 | — | **372** ← same shape, one day later |
+
+`max(created_date)` in the source is `2026-08-19T02:26`. The dataset appears to
+publish once daily at roughly 02:20 UTC carrying data up to that moment, so the
+most recent day is always a stub until the *following* publish fills it.
+
+**Why it matters.** The daily run measures at 10:00 UTC and SLO-2 asks about
+T-1. If T-1 is structurally ~4% complete at that hour on *every* normal day,
+the gate is measuring the publishing calendar rather than our completeness.
+
+This is exactly the condition the postmortem's third follow-up said to wait for:
+*"revisit only if several normal post-recovery days show T-1 chronically
+incomplete at 10:00 UTC — threshold changes require accumulated evidence, not
+one incident."* Two post-recovery days now show it. A third would settle it.
+
+**Mitigating fact:** SLO-2 was since redefined as a *source reconciliation*
+(#24) — it compares what we loaded against what the source published for that
+day, so a stub day yields 372/372 and **passes**. The gate is no longer fooled.
+What remains is that a structurally-incomplete T-1 makes the number
+uninformative rather than wrong.
+
+**Options.** (a) Move the window to T-2 and state why. (b) Keep T-1 and accept
+that the reconciliation makes it safe. (c) Move the schedule later than the
+source's publish. Needs one more day of observation before choosing.
+
+---
+
+## The 2026-08-18 postmortem is still marked draft, and its exit criterion is met
+
+`docs/postmortems/2026-08-18-upstream-publish-stall.md` says *"draft — incident
+ongoing at time of writing; finalize when the source backfills and a scheduled
+run passes."* The source **has** backfilled (Aug 17 → 10,473, Aug 18 → 10,833).
+
+**To do:** status → reviewed, add the recovery timeline, close issue #7, and
+record that the control which shipped (SLO-2 as source reconciliation plus the
+non-gating upstream-stall check) was validated by this recovery.
+
+**Note:** the first scheduled run under the new SLO logic has not happened yet —
+the last daily run (2026-08-19 10:22) used the old median-based SLO-2. Today's
+10:00 UTC run is the first real exercise of it, and should be cited in the
+finalized postmortem.
+
+---
+
+## Decide SLO-3, or record why it is not needed
+
+The postmortem proposed a third SLO for *source* freshness (max `created_date`
+in Gold within N hours), to close the blind spot that SLO-1 measures our own
+load stamp and is therefore minutes old after any successful run.
+
+The picture changed after SLO-2 became a reconciliation: source staleness is now
+*detected* by `check_upstream_stall.py`, but only as a **warning** — nothing
+gates on it. The open question is whether a stalled source should ever be able
+to leave the run green. Both answers are defensible; the decision should be
+written down either way, because "we considered it" is not discoverable.
+
+---
+
+## fct_complaint_recurrence needs two things it cannot have yet
+
+**History.** The model emits `days_to_next_same_complaint` with no baked-in
+window, so it already supports any threshold — but seven days of loaded history
+supports only a 3-day rate. At 30+ days of accumulated runs it becomes a real
+30-day metric with **no code change**, because the window is a var and the
+censoring is exposed via `observation_days`. Nothing to do but let it run.
+
+**Address normalization.** `address_key` is `upper(trim(incident_address))` and
+nothing more. `100 MAIN ST` and `100 MAIN STREET` are different keys, so
+recurrence is **undercounted** by an unmeasured amount. Fixing it means either a
+normalization step (abbreviation folding, suffix rules) or geocoding to a
+BBL/BIN. Worth measuring the size of the gap before choosing — a quick count of
+near-duplicate address strings would size it.
+
+---
+
+## The fetch window cannot update a ticket once its created_date ages out
+
+**Mechanism (certain).** The daily fetch pulls a trailing 7-day window on
+`created_date`. A request created on day 1 that closes on day 20 is never
+re-fetched, because day 1 left the window on day 8. Our copy keeps it open
+forever, so resolution metrics are biased toward fast-closing work.
+
+**Evidence (so far: none).** Sampled 40 tickets held locally as open with
+`created_date <= 2026-08-14`; the source currently reports **0 of them closed**.
+The bias has not materialised at this history depth — those tickets are simply
+still open.
+
+**Why it will.** Slow categories close over weeks: Street Light and Parks &
+Trees show near-zero same-week resolution. Those are precisely the tickets that
+will close after leaving the window, so the bias grows with time and lands
+hardest on the categories already reported as slowest.
+
+**Options.** (a) Add a second small fetch pass on `:updated_at` restricted to
+tickets we hold as open. (b) Accept it and document the ceiling on
+`resolution_days`. (c) Widen the created window. (a) is the honest fix and is
+cheap: the set of locally-open tickets is small and queryable.
+
+---
+
+## Census denominator — the next analytical unlock
+
+Every geographic comparison in the platform is a raw count, and raw counts
+measure population as much as they measure conditions. Joining ACS population
+by ZIP or community district converts them to **rates**, which is the only
+honest way to compare neighbourhoods and the entry point to the equity question
+(*where are conditions bad but reporting low?*).
+
+It would also be the **first external source** the pipeline ingests — a real
+test of whether the medallion layering absorbs a second dataset cleanly, or
+whether the ingest path is quietly single-source-shaped.
+
+---
+
+## The dbt/local dual tree is duplication held together by a checker
+
+Two dbt projects mirror each other, kept aligned by `check_model_drift.py`. The
+measured divergence is small — of 25 mirrored file pairs, 11 differ only in
+comments, and the genuinely dialect-specific SQL is roughly 100 lines.
+
+**Options.** (a) Unify into one project with two targets, using adapter dispatch
+for the dialect gap — kills the duplication permanently, but makes both versions
+less readable, which matters if the Snowflake code is the showcase. (b) Keep the
+split and accept the tax, which is real: every model change costs two edits and
+a baseline regeneration, and a merge conflict in the generated baseline has
+already corrupted it once. (c) Drop Snowflake entirely.
+
+Deliberately unresolved: the answer depends on whether `dbt/` is a *deployment
+target* or a *reference artifact*, and that is a portfolio decision rather than
+a technical one.
