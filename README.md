@@ -162,6 +162,7 @@ ADRs document the reasoning behind major technology choices: the alternatives we
 | [010](docs/adr/010-scheduled-operation.md) | Scheduled daily operation with written SLOs | The pipeline runs live daily; a breach files a tracked issue |
 | [011](docs/adr/011-parallel-ci-tiers.md) | Three parallel required CI checks, not one sequential job | A red check names its failure class; wall time is the slowest tier |
 | [012](docs/adr/012-github-repo-as-code.md) | The repository's own infrastructure is Terraform, and it is applied | Labels, branch protection and Pages declared and applied; "required checks" became true rather than aspirational |
+| [013](docs/adr/013-no-source-freshness-slo.md) | No source-freshness SLO — gate on what we control, warn on what we don't | A proposed third SLO was measured and rejected; source staleness stays a warning |
 
 ---
 
@@ -191,7 +192,7 @@ terraform/      Snowflake foundation — 5 schemas, 4 roles, grant matrix (valid
 terraform/github/  this repo's own infrastructure — labels, branch protection, Pages (applied)
 config/         borough_variants.csv — one mapping, read by Python and dbt alike
 scripts/        SLO checks, claim checker, model-drift guard
-docs/           ARCHITECTURE · SLO · CLAIMS · BACKLOG · adr/ (<!--claim:adr_count-->12<!--/claim-->) · postmortems/
+docs/           ARCHITECTURE · SLO · CLAIMS · BACKLOG · adr/ (<!--claim:adr_count-->13<!--/claim-->) · postmortems/
 tests/          109 pytest tests across three tiers
 ```
 
