@@ -29,6 +29,7 @@ ALL_MODELS = [
     "fct_service_requests",
     "fct_daily_volume",
     "fct_data_quality",
+    "fct_complaint_recurrence",
 ]
 
 
@@ -117,7 +118,8 @@ def test_intermediate_is_table(models):
 
 
 @pytest.mark.parametrize("model_name", ["dim_agency", "dim_date", "dim_location",
-                                         "fct_daily_volume", "fct_data_quality"])
+                                         "fct_daily_volume", "fct_data_quality",
+                                         "fct_complaint_recurrence"])
 def test_dimension_and_aggregate_facts_are_tables(models, model_name):
     """
     Dimension tables and the derived facts must be materialized as tables.

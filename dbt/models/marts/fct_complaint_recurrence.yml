@@ -1,0 +1,75 @@
+version: 2
+
+models:
+  - name: fct_complaint_recurrence
+    description: >
+      One row per closed service request that carries a usable address, with
+      the time until the next identical complaint at the same address.
+
+      This is the only test of resolution quality available from 311 alone.
+      fct_service_requests records what the city SAID happened (closure_type);
+      nothing in that data says whether the resident's problem went away. A
+      closure followed by an identical complaint three days later did not
+      resolve anything.
+
+      READ WITH CARE. Two columns exist to stop this being misused:
+      observation_days guards right-censoring (a ticket closed on the last day
+      of loaded history has had no chance to recur, and counting it as "did not
+      recur" biases every rate downward), and is_chronic_location marks
+      addresses that recur by nature rather than by failed resolution. Measured
+      on one week of live data, excluding chronic locations roughly halved the
+      spread between closure types — an unfiltered rate is not a finding.
+
+      Recurrence is evidence, not proof. A repeat complaint may mean the fix
+      failed, or that the condition is legal and residents keep reporting it.
+    columns:
+      - name: service_request_id
+        description: "Surrogate key of the closed request being assessed."
+        tests:
+          - unique
+          - not_null
+
+      - name: address_key
+        description: "Upper-trimmed incident_address. Identity is textual, not geocoded."
+        tests:
+          - not_null
+
+      - name: closure_type
+        description: "How this request was closed — the dimension recurrence is compared across."
+        tests:
+          - not_null
+
+      - name: days_to_next_same_complaint
+        description: >
+          Days from this closure to the next same-address, same-type complaint.
+          NULL means none was observed inside the bounded window — which is NOT
+          the same as "fixed". Always read alongside observation_days.
+        tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: ">= 0"
+              config:
+                where: "days_to_next_same_complaint is not null"
+
+      - name: observation_days
+        description: >
+          Days of loaded history following this closure. A recurrence rate over
+          window N is only honest across rows where this is >= N.
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: ">= 0"
+
+      - name: location_ticket_count
+        description: "Tickets at this (address, complaint_type) in the loaded window."
+        tests:
+          - not_null
+
+      - name: is_chronic_location
+        description: >
+          TRUE when this address+type is at or above chronic_location_min_tickets.
+          One address carried 236 Noise complaints in a single week; such
+          locations dominate any unfiltered recurrence rate.
+        tests:
+          - not_null
