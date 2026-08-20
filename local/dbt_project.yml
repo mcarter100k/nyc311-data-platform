@@ -33,3 +33,14 @@ vars:
   min_date: '2010-01-01'
   max_date: '2030-12-31'
   schema_version: '1'
+
+  # fct_complaint_recurrence. The join to later complaints is bounded by this
+  # window — correctness-preserving for the question (nobody asks about
+  # recurrence a year later) and what keeps a self-join over a chronic address
+  # from fanning out quadratically.
+  recurrence_max_window_days: 30
+
+  # An (address, complaint_type) pair at or above this ticket count is treated
+  # as a chronic location: it recurs by nature rather than by failed
+  # resolution, and it dominates any unfiltered recurrence rate.
+  chronic_location_min_tickets: 5
