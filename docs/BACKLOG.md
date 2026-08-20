@@ -7,7 +7,7 @@ here as vague intentions.
 
 ---
 
-## Borough standardization is duplicated across Silver and dbt, and the copies have drifted
+## ~~Borough standardization is duplicated across Silver and dbt, and the copies have drifted~~ — RESOLVED 2026-08-20
 
 **Found:** 2026-08-19, while explaining the layer boundaries.
 
@@ -48,9 +48,26 @@ side is the one that loses information.
 3. Have Silver write `borough_clean` alongside the raw `borough` instead of
    overwriting, so the original survives into Bronze→Silver→Gold.
 
-Option 2 plus 3 is the smaller long-term surface; option 1 is the smaller diff.
-Either way the fix belongs in one PR touching both projects, since
-`check_model_drift.py` treats the two trees as mirrors.
+**Resolved 2026-08-20 — none of the three options above.** Investigation found
+the problem was larger than recorded: the mapping existed in **four** places,
+not two. `silver_transformations.py` held two independent copies (the
+`KNOWN_BOROUGH_VARIANTS` set AND a hardcoded `.isin()` chain inside
+`standardize_borough`), plus `local_runner.py`'s `BOROUGH_MAP`, plus the dbt
+`CASE`. Databricks and pandas agreed on 24 variants; dbt knew only 19.
+
+Rather than syncing the copies — which decays — the mapping became **data**:
+`config/borough_variants.csv`, one file with one row per spelling, read by all
+four consumers. Both dbt projects load it as a seed via `seed-paths: ["../config"]`
+and join to it; both Python transforms read the CSV directly and build their
+mapping from it. `config/borough_variants.yml` puts a `unique` test on
+`variant` (guarding the join against fan-out) and `accepted_values` on
+`canonical`, so the mapping itself is now tested — nothing validated any of
+the four lists before.
+
+Verified behaviour-preserving: borough distribution identical across all six
+values (61,329 rows, no fan-out), and the five variants dbt previously did not
+know (`RICHMOND`, `KINGS COUNTY`, `NY`, `QUEENS COUNTY`, `BRONX COUNTY`) now
+resolve correctly instead of collapsing to UNSPECIFIED.
 
 ---
 

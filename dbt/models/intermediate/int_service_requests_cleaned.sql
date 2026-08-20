@@ -14,38 +14,37 @@ with source as (
 ),
 
 -- ── Step 1: Standardize borough names ────────────────────────────────────────
--- The raw source contains a wide variety of borough strings: mixed case, abbreviations,
--- legacy spellings, and UNSPECIFIED sentinels. Collapse all variants to the five
--- canonical borough names used in the dimensional model.
+-- The raw source contains a wide variety of borough strings: mixed case,
+-- abbreviations, legacy county names, and UNSPECIFIED sentinels. The mapping
+-- is NOT hardcoded here — it is a seed loaded from repo-root
+-- config/borough_variants.csv, the same file the PySpark and pandas Silver
+-- transforms read. That file is the single source of truth; this CASE
+-- previously held its own 19-variant copy while Python held 24, which is
+-- exactly the drift the shared seed removes.
+--
+-- LEFT JOIN + COALESCE reproduces the old CASE ... ELSE 'UNSPECIFIED' exactly:
+-- an unmatched or NULL borough falls through to UNSPECIFIED. No fan-out is
+-- possible — `variant` carries a unique test in config/borough_variants.yml.
 
 borough_standardized as (
 
     select
-        *,
-        case
-            when upper(trim(borough)) in ('BROOKLYN', 'BKLYN', 'BK', 'KINGS')
-                then 'BROOKLYN'
-            when upper(trim(borough)) in ('MANHATTAN', 'MN', 'NEW YORK', 'NEW YORK CITY', 'NYC')
-                then 'MANHATTAN'
-            when upper(trim(borough)) in ('QUEENS', 'QN', 'QNS')
-                then 'QUEENS'
-            when upper(trim(borough)) in ('BRONX', 'THE BRONX', 'BX')
-                then 'BRONX'
-            when upper(trim(borough)) in ('STATEN ISLAND', 'SI', 'S.I.', 'STATEN IS')
-                then 'STATEN ISLAND'
-            else 'UNSPECIFIED'
-        end                                                                     as borough_clean
+        source.*,
+        coalesce(bv.canonical, 'UNSPECIFIED')                                   as borough_clean
 
     from source
 
+    left join {{ ref('borough_variants') }} bv
+        on upper(trim(source.borough)) = bv.variant
+
 ),
+
 
 -- ── Step 2: Compute resolution_days ─────────────────────────────────────────
 -- Null-safe: resolution_days is NULL for open requests, not zero.
 -- Records where closed_date precedes created_date (resolution_days < 0) are data
 -- entry errors; they are filtered in the next step rather than here so the filter
 -- is visible and independently testable.
-
 with_resolution_days as (
 
     select

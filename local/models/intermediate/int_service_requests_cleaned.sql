@@ -4,25 +4,21 @@ with source as (
 
 ),
 
+-- Step 1: standardize borough from the shared seed (config/borough_variants.csv),
+-- the same file the Python Silver transforms read. LEFT JOIN + COALESCE
+-- reproduces the previous CASE ... ELSE 'UNSPECIFIED' exactly; `variant` is
+-- unique-tested so no fan-out is possible.
+
 borough_standardized as (
 
     select
-        *,
-        case
-            when upper(trim(borough)) in ('BROOKLYN', 'BKLYN', 'BK', 'KINGS')
-                then 'BROOKLYN'
-            when upper(trim(borough)) in ('MANHATTAN', 'MN', 'NEW YORK', 'NEW YORK CITY', 'NYC')
-                then 'MANHATTAN'
-            when upper(trim(borough)) in ('QUEENS', 'QN', 'QNS')
-                then 'QUEENS'
-            when upper(trim(borough)) in ('BRONX', 'THE BRONX', 'BX')
-                then 'BRONX'
-            when upper(trim(borough)) in ('STATEN ISLAND', 'SI', 'S.I.', 'STATEN IS')
-                then 'STATEN ISLAND'
-            else 'UNSPECIFIED'
-        end                                                                     as borough_clean
+        source.*,
+        coalesce(bv.canonical, 'UNSPECIFIED')                                   as borough_clean
 
     from source
+
+    left join {{ ref('borough_variants') }} bv
+        on upper(trim(source.borough)) = bv.variant
 
 ),
 

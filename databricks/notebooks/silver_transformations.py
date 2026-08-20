@@ -11,6 +11,10 @@ all I/O (reading Bronze, writing Silver/DQ log/quarantine). This module is
 responsible for all transformation logic.
 """
 
+import csv
+
+from pathlib import Path
+
 from pyspark.sql import DataFrame, Row
 from pyspark.sql import functions as F
 from pyspark.sql import Window
@@ -29,14 +33,27 @@ DQ_THRESHOLDS = {
 # All borough strings (uppercase, trimmed) that the standardization map handles.
 # Any value NOT in this set that is non-null and non-empty is unrecognized and
 # counts toward the unrecognized_borough DQ metric.
-KNOWN_BOROUGH_VARIANTS = {
-    "BROOKLYN", "BKLYN", "BK", "KINGS", "KINGS COUNTY",
-    "MANHATTAN", "MN", "NEW YORK", "NEW YORK CITY", "NYC", "NY",
-    "QUEENS", "QN", "QNS", "QUEENS COUNTY",
-    "BRONX", "THE BRONX", "BX", "BRONX COUNTY",
-    "STATEN ISLAND", "SI", "S.I.", "STATEN IS", "RICHMOND",
-    "UNSPECIFIED",
-}
+# Borough spelling map, loaded from the ONE canonical file shared by every
+# layer that standardizes borough: this PySpark transform, the local pandas
+# runner, and both dbt projects (which load it as a seed). Adding a newly
+# observed spelling is a one-line CSV edit picked up everywhere — the same
+# mapping used to be hardcoded in four places (twice in THIS file) and had
+# already drifted. Path is resolved relative to this module so the unit tier
+# and a Databricks Repos checkout both find it.
+BOROUGH_VARIANTS_CSV = (
+    Path(__file__).resolve().parent.parent.parent / "config" / "borough_variants.csv"
+)
+
+
+def _load_borough_map() -> dict:
+    with open(BOROUGH_VARIANTS_CSV, newline="") as fh:
+        return {r["variant"]: r["canonical"] for r in csv.DictReader(fh)}
+
+
+BOROUGH_MAP = _load_borough_map()
+
+# Every recognized input spelling — used by the unrecognized_borough DQ check.
+KNOWN_BOROUGH_VARIANTS = set(BOROUGH_MAP)
 
 
 # ── Transformation functions ──────────────────────────────────────────────────
@@ -44,43 +61,22 @@ KNOWN_BOROUGH_VARIANTS = {
 def standardize_borough(df: DataFrame) -> DataFrame:
     """Collapse all known borough spelling variants to the five canonical names.
 
-    Any non-null, non-empty borough value not in the mapping becomes UNSPECIFIED.
-    Null values also map to UNSPECIFIED via the CASE WHEN ... ELSE branch.
+    The mapping comes from config/borough_variants.csv, not from a hardcoded
+    list: the CASE chain is BUILT from that file at call time. Any non-null,
+    non-empty value not in the mapping becomes UNSPECIFIED, as do nulls.
     """
-    return df.withColumn(
-        "borough",
-        F.when(
-            F.upper(F.trim(F.col("borough"))).isin(
-                "BROOKLYN", "BKLYN", "BK", "KINGS", "KINGS COUNTY"
-            ),
-            F.lit("BROOKLYN"),
+    key = F.upper(F.trim(F.col("borough")))
+    canonical_to_variants: dict = {}
+    for variant, canonical in BOROUGH_MAP.items():
+        canonical_to_variants.setdefault(canonical, []).append(variant)
+
+    expr = None
+    for canonical, variants in canonical_to_variants.items():
+        branch = (expr.when if expr is not None else F.when)(
+            key.isin(*variants), F.lit(canonical)
         )
-        .when(
-            F.upper(F.trim(F.col("borough"))).isin(
-                "MANHATTAN", "MN", "NEW YORK", "NEW YORK CITY", "NYC", "NY"
-            ),
-            F.lit("MANHATTAN"),
-        )
-        .when(
-            F.upper(F.trim(F.col("borough"))).isin(
-                "QUEENS", "QN", "QNS", "QUEENS COUNTY"
-            ),
-            F.lit("QUEENS"),
-        )
-        .when(
-            F.upper(F.trim(F.col("borough"))).isin(
-                "BRONX", "THE BRONX", "BX", "BRONX COUNTY"
-            ),
-            F.lit("BRONX"),
-        )
-        .when(
-            F.upper(F.trim(F.col("borough"))).isin(
-                "STATEN ISLAND", "SI", "S.I.", "STATEN IS", "RICHMOND"
-            ),
-            F.lit("STATEN ISLAND"),
-        )
-        .otherwise(F.lit("UNSPECIFIED")),
-    )
+        expr = branch
+    return df.withColumn("borough", expr.otherwise(F.lit("UNSPECIFIED")))
 
 
 def compute_resolution_days(df: DataFrame) -> DataFrame:
