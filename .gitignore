@@ -37,6 +37,8 @@ __pycache__/
 *.pyo
 .pytest_cache/
 .venv/
+.venv-airflow/
+airflow/home/
 venv/
 *.egg-info/
 

@@ -84,6 +84,29 @@ same way: red or fully green, never partial.
 The executable queries live in `scripts/slo/`; `docs/SLO.md` reproduces them
 and `scripts/check_claims.py` fails CI if the copies differ.
 
+## Amendment 2026-08-20 — Airflow runs locally, as a demonstration
+
+`airflow/dags/nyc311_local.py` is a second DAG that actually executes: seven
+tasks (source gate, fetch, bronze, silver, dbt build, SLO check, upstream-stall
+warning) shelling out to `local_runner.py`. Verified end to end with
+`airflow dags test` — DagRun state=success, all seven tasks green, the dbt
+build inside the DAG reporting PASS=113 / ERROR=0.
+
+`nyc311_pipeline.py` is unchanged and remains the cloud specification. It is
+excluded from local parsing via `airflow/dags/.airflowignore` because it
+imports the Databricks provider, which is deliberately not installed — there is
+no workspace for it to call and its job IDs default to 0.
+
+**This does not change what operates the pipeline.** The Airflow scheduler only
+fires while its process is alive, so a laptop misses any run scheduled while the
+machine is asleep. `.github/workflows/daily-run.yml` remains the scheduled
+runner. The local Airflow demonstrates that the orchestration design works; it
+does not run it daily, and the README says so.
+
+`catchup=False` is load-bearing rather than conventional: the fetcher pulls a
+trailing 7-day window, so backfilling missed intervals would re-fetch the same
+rows repeatedly. A missed run is covered by the next run's window.
+
 ## What remains deferred (unchanged from ADR 008)
 
 Azure/Databricks/Snowflake provisioning, the Airflow deployment, and the
