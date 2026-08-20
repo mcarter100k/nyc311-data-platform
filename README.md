@@ -18,6 +18,7 @@
 |---|---|
 | End-to-end local pipeline: ingest → bronze → silver → dbt gold → queries, on DuckDB | [local/local_runner.py](local/local_runner.py), [local/README_LOCAL.md](local/README_LOCAL.md) |
 | Scheduled to run daily against the live API, gated by two [SLOs](docs/SLO.md); the Daily Live Run badge above is the live status | [.github/workflows/daily-run.yml](.github/workflows/daily-run.yml), [ADR 010](docs/adr/010-scheduled-operation.md) |
+| Airflow orchestrates the pipeline locally — 7-task DAG, verified end to end with `airflow dags test` (all tasks green). A demonstration, not the scheduler; the daily run above remains GitHub Actions ([ADR 010](docs/adr/010-scheduled-operation.md)) | [airflow/dags/nyc311_local.py](airflow/dags/nyc311_local.py), [scripts/airflow_local.sh](scripts/airflow_local.sh) |
 | dbt project parses and its architecture is pytest-verified in CI on every push to main and PR — three parallel required checks: fast-gate, unit-pyspark, behavioral-duckdb ([ADR 011](docs/adr/011-parallel-ci-tiers.md)) | [.github/workflows/ci.yml](.github/workflows/ci.yml) |
 | Terraform passes `terraform validate` in CI | [.github/workflows/terraform.yml](.github/workflows/terraform.yml), [tests/test_pipeline_components.py:320](tests/test_pipeline_components.py#L320) |
 | Silver transformation logic unit-tested against a local SparkSession | [tests/unit/test_silver_transformations.py](tests/unit/test_silver_transformations.py) |
