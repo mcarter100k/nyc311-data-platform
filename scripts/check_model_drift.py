@@ -101,8 +101,19 @@ def main() -> int:
         # the baseline commit sees the changed files without decoding the
         # JSON diff. --update is the gate's designed bypass; this printout is
         # the audit trail that keeps it reviewable.
+        # The summary is best-effort: an unreadable baseline (corrupt, or
+        # carrying conflict markers mid-rebase) must NOT stop the rewrite —
+        # that is precisely the situation where regenerating is the fix. An
+        # earlier version raised JSONDecodeError here and left the broken
+        # file in place, which then got committed.
+        old = None
         if os.path.exists(BASELINE):
-            old = json.load(open(BASELINE))
+            try:
+                old = json.load(open(BASELINE))
+            except (json.JSONDecodeError, OSError) as exc:
+                print(f"Existing baseline is unreadable ({exc.__class__.__name__}) — "
+                      "regenerating from the working tree; no change summary available.")
+        if old is not None:
             changed = sorted(
                 rel for rel in set(state["pairs"]) | set(old.get("pairs", {}))
                 if state["pairs"].get(rel) != old.get("pairs", {}).get(rel)
