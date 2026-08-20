@@ -38,38 +38,67 @@ SELECT
 FROM gold.fct_service_requests;
 ```
 
-## SLO-2 — Completeness
+## SLO-2 — Completeness (source reconciliation)
 
-**Target:** yesterday's created-request row count is at least **40%** of the median daily count
-over the seven days before it. **Window:** trailing 8 calendar days (UTC on the runner).
-**Why 40%:** NYC 311 weekend/holiday troughs run ~50–60% of the weekly median, so the floor sits
-below natural variation while catching a half-empty ingest. Floor only — completeness guards
-against missing data; a spike is not a breach.
+**Target:** we loaded at least **98%** of the rows the city actually **published** for yesterday.
+**How:** the fetch stage asks the Socrata API for its own count of yesterday's created requests
+(`local_runner.fetch_source_count_yesterday` → `silver.source_counts`); this query compares our
+Gold row count against that number. **Why 98% and not 100%:** the quality filter deliberately
+quarantines a tiny fraction (closed-before-created data-entry errors) and dedup can drop true
+duplicates — documented removals, not loss.
+
+**What changed (2026-08-19):** SLO-2 previously compared yesterday's volume against a trailing
+7-day median, which reddened our run whenever *the city* stopped publishing (see the 2026-08-18
+postmortem and issue stream). That conflated two failure classes. Now: if the city published 300
+rows and we loaded 300, our pipeline did its job — green — even mid-outage; if they published
+10,000 and we loaded 300, the loss is ours — red. A missing source-count capture fails closed;
+a zero source count passes (nothing to load). The old volume-cliff signal is preserved as the
+**upstream stall warning** below.
 
 <!--slo-sql:scripts/slo/slo2_completeness.sql-->
 ```sql
--- SLO-2: completeness. Yesterday's created-request count must be at least
--- 40% of the median daily count over the seven days before it. Floor only:
--- completeness guards against MISSING data, so a volume spike is not a
--- breach. Why 0.40: NYC 311 weekend and holiday troughs run ~50-60% of the
--- weekly median, so the floor sits below natural variation while still
--- catching a half-empty ingest. Days are calendar days in the measuring
--- session's timezone (UTC on the scheduled runner).
-WITH daily AS (
-    SELECT cast(created_date AS date) AS day, count(*) AS n
-    FROM gold.fct_service_requests
-    WHERE cast(created_date AS date) BETWEEN current_date - 8 AND current_date - 2
-    GROUP BY 1
-),
-yesterday AS (
+-- SLO-2: completeness, measured as RECONCILIATION against the source.
+-- We must have loaded at least 98% of what the city actually PUBLISHED for
+-- yesterday — not 40% of a historical volume guess. If the city published
+-- 300 rows and we loaded 300, our pipeline did its job (green) even during
+-- an upstream outage; if they published 10,000 and we loaded 300, that loss
+-- is ours (red). The source-side number is captured at fetch time by
+-- local_runner.fetch_source_count_yesterday into silver.source_counts.
+-- Why 0.98 and not 1.00: the quality filter legitimately quarantines a tiny
+-- fraction (closed-before-created data-entry errors), and dedup can drop
+-- true duplicates; both are deliberate, documented row removals — not loss.
+-- NULL source count (capture missing) fails closed: a gate that cannot see
+-- its reference must not pass. source_count = 0 passes: nothing published
+-- means nothing to load — the upstream-stall WARNING path (not this gate)
+-- reports that condition. Days are UTC calendar days on the runner.
+WITH ours AS (
     SELECT count(*) AS n
     FROM gold.fct_service_requests
     WHERE cast(created_date AS date) = current_date - 1
+),
+source AS (
+    SELECT source_count AS n
+    FROM silver.source_counts
+    WHERE target_date = current_date - 1
 )
 SELECT
     'SLO-2 completeness'                                                AS slo,
-    (SELECT n FROM yesterday)                                           AS rows_yesterday,
-    (SELECT median(n) FROM daily)                                       AS median_prior_7d,
-    0.40                                                                AS tolerance_floor,
-    (SELECT n FROM yesterday) >= 0.40 * (SELECT median(n) FROM daily)   AS pass;
+    (SELECT n FROM ours)                                                AS rows_loaded_yesterday,
+    (SELECT n FROM source)                                              AS rows_published_by_source,
+    0.98                                                                AS tolerance_floor,
+    CASE
+        WHEN (SELECT n FROM source) IS NULL THEN false
+        WHEN (SELECT n FROM source) = 0     THEN true
+        ELSE (SELECT n FROM ours) >= 0.98 * (SELECT n FROM source)
+    END                                                                 AS pass;
 ```
+
+## Upstream stall warning (not an SLO)
+
+The volume-cliff check that used to be SLO-2 — yesterday below **40%** of the trailing 7-day
+median (the floor sits under NYC 311's natural ~50–60% weekend/holiday troughs) — lives on in
+[`scripts/check_upstream_stall.py`](../scripts/check_upstream_stall.py) as a **warning**: the
+run stays green, and a stall verdict files or updates a GitHub issue labeled `upstream-stall`
+so the outage stays visible to anyone reading the dashboards. Recovery is automatic while the
+gap stays inside the trailing 7-day fetch window; a day the city never publishes within that
+window is unrecoverable by the daily run.

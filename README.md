@@ -190,7 +190,7 @@ Provisions the Snowflake hierarchy from scratch (all five schemas — BRONZE, SI
 ---
 
 <a name="test-suite"></a>
-## Test Suite — <!--claim:test_count-->117<!--/claim--> Tests, Zero Live Credentials Required
+## Test Suite — <!--claim:test_count-->120<!--/claim--> Tests, Zero Live Credentials Required
 
 The suite has three tiers, none of which connects to Snowflake, Databricks, or Azure (the total above is recomputed by `scripts/check_claims.py` in CI — the build fails if this section drifts):
 
