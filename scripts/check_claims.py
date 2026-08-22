@@ -239,13 +239,74 @@ def check_terraform_counts(readme_text: str) -> list:
     return errors
 
 
+# Claims that were true once, were superseded by a later decision, and must not
+# come back. Every entry here was found in MERGED documentation by a review that
+# read the prose against the code — seven of them in one pass, none of which any
+# automated check could see.
+#
+# This is a tripwire, not a contradiction detector. It cannot tell that two
+# pages disagree; it only knows that these specific sentences describe a system
+# that no longer exists. That is a narrow guarantee, and it is the one that
+# would have caught every finding in that review.
+#
+# Adding an entry is part of superseding a claim: when a redesign makes a
+# sentence false, register the sentence so it cannot quietly return — the same
+# principle as model_drift_baseline.json, applied to prose.
+SUPERSEDED_CLAIMS = [
+    (
+        "Source-side staleness is SLO-2",
+        "SLO-2 became a source reconciliation (#24); it answers whether WE loaded "
+        "what the city published, and passes 372/372 on a stalled source. "
+        "Source staleness is the non-gating warning — see ADR 013.",
+    ),
+    (
+        "proven by this incident, twice",
+        "slo2_completeness.sql detected the Aug 2026 incident in its OLD form. "
+        "The current file passes on that same incident class; the detector is "
+        "now check_upstream_stall.py.",
+    ),
+    (
+        "publish once daily at roughly 02:20 UTC carrying data up to that moment",
+        "Falsified by direct probes on 2026-08-20 and 2026-08-22: each publish "
+        "lands ~01:40 carrying data only to ~02:05 the PREVIOUS day, a ~23.5h lag.",
+    ),
+    (
+        "core portfolio objective",
+        "Databricks was removed on 2026-08-20. Any ADR rationale resting on "
+        "showcasing it needs a superseding note, not a silent survival.",
+    ),
+]
+
+
+def check_superseded_claims() -> list:
+    """Fail if a claim a later decision invalidated has reappeared in the docs."""
+    errors = []
+    targets = [os.path.join(ROOT, "README.md")]
+    for dirpath, _, files in os.walk(os.path.join(ROOT, "docs")):
+        # ADRs are immutable records of a decision AT A TIME. A superseded claim
+        # inside one is history, not drift, and is corrected by a superseding
+        # ADR rather than by editing the original.
+        if os.path.basename(dirpath) == "adr":
+            continue
+        targets += [os.path.join(dirpath, f) for f in files if f.endswith(".md")]
+
+    for path in sorted(targets):
+        text = open(path).read()
+        for phrase, why in SUPERSEDED_CLAIMS:
+            if phrase in text:
+                rel = os.path.relpath(path, ROOT)
+                errors.append(f"{rel} repeats a superseded claim — \"{phrase}\"\n      {why}")
+    return errors
+
+
 def main() -> int:
     readme_text = open(README).read()
     expected = expected_values()
     errors = (check_markers(readme_text, expected) + check_links(readme_text)
               + check_slo_doc_sync() + check_adr_table(readme_text)
               + check_airflow_task_count(readme_text)
-              + check_terraform_counts(readme_text))
+              + check_terraform_counts(readme_text)
+              + check_superseded_claims())
 
     if errors:
         print("README claim check FAILED:")
@@ -256,6 +317,7 @@ def main() -> int:
     for name, value in expected.items():
         print(f"  ✓ claim:{name} = {value}")
     print("  ✓ all relative README links resolve")
+    print(f"  ✓ no superseded claims resurfaced ({len(SUPERSEDED_CLAIMS)} registered)")
     print("README claim check passed.")
     return 0
 
