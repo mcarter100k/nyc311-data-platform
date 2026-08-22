@@ -100,7 +100,49 @@ def main() -> int:
     check("silver = deduped raw - quarantined",
           n_silver == len(by_key) - quarantined,
           f"{n_silver:,} vs {len(by_key):,} - {quarantined}")
-    check("gold fact = silver", n_fct == n_silver, f"{n_fct:,} vs {n_silver:,}")
+
+    # Gold is INCREMENTAL and accumulates; Silver is rebuilt from the current
+    # fetch window every run. Once the window advances past a previously loaded
+    # day, gold > silver permanently — by design, and the whole point of
+    # keeping history for fct_complaint_recurrence.
+    #
+    # `gold fact = silver` was asserted here for months and only ever passed
+    # because every build was either full-refresh or inside one window. The
+    # first live run after the window moved failed it: 83,622 vs 62,557. The
+    # equality was never the invariant; these two are.
+    window_lo, window_hi = con.sql(
+        "SELECT min(cast(created_date AS date)), max(cast(created_date AS date)) "
+        "FROM silver.service_requests"
+    ).fetchone()
+    n_gold_window = one(
+        f"SELECT count(*) FROM gold.fct_service_requests "
+        f"WHERE cast(created_date AS date) BETWEEN '{window_lo}' AND '{window_hi}'"
+    )
+    n_missing = one(
+        "SELECT count(*) FROM silver.service_requests s "
+        "WHERE NOT EXISTS (SELECT 1 FROM gold.fct_service_requests g "
+        "                  WHERE g.unique_key = s.unique_key)"
+    )
+    check("gold contains every silver row", n_missing == 0, f"{n_missing:,} missing")
+
+    # Inside the window the two should agree. A surplus here is Gold still
+    # holding a row Silver has since rejected: quarantine is applied in Silver
+    # BEFORE dbt sees anything, so the fact table's reconciliation post_hook
+    # (which deletes rows present in staging but absent from int) is
+    # structurally unable to see them. Reported with its cause rather than
+    # asserted to zero, because the surplus is real and currently unfixable
+    # from inside dbt.
+    surplus = n_gold_window - n_silver
+    check("gold within the fetch window = silver",
+          surplus == 0,
+          f"{n_gold_window:,} vs {n_silver:,}"
+          + (f"  (+{surplus} retained from an earlier run, now quarantined in Silver "
+             f"— see docs/BACKLOG.md)" if surplus else ""))
+
+    n_gold_history = n_fct - n_gold_window
+    print(f"  · gold retains {n_gold_history:,} rows older than the window "
+          f"({window_lo} → {window_hi}) — intentional history, not drift")
+
     check("daily_volume sums to the fact grain", int(n_dv) == n_fct,
           f"{int(n_dv):,} vs {n_fct:,}")
 
@@ -109,15 +151,27 @@ def main() -> int:
         "SELECT unique_key FROM gold.fct_service_requests").fetchall()}
     src = {k: r for k, r in by_key.items() if k in gold_keys}
 
+    # Every Gold aggregate below must be scoped to the SAME rows `src` holds.
+    # `src` is already raw ∩ gold — the current fetch window — but the Gold side
+    # was being aggregated over the whole table, which includes every earlier
+    # window Gold has accumulated. That compared 7 days of raw against 9 days of
+    # Gold and reported a data-integrity failure (39,291 vs 53,870) for what was
+    # only a difference in scope.
+    IN_SCOPE = (f"f.unique_key IN (SELECT unique_key FROM "
+                f"read_json_auto('{str(RAW_FILE)}'))")
+
     raw_closed = sum(1 for r in src.values() if r.get("status") == "Closed")
-    gold_closed = one("SELECT count(*) FROM gold.fct_service_requests WHERE is_resolved")
+    gold_closed = one(
+        f"SELECT count(*) FROM gold.fct_service_requests f "
+        f"WHERE f.is_resolved AND {IN_SCOPE}")
     check("closed-request count", raw_closed == gold_closed,
           f"{raw_closed:,} vs {gold_closed:,}")
 
     raw_boro = Counter(std_borough(r.get("borough")) for r in src.values())
-    gold_boro = dict(con.sql("""
+    gold_boro = dict(con.sql(f"""
         SELECT l.borough, count(*) FROM gold.fct_service_requests f
-        JOIN gold.dim_location l USING (location_id) GROUP BY 1
+        JOIN gold.dim_location l USING (location_id)
+        WHERE {IN_SCOPE} GROUP BY 1
     """).fetchall())
     boro_ok = all(raw_boro.get(b, 0) == n for b, n in gold_boro.items())
     check("borough distribution", boro_ok,
