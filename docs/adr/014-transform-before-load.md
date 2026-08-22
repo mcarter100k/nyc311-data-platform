@@ -79,6 +79,26 @@ at pipeline time. The reconciliation script's `raw file = bronze` check is what
 would catch it, and it now compares the file against a view of itself — a
 weaker check than before, which is an accepted cost.
 
+**Amendment, 2026-08-22 — the exported artifact.** The consequence above was
+recorded but its most important instance was missed. `daily-run.yml` uploads
+the DuckDB file as evidence, described in the workflow as *"needed for the
+postmortem"*. A database downloaded on its own now has a Bronze layer that
+raises `IO Error: No files found` on first query, because the view points at a
+path that exists only on the runner. Verified by moving the raw file aside and
+querying the copy: Gold and Silver returned 61,528 rows each; Bronze failed.
+
+Two changes follow. The workflow now uploads the raw JSON alongside the
+database, so the bundle is self-contained. And because the stored path is still
+the runner's, anyone querying a downloaded bundle should read the file directly
+rather than through the view:
+
+```sql
+SELECT * FROM read_json_auto('nyc311_raw.json');   -- Bronze, portably
+```
+
+The view is a convenience for the machine that produced it. The raw file is the
+layer, and it travels.
+
 **Idempotency has a sharp edge worth recording.** `DROP TABLE IF EXISTS`
 does *not* tolerate the object already being a view: `IF EXISTS` suppresses
 "not found", not "wrong type". The first conversion run passed and every run
