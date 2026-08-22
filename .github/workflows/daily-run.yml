@@ -77,11 +77,20 @@ jobs:
       # downloadable by any logged-in GitHub user for the retention window.
       # This database holds only public NYC 311 data; keep it that way, or
       # gate this upload before landing anything non-public.
+      #
+      # The raw JSON ships WITH the database, and must keep doing so. Since
+      # ADR 014, bronze.service_requests is a view over that file rather than a
+      # copy of it, so a database downloaded on its own has a Bronze layer that
+      # raises `IO Error: No files found` on first query. Gold and Silver are
+      # materialised and survive; raw — the thing a postmortem most wants —
+      # does not. Uploading the pair keeps the evidence bundle self-contained.
       - name: Upload DuckDB artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: nyc311-duckdb-${{ github.run_id }}
-          path: local/data/nyc311_local.duckdb
+          path: |
+            local/data/nyc311_local.duckdb
+            local/data/raw/nyc311_raw.json
           retention-days: 14
           if-no-files-found: warn
 
