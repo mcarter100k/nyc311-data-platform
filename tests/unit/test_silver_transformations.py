@@ -150,6 +150,45 @@ def test_deduplication():
     assert got["c"] == "2024-01-03T00:00"
 
 
+def test_deduplication_under_production_conditions():
+    """The real case: every row carries the SAME timestamp, so ties decide everything.
+
+    This fixture is the one that matters, because it is what actually happens.
+    Stage 3 assigns one stamp to the whole frame (`df["_ingest_timestamp"] =
+    <mtime>`), so in production the timestamp sort key is constant and carries
+    no information — every duplicate is a tie.
+
+    The test above passes with distinct timestamps and therefore never exercised
+    this. The original implementation sorted on the timestamp alone with pandas'
+    default quicksort, which is not stable, so tied rows resolved in an
+    unspecified order: 1,000 keys duplicated across two pages came out as a
+    997/3 mix of pages rather than cleanly from either. It kept an arbitrary
+    row while its docstring claimed it kept the newest.
+
+    Pagination overlap means the later copy is the fresher read of a row that
+    may have changed between page requests, so the later fetch must win — for
+    every key, not most of them.
+    """
+    n = 500
+    df = pd.DataFrame({
+        "unique_key":        [f"k{i % n}" for i in range(2 * n)],
+        "page":              ["first"] * n + ["second"] * n,
+        "_ingest_timestamp": ["2026-08-22T00:00:00"] * (2 * n),
+    })
+
+    out = deduplicate_on_unique_key(df)
+
+    assert len(out) == n, f"Expected {n} unique keys, got {len(out)}"
+    survivors = out["page"].value_counts().to_dict()
+    assert survivors == {"second": n}, (
+        f"Every survivor must come from the later page; got {survivors}. A mix "
+        f"means ties are being broken arbitrarily rather than by fetch order."
+    )
+    assert deduplicate_on_unique_key(df).equals(out), (
+        "Identical input must produce identical output."
+    )
+
+
 # ── 4. Quarantine ─────────────────────────────────────────────────────────────
 
 def test_quarantine_selects_only_negative_resolution_days():

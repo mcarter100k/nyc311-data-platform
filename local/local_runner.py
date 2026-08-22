@@ -216,39 +216,95 @@ def stage1_live() -> None:
 
 # ── Stage 2: Bronze ────────────────────────────────────────────────────────────
 
+def _sql_str(value: str) -> str:
+    """Quote a value as a SQL string literal, doubling embedded single quotes."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def raw_ingest_timestamp() -> str:
+    """The moment the raw file was written, as Bronze's ingest stamp.
+
+    Taken from the file's mtime rather than `now()`, so the stamp describes the
+    DATA and not the run that happened to look at it. Re-running stage 2 no
+    longer changes what Bronze says about when its rows arrived.
+    """
+    return datetime.fromtimestamp(RAW_FILE.stat().st_mtime, timezone.utc).isoformat()
+
+
 def stage2_bronze() -> None:
-    _banner("Stage 2 — Bronze  (JSON → DuckDB bronze.service_requests)")
+    _banner("Stage 2 — Bronze  (register a view over the raw file)")
     if not RAW_FILE.exists():
         sys.exit(f"  ERROR: {RAW_FILE} not found — run stage 1 first")
 
-    with open(RAW_FILE) as fh:
-        raw = json.load(fh)
-
-    df = pd.DataFrame(raw)
-    now = datetime.now(timezone.utc).isoformat()
-    df["_ingest_timestamp"] = now
-    df["_source_file"]      = RAW_FILE.name
-    print(f"  loaded {len(df):,} rows from {RAW_FILE.name}")
-
+    # Bronze is the raw file, exposed through a VIEW rather than copied into a
+    # table. Two reasons, one architectural and one practical.
+    #
+    # Architectural: this pipeline transforms BEFORE it loads. The only
+    # service-request data written into the warehouse is the cleaned Silver
+    # table. Materialising a Bronze table would mean loading raw data and then
+    # transforming it in-warehouse, which is the opposite pattern — and it is
+    # what this stage used to do, with Silver reading the table straight back
+    # out again into pandas.
+    #
+    # Practical: the view costs nothing and keeps raw SQL-queryable, which is
+    # how fields Gold drops (council_district, bbl, police_precinct) stay
+    # reachable without re-fetching from the API.
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(DUCKDB_PATH))
     con.execute("CREATE SCHEMA IF NOT EXISTS bronze")
-    con.execute("CREATE OR REPLACE TABLE bronze.service_requests AS SELECT * FROM df")
+    # Drop by ACTUAL type. `DROP TABLE IF EXISTS` does not tolerate the object
+    # already being a view — IF EXISTS suppresses "not found", not "wrong type"
+    # — so it raised on every run after the first, when bronze had already been
+    # converted. Found by running stage 2 twice.
+    existing = con.execute(
+        """SELECT table_type FROM information_schema.tables
+           WHERE table_schema = 'bronze' AND table_name = 'service_requests'"""
+    ).fetchone()
+    if existing:
+        kind = "VIEW" if existing[0] == "VIEW" else "TABLE"
+        con.execute(f"DROP {kind} IF EXISTS bronze.service_requests")
+    # Literals are inlined rather than bound: DuckDB cannot prepare a CREATE
+    # VIEW ("Unexpected prepared parameter"), because the view definition is
+    # stored as text and a placeholder would have nothing to bind to later.
+    # All three values are internal, and _sql_str still doubles any quote.
+    con.execute(
+        f"""
+        CREATE OR REPLACE VIEW bronze.service_requests AS
+        SELECT *,
+               {_sql_str(raw_ingest_timestamp())} AS _ingest_timestamp,
+               {_sql_str(RAW_FILE.name)}          AS _source_file
+        FROM read_json_auto({_sql_str(str(RAW_FILE))})
+        """
+    )
     n = con.execute("SELECT COUNT(*) FROM bronze.service_requests").fetchone()[0]
     con.close()
-    print(f"  bronze.service_requests: {n:,} rows")
+    print(f"  bronze.service_requests (view over {RAW_FILE.name}): {n:,} rows")
 
 
 # ── Stage 3: Silver ────────────────────────────────────────────────────────────
 
 def stage3_silver() -> None:
-    _banner("Stage 3 — Silver  (clean, dedup, derive → DuckDB silver schema)")
+    _banner("Stage 3 — Silver  (transform the raw file, then load the clean result)")
+    if not RAW_FILE.exists():
+        sys.exit(f"  ERROR: {RAW_FILE} not found — run stage 1 first")
     con = duckdb.connect(str(DUCKDB_PATH))
 
-    # Every transformation below is a call into silver_transformations, which
-    # is unit-tested in tests/unit/. This function owns only I/O and logging.
-    df_bronze = con.execute("SELECT * FROM bronze.service_requests").df()
-    print(f"  bronze rows: {len(df_bronze):,}")
+    # Read the RAW FILE, not a Bronze table. The transform happens here, before
+    # anything is written to the warehouse — the load is the `CREATE TABLE
+    # silver...` at the end of this function and nothing before it.
+    #
+    # This previously read `SELECT * FROM bronze.service_requests`, which meant
+    # the same rows were written into DuckDB by stage 2 and pulled straight back
+    # out again here. The round-trip bought nothing and made the layer boundary
+    # ambiguous: data was in the warehouse, then out of it, then in again.
+    #
+    # Every transformation below is a call into silver_transformations, which is
+    # unit-tested in tests/unit/. This function owns only I/O and logging.
+    with open(RAW_FILE) as fh:
+        df_bronze = pd.DataFrame(json.load(fh))
+    df_bronze["_ingest_timestamp"] = raw_ingest_timestamp()
+    df_bronze["_source_file"] = RAW_FILE.name
+    print(f"  raw rows: {len(df_bronze):,}")
 
     df = deduplicate_on_unique_key(df_bronze)
     print(f"  after dedup: {len(df):,} rows "

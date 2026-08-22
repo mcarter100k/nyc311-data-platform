@@ -102,24 +102,16 @@ semantics and destroyed every comment.
 **Evidence, 2026-08-20.** The source backfilled after the 2026-08-18 stall, and
 the recovery exposes a publishing rhythm:
 
-| `created_date` | during the incident | now |
-|---|---|---|
-| Aug 17 | 410 | **10,473** |
-| Aug 18 | 0 | **10,833** |
-| Aug 19 | — | **372** ← same shape, one day later |
-
-`max(created_date)` in the source is `2026-08-19T02:26`. The dataset appears to
-publish once daily at roughly 02:20 UTC carrying data up to that moment, so the
-most recent day is always a stub until the *following* publish fills it.
+| `created_date` | during the incident | 2026-08-20 | 2026-08-22 |
+|---|---|---|---|
+| Aug 17 | 410 | **10,473** | 10,853 |
+| Aug 18 | 0 | **10,833** | 10,967 |
+| Aug 19 | — | **372** ← stub | 10,632 (filled in) |
+| Aug 21 | — | — | **382** ← same stub shape, two days later |
 
 **Why it matters.** The daily run measures at 10:00 UTC and SLO-2 asks about
 T-1. If T-1 is structurally ~4% complete at that hour on *every* normal day,
 the gate is measuring the publishing calendar rather than our completeness.
-
-This is exactly the condition the postmortem's third follow-up said to wait for:
-*"revisit only if several normal post-recovery days show T-1 chronically
-incomplete at 10:00 UTC — threshold changes require accumulated evidence, not
-one incident."* Two post-recovery days now show it. A third would settle it.
 
 **Mitigating fact:** SLO-2 was since redefined as a *source reconciliation*
 (#24) — it compares what we loaded against what the source published for that
@@ -127,25 +119,55 @@ day, so a stub day yields 372/372 and **passes**. The gate is no longer fooled.
 What remains is that a structurally-incomplete T-1 makes the number
 uninformative rather than wrong.
 
+### The publish model, measured twice (2026-08-20 and 2026-08-22)
+
+An earlier version of this item said the dataset "publishes once daily at
+roughly 02:20 UTC carrying data up to that moment." **That is wrong**, and the
+correction matters because the two models predict opposite things about T-1.
+Direct probes of the source:
+
+| Probed | Last publish (`rowsUpdatedAt`) | Newest row (`max(created_date)`) | Lag |
+|---|---|---|---|
+| 2026-08-20 08:26 | 2026-08-20 01:46 | 2026-08-19 02:26 | **23.3 h** |
+| 2026-08-22 06:27 | 2026-08-22 01:37 | 2026-08-21 02:05 | **23.5 h** |
+
+Each publish lands at ~01:40 UTC carrying data only up to roughly *the previous*
+morning. So the publish is daily, but its contents run about a day behind — T-1
+at 10:00 UTC holds only the ~2 hours before that cutoff, and T-0 is empty.
+
+Two independent T-1 measurements at run time agree: **Aug 19 = 372 rows**,
+**Aug 21 = 382 rows**, against a trailing median near 10,500. Both are about
+2.2 h of a ~10 k day. Every older day reads complete (Aug 13–20 all sit between
+9,249 and 10,967).
+
+### The observation that does not fit
+
+This postmortem's own timeline records that at **04:33 on 2026-08-18, T-1
+(Aug 17) held 9,119 rows — 87 % of its eventual 10,473.** Under the 23.5 h lag
+model, T-1 at 04:33 should have held roughly 400 rows, not 9,119.
+
+The two cannot both describe the same publishing behaviour. Either the source's
+cadence changed across the incident, or that reading came from the local
+database reflecting an earlier same-day fetch rather than a fresh probe of the
+source — its provenance is recorded only as "local verification run". It is not
+resolvable from what was retained, and it is left standing here rather than
+dropped, because a measurement that contradicts the working model is the most
+useful thing on this page.
+
+**What would settle it:** probe `rowsUpdatedAt` and `max(created_date)` at a
+fixed hour for several consecutive days. If the ~23.5 h lag holds, T-1 is
+structurally a stub and option (a) is right. If the lag closes, the current
+behaviour is incident residue and T-1 is fine.
+
 **Options.** (a) Move the window to T-2 and state why. (b) Keep T-1 and accept
 that the reconciliation makes it safe. (c) Move the schedule later than the
-source's publish.
+source's publish — ineffective if the lag is ~23.5 h, since no same-day hour
+helps.
 
-**Update 2026-08-20 — first clean post-recovery observation, plus a mechanism.**
-The 10:24 run measured T-1 (Aug 19) at **372 rows** against a trailing median of
-10,494.5. Separately, the source was probed directly at 08:26: `max(created_date)`
-was `2026-08-19 02:26` — **30.0 h stale** — while the dataset's own publish stamp
-`rowsUpdatedAt` was `2026-08-20 01:46`, only 6.7 h old. The source publishes daily
-carrying data to roughly *the previous* morning, so at 10:00 UTC T-1 holds only
-the couple of hours before that publish. 372 rows is what ~2.4 h of a ~10k day
-looks like.
-
-That is a mechanism, not just a correlation, and it argues the pattern is
-structural rather than incident residue. But it is still **one** clean
-post-recovery day; the criterion written into the postmortem was *several*, and
-lowering that bar retroactively is exactly the reasoning error the criterion
-exists to prevent. Keep accumulating. If the pattern holds, option (a) with the
-mechanism recorded is the likely answer.
+**Status:** two consistent post-recovery observations plus a measured
+mechanism, against one recorded contradiction. The postmortem's bar was
+*several* normal days; two is not several, and the unexplained 04:33 reading is
+a live reason not to act yet. Keep accumulating.
 
 ---
 

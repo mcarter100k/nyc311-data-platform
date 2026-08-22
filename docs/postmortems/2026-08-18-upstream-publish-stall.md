@@ -26,7 +26,9 @@ finding.
 
 | Date | What happened |
 |---|---|
-| 2026-08-19 | Source resumed publishing. The missing days filled in: Aug 17 **410 → 10,473**, Aug 18 **0 → 10,833**. No action was taken by this project; recovery was entirely upstream, and the trailing 7-day fetch window absorbed both days automatically on the next run |
+| 2026-08-19 10:22 | Scheduled run **failed red** — SLO-2 (still the old median-based definition) measured `rows_yesterday=319` against a median of 10,449.5. Recovery was not yet visible to the gate at this point, and this run is the reason the redesign had not yet been exercised |
+| 2026-08-19 (later) | Source resumed publishing. The missing days filled in: Aug 17 **410 → 10,473**, Aug 18 **0 → 10,833**. No action was taken by this project; recovery was entirely upstream, and the trailing 7-day fetch window absorbed both days automatically on the next run |
+| 2026-08-20 03:22 | Redesigned SLO-2 (source reconciliation) and the non-gating upstream-stall warning merged to `main` ([#24](https://github.com/mcarter100k/nyc311-data-platform/pull/24), 03:22:50Z) — after the failed run above, which is why 2026-08-20 is the first run to exercise them |
 | 2026-08-20 10:24 | First scheduled run under the redesigned control. **Green.** SLO-1 `age_hours=0` (threshold 26); SLO-2 `rows_loaded_yesterday=372` vs `rows_published_by_source=372` — a 100% reconciliation; `dbt build` PASS=124 ERROR=0. The upstream-stall warning fired on the volume cliff (`rows_yesterday=372`, `median_prior_7d=10494.5`, floor 0.40) and filed issue [#40](https://github.com/mcarter100k/nyc311-data-platform/issues/40) without reddening the run |
 
 ## Did the control work
@@ -103,15 +105,22 @@ failing partway.
 
 ## What now detects this
 
-`scripts/slo/slo2_completeness.sql`, executed by
-`.github/workflows/daily-run.yml` — proven by this incident, twice, with the
-measured numbers preserved on issue #7 and the breach-run artifacts retained
-14 days.
+**`scripts/check_upstream_stall.py`** — and naming the right file matters,
+because it is not the one that caught the incident.
 
-Since redesigned. The check that detected this incident asked *did the city
-publish a normal volume*; it now asks *did we load everything the city
-published*, and the volume question moved to `scripts/check_upstream_stall.py`
-as a non-gating warning. See **Did the control work** above for the first
+What detected this in August was `scripts/slo/slo2_completeness.sql` in its
+*then* form, which asked whether the city had published a normal volume. It
+fired twice, and the measured numbers are preserved on issue #7 with the
+breach-run artifacts retained 14 days.
+
+That file still exists, but it no longer detects this failure mode and is not
+supposed to: it now asks whether *we* loaded everything the city published, and
+answers 372/372 — a pass — on exactly this incident class. The volume question
+moved wholesale to `check_upstream_stall.py`, which warns without gating.
+
+So the detector changed identity. Anyone reading this postmortem for "what
+would catch it next time" needs the stall checker, not the SLO file that
+carries the incident's history. See **Did the control work** above for the first
 scheduled exercise of the new arrangement, which produced a green run and a
 tracked `upstream-stall` issue on the same day — the outcome the split was
 designed for.
@@ -120,7 +129,7 @@ designed for.
 
 | Action | Tracked in | Done |
 |---|---|---|
-| Close #7 when the source backfills and a scheduled run passes; finalize this postmortem (status → reviewed, add recovery timeline) | #7 | ✓ both conditions met 2026-08-19 / 2026-08-20; see *Recovery* above |
+| Close #7 when the source backfills and a scheduled run passes; finalize this postmortem (status → reviewed, add recovery timeline) | #7 | ✓ postmortem finalized 2026-08-20. **#7 was closed early**: at 08:25:07Z, ~2h before the qualifying run finished at 10:25:40Z. Both conditions did hold by 10:25, but not at the moment of closing — recorded rather than quietly corrected, because a criterion that gets marked met before it is met is exactly the failure this column exists to prevent |
 | Decide on SLO-3 (source freshness: max `created_date` in Gold within N hours) — closes the SLO-1 blind spot named above | [ADR 013](../adr/013-no-source-freshness-slo.md) | ✓ rejected after measurement — the blind spot is closed by a warning, not a gate |
 | Revisit SLO-2's window (T-1 vs T-2) only if several *normal* post-recovery days show T-1 chronically incomplete at 10:00 UTC — threshold changes require accumulated evidence, not one incident | [BACKLOG](../BACKLOG.md) | open — first clean post-recovery observation logged 2026-08-20 (T-1 = 372 rows), plus a measured ~24h publish lag that would explain it structurally. One day is not "several"; still accumulating |
 | Dataset-split claims correction (README, sources.yml, ADR notes) | shipped in the same PR as this postmortem | ✓ |

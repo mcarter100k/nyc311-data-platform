@@ -17,8 +17,14 @@ cycle + 2h grace for run-time variance (a late or long-running scheduled run).
 Silver writes the row, so SLO-1 verifies that *a run recently succeeded in producing rows* —
 pipeline liveness. It is structurally blind to upstream staleness: after any successful run
 the newest `_loaded_at` is minutes old regardless of how stale the city's source data is
-(see the 2026-08-18 postmortem). Source-side staleness is SLO-2's job, which measures
-`created_date` — the city's own timestamps.
+(see the 2026-08-18 postmortem).
+
+**No SLO covers source staleness, deliberately.** SLO-2 does *not* — it reconciles our row
+count against the city's own count for the same day, so a day the city barely published
+reconciles at 100% and passes. Source staleness is surfaced by the non-gating
+[upstream stall warning](#upstream-stall-warning-not-an-slo) below, and the reasoning for
+keeping it a warning rather than promoting it to a third SLO is recorded in
+[ADR 013](adr/013-no-source-freshness-slo.md).
 
 <!--slo-sql:scripts/slo/slo1_freshness.sql-->
 ```sql
