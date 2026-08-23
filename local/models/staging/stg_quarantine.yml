@@ -1,0 +1,18 @@
+version: 2
+
+models:
+  - name: stg_quarantine
+    description: >
+      Requests the Silver transform rejected on the current run. Consumed only by
+      fct_service_requests' reconciliation post_hook, which deletes these keys so a
+      row loaded before it became invalid cannot linger in the serving layer.
+    columns:
+      - name: unique_key
+        description: "Natural key of the rejected request."
+        tests:
+          - not_null
+          - unique
+      - name: quarantine_reason
+        description: "Why Silver rejected the row."
+        tests:
+          - not_null

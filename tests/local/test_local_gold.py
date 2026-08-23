@@ -99,6 +99,40 @@ def test_correction_reconciliation_deletes_disqualified_row(gold_db):
     )
 
 
+def test_silver_quarantine_reconciliation_deletes_stranded_row(gold_db):
+    """r9 was VALID in phase 1 and QUARANTINED BY SILVER in phase 2.
+
+    This is the case r6 above cannot cover. r6 stays in silver.service_requests
+    and merely fails the dbt quality filter, so it is present in staging and
+    absent from int — exactly the shape the original post_hook looks for.
+
+    r9 leaves silver entirely, because quarantine runs in pandas before dbt sees
+    anything. It is therefore absent from staging too, which makes the original
+    post_hook structurally blind to it: a row loaded before it became invalid
+    stayed in the fact table indefinitely, and the serving layer kept publishing
+    a record the pipeline's own quality rules had rejected.
+
+    Found 2026-08-22 by an end-to-end run after the fetch window moved — two
+    real requests served as "In Progress" in Gold while the source reported them
+    closed seconds before they were created. Nothing failed at the time: row
+    counts stayed plausible and the fact table simply undercounted closures by
+    two. Asserts the whole lifecycle, because "never built" would prove nothing.
+    """
+    assert "r9" in gold_db["phase1_fct_keys"], (
+        "Precondition broken: r9 must exist in the fact after phase 1 — "
+        "otherwise this test proves nothing about deletion."
+    )
+    assert "r9" not in gold_db["incremental"]["fct"], (
+        "r9 was quarantined by Silver in phase 2 but still has a fact row after "
+        "the incremental run. The quarantine post_hook on fct_service_requests "
+        "did not delete it, so Gold is serving a row Silver rejected."
+    )
+    assert "r9" not in gold_db["full_refresh"]["fct"], (
+        "r9 must not survive a full refresh either — it is absent from silver, "
+        "so no build mode should produce it."
+    )
+
+
 def test_no_fanout_and_full_refresh_idempotent(gold_db):
     """Grain (one row per service request) survives the SCD2 join: row count
     equals the silver population. And idempotency: a --full-refresh assigns
