@@ -252,6 +252,61 @@ Geocoding to a BBL/BIN remains the real fix and a separate concern.
 
 ---
 
+## Silver-quarantined rows stay in Gold forever
+
+**Found 2026-08-22**, by the first end-to-end smoke test run after a live fetch
+moved the window.
+
+**Mechanism (certain).** Quarantine happens in Silver, in pandas
+(`drop_quarantined`), *before* dbt sees anything. A row that Silver rejects is
+therefore absent from `silver.service_requests`, absent from
+`stg_service_requests`, and absent from `int_service_requests_cleaned` — so the
+reconciliation `post_hook` on `fct_service_requests`, which deletes rows
+"present in staging, absent from int", is **structurally unable to see it**.
+The hook catches rows the *dbt* quality filter drops; nothing catches rows the
+*Silver* quarantine drops.
+
+If the row was loaded by an earlier run, Gold keeps that earlier version
+indefinitely.
+
+**Evidence.** Two rows today:
+
+| unique_key | in Gold | in the current raw file |
+|---|---|---|
+| 70093182 | `In Progress`, `closed_date=NULL` | closed 2026-08-17 09:55:00, created 09:55:14 |
+| 70095979 | `In Progress`, `closed_date=NULL` | closed 2026-08-17 19:11:00, created 19:11:04 |
+
+Both acquired a `closed_date` a few seconds *before* their `created_date` — the
+clock-inversion the quarantine exists to catch. Silver now rejects them; Gold
+still serves the pre-error version. `reconcile.py` reports this on two rungs
+(`gold within the fetch window = silver`, and `closed-request count`, where the
+same two rows make Gold undercount closures by exactly 2).
+
+**Why it matters.** It is small now and it only grows. Gold is the serving
+layer, so it currently publishes two records that the pipeline's own quality
+rules have rejected. `reconcile.py` stays red until this is resolved, which is
+correct — the discrepancy is real — but it means a red reconcile no longer
+distinguishes "new problem" from "this known one".
+
+**Options.**
+1. **Persist the quarantine and delete from it.** Silver already computes
+   `select_quarantine(df_derived)` — a function that is unit-tested but *not
+   imported by the pipeline*, so quarantined rows currently vanish leaving only
+   a count in `fct_data_quality`. Write them to `silver.quarantine`, expose a
+   staging model, and extend the fct `post_hook` to delete those keys. Safe: it
+   only ever deletes rows affirmatively identified as invalid.
+2. **Widen the post_hook** to delete any Gold row inside Silver's window that is
+   absent from Silver. Simpler, but riskier — a short or failed fetch would
+   shrink the window and delete legitimate history.
+3. **Accept and document**, treating Gold as eventually-consistent with Silver's
+   quality rules.
+
+Option 1 is the recommended one, and it has a second payoff: quarantined rows
+become inspectable instead of discarded, which is what the word "quarantine"
+implies and what the current code does not do.
+
+---
+
 ## The fetch window cannot update a ticket once its created_date ages out
 
 **Mechanism (certain).** The daily fetch pulls a trailing 7-day window on
