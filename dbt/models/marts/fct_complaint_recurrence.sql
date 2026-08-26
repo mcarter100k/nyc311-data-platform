@@ -151,7 +151,21 @@ final as (
 
         -- How many days of loaded history follow this closure. A rate computed
         -- over window N is only honest across rows where this is >= N.
-        datediff('day', cast(w.closed_date as date), h.max_created_date)         as observation_days,
+        --
+        -- Floored at zero, and the floor is load-bearing rather than cosmetic.
+        -- The horizon is the newest CREATED row, because a recurrence is a new
+        -- ticket; but any bounded load can contain a request closed after that
+        -- horizon — the city keeps closing tickets between publishes, so a row
+        -- created 23:40 and closed 00:20 sits past a horizon that is still on
+        -- yesterday's date. The raw difference is then negative, which is not a
+        -- meaning this column has: "days of loaded history following this
+        -- closure" bottoms out at none. Zero is also the correct value for the
+        -- consumer contract — `observation_days >= N` excludes these rows from
+        -- every window, exactly as right-censoring requires.
+        greatest(
+            0,
+            datediff('day', cast(w.closed_date as date), h.max_created_date)
+        )                                                                       as observation_days,
 
         v.location_ticket_count,
 

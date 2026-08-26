@@ -38,11 +38,45 @@ Physical work sticks; failed access does not. But the result that matters is the
 
 Caveats, because they are load-bearing: one week of history supports only a 3-day window, and recurrence is evidence rather than proof — a repeat can mean the fix failed *or* that the condition is legal and residents keep reporting it. Excluding chronic locations roughly halves the spread, so an unfiltered rate is not a finding. Both guards are columns on [`fct_complaint_recurrence`](dbt/models/marts/fct_complaint_recurrence.sql).
 
-Reproduce either finding in about a minute — no cloud account needed:
+Run the same analysis yourself in about a minute — no cloud account needed:
 
 ```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r local/requirements.txt -r dbt/requirements.txt -r requirements-dev.txt
 python local/local_runner.py --live          # fetch → bronze → silver → dbt gold
-duckdb local/data/nyc311_local.duckdb        # then query gold.fct_daily_volume
+```
+
+**You will not get the numbers above, and that is expected.** `--live` fetches a
+trailing seven days ending *today*, so your window is not 12–19 Aug 2026 — the
+counts and percentages will differ. The comparisons should hold; the digits will not.
+
+Then query Gold. There is no `duckdb` command to run: `pip install duckdb` ships
+the Python library, not a CLI binary. Query it from Python instead —
+
+```python
+import duckdb
+con = duckdb.connect("local/data/nyc311_local.duckdb", read_only=True)
+
+# Action rate. The headline denominator is CLOSED requests, not all requests:
+con.sql("""
+    select count(*) filter (where is_actioned) * 1.0 / count(*) as pct_actioned_of_closed
+    from gold.fct_service_requests
+    where is_resolved
+""").show()
+
+# gold.fct_daily_volume carries pct_actioned too, but over ALL rows — open
+# requests included — so it is a different, lower number. Same column name,
+# different denominator; check which one a chart is using.
+
+# Recurrence is not in fct_daily_volume at all; it has its own fact table,
+# with the two guards (chronic locations, observation time) as columns:
+con.sql("""
+    select closure_type,
+           avg(case when days_to_next_same_complaint <= 3 then 1.0 else 0.0 end) as recurred_3d
+    from gold.fct_complaint_recurrence
+    where not is_chronic_location and observation_days >= 3
+    group by 1 order by 2 desc
+""").show()
 ```
 
 ---

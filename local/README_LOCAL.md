@@ -17,7 +17,7 @@ No cloud credentials, no the cloud spec, no Snowflake needed.
 # From the repo root
 cd local
 
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
 pip install -r requirements.txt
@@ -28,11 +28,14 @@ pip install -r requirements.txt
 ## Run the pipeline
 
 ```bash
-# All 5 stages, 10,000 rows (takes ~2 min on first run)
+# All 5 stages, the 10,000 most recent rows (takes ~2 min on first run)
 python local_runner.py
 
-# Larger dataset — more representative results
+# Larger sample — same recency, more of it
 python local_runner.py --rows 50000
+
+# The trailing 7-day window the scheduled daily run uses
+python local_runner.py --live
 
 # Resume from a specific stage (skips earlier stages)
 python local_runner.py --stage 3      # Silver forward
@@ -46,7 +49,7 @@ python local_runner.py --stage 5      # reprint results only
 
 | Stage | What happens |
 |---|---|
-| **1 — Ingest** | Paginates the Socrata API (1,000 rows/request), writes `local/data/raw/nyc311_raw.json` |
+| **1 — Ingest** | Paginates the Socrata API (1,000 rows/request), **newest first** so the sample matches the recent window the models are tuned on, writes `local/data/raw/nyc311_raw.json` |
 | **2 — Bronze** | Registers `bronze.service_requests` as a **view** over the raw file — raw stays SQL-queryable without being copied into the warehouse |
 | **3 — Silver** | Reads the raw file, deduplicates on `unique_key`, standardizes boroughs, computes `resolution_days`, then writes `silver.service_requests` and `silver.data_quality_log` |
 | **4 — Gold** | Runs `dbt build --full-refresh` — models, the agency SCD Type 2 snapshot, and tests resolve in DAG order in one command |
@@ -137,7 +140,10 @@ con.sql("""
 """).df()
 ```
 
-Or use the DuckDB CLI:
+Or use the DuckDB CLI — **note that `requirements.txt` does not install it.**
+`pip install duckdb` ships the Python library only; the `duckdb` binary is a
+separate download ([duckdb.org/docs/installation](https://duckdb.org/docs/installation),
+or `brew install duckdb`). The Python snippet above needs nothing extra.
 
 ```bash
 duckdb local/data/nyc311_local.duckdb
