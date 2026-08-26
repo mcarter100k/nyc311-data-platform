@@ -211,18 +211,26 @@ def test_quarantine_selects_only_negative_resolution_days():
 # ── 5. Data quality metrics ───────────────────────────────────────────────────
 
 def test_data_quality_metrics():
-    """Exact counts for the five checks that feed fct_data_quality."""
+    """Exact counts for the five checks that feed fct_data_quality.
+
+    ONE deduped frame is passed, not two. The signature used to take a
+    `df_deduped` for counts and a separate `df_derived` for masks; they are the
+    same population at the only call site, and the split let local_runner hand
+    the post-quarantine frame to the counting slot. See the call-site test in
+    tests/local/test_stage3_dq_metrics.py — this test cannot catch that, and
+    never could, because it calls the function correctly by construction.
+    """
     bronze = pd.DataFrame({
         "unique_key":   ["a", "a", None, "d"],           # 1 null, 1 duplicate
         "created_date": ["2024-01-01", "2024-01-01", "2024-01-01", None],  # 1 null
     })
-    deduped = pd.DataFrame({"unique_key": ["a", None, "d"]})               # 4 -> 3
-    derived = pd.DataFrame({
-        "unique_key":      ["a", "n", "d"],
+    # Post-dedup (4 -> 3), PRE-quarantine, derived columns present.
+    deduped = pd.DataFrame({
+        "unique_key":      ["a", None, "d"],
         "resolution_days": pd.array([-1, 3, None], dtype="Int64"),         # 1 invalid
         "borough":         ["BROOKLYN", "UNSPECIFIED", "QUEENS"],          # 1 unrecognized
     })
-    rows = compute_dq_metrics(bronze, deduped, derived, run_date="2024-01-01")
+    rows = compute_dq_metrics(bronze, deduped, run_date="2024-01-01")
     by = {r["check_name"]: r for r in rows}
 
     assert len(rows) == 5, "fct_data_quality's accepted_values test expects exactly these five checks."
@@ -237,10 +245,26 @@ def test_data_quality_metrics():
     assert r["run_date"] == "2024-01-01"
 
     assert by["null_rate_created_date"]["records_failed"] == 1
+    assert by["duplicate_rate"]["records_checked"] == 4, "Measured against bronze."
     assert by["duplicate_rate"]["records_failed"] == 1, "4 bronze rows -> 3 deduped = 1 duplicate."
     assert by["invalid_resolution_days"]["records_failed"] == 1
-    assert by["invalid_resolution_days"]["records_checked"] == 3, "Measured post-dedup."
+    assert by["invalid_resolution_days"]["records_checked"] == 3, (
+        "Measured against the deduped, PRE-quarantine frame — the population "
+        "the rule was applied to. A post-quarantine denominator would be 2, "
+        "which excludes the very row the numerator counts."
+    )
     assert by["unrecognized_borough"]["records_failed"] == 1
+    assert by["unrecognized_borough"]["records_checked"] == 3
+
+    # Structural invariant, independent of these fixture numbers: no check may
+    # report more failures than it checked, and the two deduped-population
+    # checks must share one denominator.
+    for check in rows:
+        assert check["records_failed"] <= check["records_checked"], (
+            f"{check['check_name']} failed {check['records_failed']} of "
+            f"{check['records_checked']} — a denominator that excludes its own "
+            f"numerator is the defect this assertion exists to catch."
+        )
 
 
 def test_failure_rate_handles_zero_checked():

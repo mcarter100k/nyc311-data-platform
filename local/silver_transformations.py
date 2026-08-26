@@ -176,15 +176,56 @@ def failure_rate(failed: int, checked: int) -> float:
 def compute_dq_metrics(
     df_bronze: pd.DataFrame,
     df_deduped: pd.DataFrame,
-    df_derived: pd.DataFrame,
     run_date: str,
 ) -> list:
     """The five data quality checks for one Silver run.
 
-    Null rates are measured on BRONZE (pre-dedup), because a null unique_key
-    cannot survive deduplication and would be invisible afterwards. The
-    remaining checks are measured post-dedup, on the population that will
-    actually be written.
+    TWO populations, and each check states which one it is measured against.
+    Getting this wrong is not a rounding error — it changes what the metric
+    MEANS, and it did: see the note at the end of this docstring.
+
+      df_bronze   every row as fetched, before deduplication and before the
+                  quality filter. |df_bronze| is the run's input size.
+      df_deduped  one row per unique_key, with the derived columns already
+                  computed (borough standardized, resolution_days present),
+                  and BEFORE quarantining. This is the population every
+                  quality RULE is evaluated over.
+
+    The post-quarantine frame — the rows that survive and get written to
+    silver.service_requests — is deliberately NOT a parameter. No check may be
+    measured against it, because it is defined as "the rows that passed", so
+    using it as a denominator produces a rate whose denominator excludes its
+    own numerator.
+
+    Check by check:
+
+      null_rate_unique_key    / df_bronze. Must be pre-dedup: dedup collapses
+                                null unique_keys, so a null measured afterwards
+                                would be invisible.
+      null_rate_created_date  / df_bronze. Same population as the check above
+                                so the two null rates are comparable.
+      duplicate_rate          / df_bronze. Numerator is |bronze| - |deduped| —
+                                the rows deduplication actually removed —
+                                over the rows deduplication actually saw.
+      invalid_resolution_days / df_deduped. The quarantine rule is applied to
+                                the deduped frame, so the deduped frame is what
+                                it was checked against. Its failures are a
+                                SUBSET of this denominator, which is the point.
+      unrecognized_borough    / df_deduped. Borough standardization runs on the
+                                same frame; a row quarantined for a bad date
+                                still had a borough that was or was not
+                                recognized, so it belongs in this denominator.
+
+    Why one deduped frame and not two. This function used to take `df_deduped`
+    and `df_derived` separately, taking counts from the first and masks from
+    the second. At the only call site they are the same population, so the
+    split bought nothing and cost a great deal: local_runner passed the
+    POST-quarantine frame as `df_deduped`, which made `duplicate_rate` report
+    duplicates + quarantined rows (in practice: quarantined rows, since the
+    fetch contains no duplicate unique_keys) and gave the other two checks a
+    denominator that excluded their own numerator. One parameter makes that
+    class of mistake unrepresentable — the count and the mask now provably
+    come from the same rows.
 
     Returns rows shaped for SILVER.data_quality_log; the caller writes them.
     """
@@ -192,9 +233,13 @@ def compute_dq_metrics(
     n_deduped = len(df_deduped)
     n_null_uk = int(df_bronze["unique_key"].isna().sum()) if "unique_key" in df_bronze else n_bronze
     n_null_cd = int(df_bronze["created_date"].isna().sum()) if "created_date" in df_bronze else 0
+    # Rows removed by deduplication. Equivalently |bronze| - |distinct
+    # unique_key|, since that is precisely what deduplicate_on_unique_key does.
     n_dupes = n_bronze - n_deduped
-    n_invalid = int(quarantine_mask(df_derived).sum())
-    n_unrecognized = int((df_derived["borough"] == "UNSPECIFIED").sum()) if "borough" in df_derived else 0
+    n_invalid = int(quarantine_mask(df_deduped).sum())
+    n_unrecognized = (
+        int((df_deduped["borough"] == "UNSPECIFIED").sum()) if "borough" in df_deduped else 0
+    )
 
     def row(name, failed, checked):
         return {
@@ -210,6 +255,8 @@ def compute_dq_metrics(
         row("null_rate_unique_key", n_null_uk, n_bronze),
         row("null_rate_created_date", n_null_cd, n_bronze),
         row("duplicate_rate", n_dupes, n_bronze),
+        # Both of these are checked-against df_deduped, the frame their masks
+        # were computed on — never the post-quarantine frame.
         row("invalid_resolution_days", n_invalid, n_deduped),
         row("unrecognized_borough", n_unrecognized, n_deduped),
     ]
