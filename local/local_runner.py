@@ -388,6 +388,15 @@ def stage3_silver() -> None:
     df = standardize_borough(df)
     df = compute_resolution_days(parse_timestamps(df))
 
+    # THREE populations from here on, and they must not be conflated — a
+    # rebound `df` meaning all three in turn is what hid a DQ bug for the life
+    # of this pipeline (see the compute_dq_metrics call below):
+    #
+    #   df_bronze   every fetched row, pre-dedup
+    #   df_derived  one row per unique_key with derived columns, PRE-quarantine
+    #               — the population every quality rule is evaluated over
+    #   df          the survivors, POST-quarantine — the rows Silver writes,
+    #               and the one frame no DQ check may be measured against
     df_derived = df
     n_invalid = int(quarantine_mask(df_derived).sum())
     if n_invalid:
@@ -433,7 +442,14 @@ def stage3_silver() -> None:
 
     # Write DQ log
     run_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    dq_rows = compute_dq_metrics(df_bronze, df, df_derived, run_date)
+    # df_derived, NOT df. df is post-quarantine, and passing it here is the bug
+    # this call site shipped with: compute_dq_metrics derived the duplicate
+    # count as |bronze| - |this frame|, so every quarantined row was counted as
+    # a duplicate. On data with no duplicate unique_keys — which is every fetch
+    # this pipeline has ever made — `duplicate_rate` was reporting the
+    # quarantine count and nothing else. The signature now takes ONE deduped
+    # frame precisely so this cannot be got wrong again.
+    dq_rows = compute_dq_metrics(df_bronze, df_derived, run_date)
     # noqa is correct here, not a silencer: DuckDB's replacement scan resolves
     # `FROM dq_df` in the INSERT below against this local variable, so the name
     # IS the interface. Static analysis cannot see a reference inside SQL text.
