@@ -86,10 +86,10 @@ con.sql("""
 These are the decisions where the trade-off was genuinely close, and where the reasoning matters more than the result.
 
 **`is_overdue` is NULL for open requests, not FALSE.**
-`fct_service_requests` uses a three-valued flag: TRUE (closed in > 30 days), FALSE (closed in ≤ 30 days), NULL (still open). A boolean FALSE would cause `COUNT(*) FILTER (WHERE NOT is_overdue)` to count open requests as "on time" — silently inflating the resolution rate. NULL forces analysts to explicitly decide whether to include or exclude open requests, which is the correct default for a mixed-status fact table.
+`fct_service_requests` uses a three-valued flag: TRUE (closed in > 30 days), FALSE (closed in ≤ 30 days), NULL (still open). A boolean FALSE would cause `COUNT(*) FILTER (WHERE NOT is_overdue)` to count open requests as "on time" — silently inflating the resolution rate. NULL forces analysts to explicitly decide whether to include or exclude open requests, which is the correct default for a mixed-status fact table. The flag keys on `status`, not on whether a `closed_date` happens to be present — the source emits rows carrying a closed_date while still Open, and keying on the date alone let 4,139 of them be counted as "on time" by the very expression this design exists to protect. `assert_is_overdue_null_while_open` now enforces it.
 
-**The HttpSensor is a cost gate, not just a health check.**
-The sensor validates HTTP 200 and a non-empty JSON body before any downstream work starts. If the Socrata API is up but the daily refresh hasn't completed, the sensor waits. The cost of a five-minute sensor timeout is zero. The cost of proceeding — pulling an incomplete dataset and writing a partial Bronze partition — is a manual replay plus an incident investigation. On a warehouse billed by the second, that gap is also money.
+**The source gate is a cost decision, and it is weaker than it looks.**
+`check_source` runs a plain `curl` against the API before any downstream task starts, so a dead endpoint fails the run in seconds rather than part-way through a load. Failing early is close to free; failing late means a manual replay and an incident. But be precise about what it does and does not verify: it checks the HTTP status and **discards the body** (`-o /dev/null`), so a source returning `200` with an empty array — the published August 2026 stall — passes this gate cleanly. The zero-row check in `fetch_live_records` is what actually catches that, one task later. There is no sensor, no poke interval and no waiting; an earlier version of this README described all three, none of which exist.
 
 **`FUTURE TABLES` grants interact with schema-swap publishing — and the interaction has to be designed, not assumed.**
 `SELECT ON FUTURE TABLES` lets any table dbt creates inherit reporter permissions without a Terraform re-apply ([main.tf:471-481](terraform/modules/snowflake-foundation/main.tf#L471-L481)). But Snowflake grants attach to the schema *object*, and the write-audit-publish swap renames objects — so grants defined only on GOLD stop covering it after the first publish. [ADR 009](docs/adr/009-publish-grants-under-schema-swap.md) resolves this: the grant matrix is specified symmetrically on both GOLD and GOLD_AUDIT, keeping the single atomic swap (the alternative — per-table view swaps — was rejected because it reintroduces the cross-table inconsistency window WAP exists to eliminate).
@@ -119,7 +119,9 @@ The executable queries live in [scripts/slo/](scripts/slo/); CI fails if `docs/S
 
 **A real incident.** On 2026-08-18 the city's publish process left Aug 17 ~96% incomplete, then published nothing for 21+ hours. Every pipeline stage ran green; only the source-facing check saw it, on the tier's first scheduled day. SLO-2 detected it and auto-filed [issue #7](https://github.com/mcarter100k/nyc311-data-platform/issues/7). The control that followed: SLO-2 was **redefined as a source reconciliation** — it now asks whether we loaded everything the city published, so an upstream outage no longer reddens our reliability signal, while a separate non-gating [upstream-stall check](scripts/check_upstream_stall.py) keeps the outage visible. [Full postmortem](docs/postmortems/2026-08-18-upstream-publish-stall.md).
 
-**A self-audit finding.** The ingestion watermark keyed on `created_date`, fetching each record exactly once — on the day it was filed. But 311 requests mutate after creation (status flips to Closed days later), so every downstream update path was unreachable and resolution metrics would only ever have counted same-day closures. Found by systematic self-audit, not by a failure. The watermark now keys on `:updated_at`, guarded by two tests: [one asserting the predicate](tests/test_ingest_config.py), [one proving an update reaches Gold](tests/local/test_local_gold.py).
+**A self-audit finding, and the fix is not the obvious one.** The ingestion watermark keyed on `created_date`, fetching each record exactly once — on the day it was filed. But 311 requests mutate after creation (status flips to Closed days later), so every downstream update path was unreachable and resolution metrics would only ever have counted same-day closures. Found by systematic self-audit, not by a failure.
+
+The obvious repair — key on `:updated_at` — was measured and **rejected**: that field is mass re-stamped nightly, ~540k rows/day against ~53k created per week ([ADR 010](docs/adr/010-scheduled-operation.md)), which a row-capped daily fetch cannot absorb. The daily run instead re-pulls a trailing 7-day `created_date` window in full, so status changes *inside* that window are captured. Updates to rows older than the window are still missed, and that limit is tracked in [docs/BACKLOG.md](docs/BACKLOG.md) rather than papered over. An earlier version of this README claimed the watermark now keys on `:updated_at`; it does not, and the only caller passes `created_window`.
 
 ---
 
@@ -162,7 +164,7 @@ Gold is a Kimball star: <!--claim:fct_models-->4<!--/claim--> fact tables, 3 dim
 
 ## Test Suite
 
-Two populations, deliberately not summed: **<!--claim:test_count-->136<!--/claim--> pytest tests** that need no cloud account, and **119 dbt data tests (113 generic + 6 singular)** that run against the warehouse during `dbt build`. The pytest count is recomputed in CI.
+Two populations, deliberately not summed: **<!--claim:test_count-->136<!--/claim--> pytest tests** that need no cloud account, and **122 dbt data tests (115 generic + 7 singular)** that run against the warehouse during `dbt build`. The pytest count is recomputed in CI.
 
 | Tier | Count | What it proves |
 |---|---|---|

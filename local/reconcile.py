@@ -48,7 +48,15 @@ from silver_transformations import BOROUGH_MAP
 
 # Socrata is not read-consistent (see the rung-3 comment). Point lookups are
 # probed until one succeeds; absence is only reported when every probe agrees.
-SOURCE_PROBES      = 4
+#
+# Ten, not four. Four was the first guess and it was measurably too few: on
+# 2026-08-26 a key that demonstrably exists (70178973, created 16:43, status
+# In Progress) was found on only 8 of 15 probes — a ~47% per-probe miss rate.
+# At four probes that is 0.47^4 ≈ 5% false failure per key, and with three keys
+# sampled per run roughly one reconcile in seven would go red for no reason.
+# Ten puts it near 0.05% per key. Found because the check failed on a healthy
+# database and the failure was investigated rather than retried away.
+SOURCE_PROBES      = 10
 SOURCE_PROBE_PAUSE = 0.6
 
 failures = []

@@ -119,7 +119,7 @@ Seven tasks in a linear dependency chain:
 check_api_availability → ingest_raw → load_bronze → load_silver → dbt_build → dbt_publish → notify_success
 ```
 
-The `HttpSensor` at the front validates both HTTP 200 and a non-empty response body before any downstream stage starts. The dbt stage follows **write-audit-publish**: `dbt_build` runs a single `dbt build` that resolves the whole DAG in dependency order (the agency SCD Type 2 snapshot runs before `dim_agency` automatically) and routes every model into a `GOLD_AUDIT` schema, testing each model right after it builds. Only when every model and test passes does `dbt_publish` swap the audited schema into `GOLD` with an atomic `ALTER SCHEMA ... SWAP WITH` — BI consumers never see unvalidated data, and a failed run leaves the previous published build serving.
+The `check_source` task at the front runs a plain `curl` and validates the HTTP status only — it discards the body (`-o /dev/null`), so a source returning `200` with an empty array passes it; the zero-row check in `fetch_live_records` catches that one task later. There is no sensor and no waiting behaviour (an earlier version of this file described an `HttpSensor` that does not exist).
 
 **Outcome:** No wasted compute on a broken source, and no window where bad data is live in Gold. A failed build or test halts before publish; production keeps serving the last validated build.
 
