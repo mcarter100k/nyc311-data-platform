@@ -23,6 +23,14 @@ pytest.importorskip("dbt.adapters.duckdb", reason="dbt-duckdb not installed — 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LOCAL_PROJECT = os.path.join(ROOT, "local")
 
+# `python -m dbt` does not work; local/dbt_exec.py holds the single definition
+# of how the dbt console script is resolved, shared with local/local_runner.py
+# and run_tests.sh. local/ is not a package, hence the sys.path idiom used by
+# test_module_imports.py and test_live_fetch.py.
+if LOCAL_PROJECT not in sys.path:
+    sys.path.insert(0, LOCAL_PROJECT)
+from dbt_exec import dbt_executable  # noqa: E402
+
 # Silver contract columns consumed by local/models/staging/stg_service_requests.sql
 SILVER_COLUMNS = """
     unique_key VARCHAR, created_date TIMESTAMP, closed_date TIMESTAMP,
@@ -59,18 +67,9 @@ def _row(unique_key, created, closed, agency, agency_name, status, ts,
     )
 
 
-def _dbt_executable():
-    # dbt-core 1.7 ships no __main__, so `python -m dbt` does not work; use the
-    # console script installed next to the current interpreter, falling back to
-    # whatever is on PATH.
-    import shutil
-    candidate = os.path.join(os.path.dirname(sys.executable), "dbt")
-    return candidate if os.path.exists(candidate) else shutil.which("dbt")
-
-
 def _dbt(args, profiles_dir):
     cmd = [
-        _dbt_executable(), *args,
+        dbt_executable(), *args,
         "--profiles-dir", str(profiles_dir),
         "--project-dir", LOCAL_PROJECT,
         "--no-version-check",
