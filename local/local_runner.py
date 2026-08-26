@@ -46,6 +46,7 @@ LIVE_ROW_CAP = 150_000
 
 # Silver transformation logic lives in silver_transformations.py so it can be
 # unit-tested without a database. This module owns I/O only.
+from dbt_exec import dbt_executable          # noqa: E402
 from silver_transformations import (          # noqa: E402
     compute_dq_metrics,
     compute_resolution_days,
@@ -405,18 +406,11 @@ def stage3_silver() -> None:
 
 # ── Stage 4: Gold (dbt) ────────────────────────────────────────────────────────
 
-def _dbt_executable() -> str:
-    # dbt-core 1.7 ships no __main__, so `python -m dbt` fails with
-    # "'dbt' is a package and cannot be directly executed". Use the console
-    # script installed next to this interpreter, falling back to PATH.
-    import shutil
-    candidate = Path(sys.executable).parent / "dbt"
-    return str(candidate) if candidate.exists() else (shutil.which("dbt") or "dbt")
-
-
 def _run_dbt(args: list[str]) -> int:
     cmd = [
-        _dbt_executable(), *args,
+        # `python -m dbt` does not work — see local/dbt_exec.py for why, and for
+        # the single definition this and tests/local/conftest.py both use.
+        dbt_executable() or "dbt", *args,
         "--profiles-dir", str(LOCAL_DIR),
         "--project-dir",  str(LOCAL_DIR),
         "--no-version-check",

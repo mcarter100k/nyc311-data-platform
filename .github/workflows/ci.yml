@@ -41,37 +41,19 @@ jobs:
       - name: Install dbt
         run: pip install -r dbt/requirements.txt
 
-      # profiles.yml is gitignored (it holds credentials in real environments).
-      # Write a placeholder profile at runtime — dbt parse validates the profile
-      # schema but never opens a Snowflake connection.
-      - name: Write mock CI profiles.yml
-        run: |
-          cat > dbt/profiles.yml << 'EOF'
-          nyc311:
-            target: ci
-            outputs:
-              ci:
-                type: snowflake
-                account: "placeholder.us-east-1"
-                user: ci_user
-                password: ci_password
-                role: NYC311_TRANSFORMER
-                database: NYC311_DB
-                warehouse: NYC311_WH
-                schema: gold
-                threads: 1
-                client_session_keep_alive: false
-          EOF
-
+      # The mock CI profile is committed at dbt/ci-profile/profiles.yml and is
+      # credential-free. This step used to `cat >` a heredoc that dbt-docs.yml
+      # duplicated verbatim and that run_tests.sh never had at all; the file is
+      # now the single source of truth all three share.
       - name: dbt deps
-        run: dbt deps --profiles-dir . --project-dir . --no-version-check
+        run: dbt deps --profiles-dir ci-profile --project-dir . --no-version-check
         working-directory: dbt
 
       - name: dbt parse (compile without connecting)
         # dbt compile triggers a Snowflake connection even with placeholder credentials.
         # dbt parse validates the project and writes the manifest with no DB connection —
         # the same approach used by run_tests.sh locally.
-        run: dbt parse --profiles-dir . --project-dir . --target ci --no-version-check
+        run: dbt parse --profiles-dir ci-profile --project-dir . --target ci --no-version-check
         working-directory: dbt
 
       - name: Install test dependencies
@@ -189,3 +171,45 @@ jobs:
       # contract tests.
       - name: Behavioral tests
         run: pytest tests/local -v
+
+  # ── front-door ────────────────────────────────────────────────────────────
+  # Runs ./run_tests.sh — the command the README documents as THE way to run
+  # the suite — exactly as a newcomer would, from a clean checkout following
+  # only the documented install steps.
+  #
+  # Why this job exists. run_tests.sh sat broken at exit 1, running zero tests,
+  # while all three checks above stayed green: every one of them invokes pytest
+  # DIRECTLY, so no CI job had ever executed this script. The documented front
+  # door was the one path nothing tested. Green CI is not evidence that the
+  # README works unless something runs what the README says to run.
+  #
+  # Deliberately NOT a required status check: required contexts are declared in
+  # terraform/github, and adding one is a Terraform change that has not been
+  # approved. This job runs and reports; promoting it is a separate decision.
+  front-door:
+    name: front-door
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # The README quickstart, verbatim. If these two lines drift from the
+      # README, this job is no longer testing the documented path.
+      - name: Install exactly what the README quickstart installs
+        run: pip install -r local/requirements.txt -r dbt/requirements.txt -r requirements-dev.txt
+
+      # A clean checkout has no dbt/target/manifest.json and no dbt/profiles.yml
+      # — that is precisely the case that used to fail. Assert it rather than
+      # assume it, so the job cannot quietly start testing a warmed-up tree.
+      - name: Assert the checkout really is cold
+        run: |
+          test ! -e dbt/target/manifest.json || { echo "manifest.json present — this job is not testing a clean checkout"; exit 1; }
+          test ! -e dbt/profiles.yml        || { echo "profiles.yml present — this job is not testing a clean checkout"; exit 1; }
+
+      - name: ./run_tests.sh
+        run: ./run_tests.sh

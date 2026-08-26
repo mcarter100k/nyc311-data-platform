@@ -2,9 +2,12 @@
 dbt/target/
 dbt/logs/
 dbt/.user.yml
-# profiles.yml is never committed — it holds credentials. CI workflows write an
-# ephemeral placeholder profile at runtime; developers keep theirs in
-# ~/.dbt/profiles.yml (see dbt/profiles.yml.example).
+# dbt drops an anonymous-usage id next to whatever --profiles-dir it is given.
+dbt/ci-profile/.user.yml
+# profiles.yml is never committed — it holds credentials. Developers keep theirs
+# in ~/.dbt/profiles.yml (see dbt/profiles.yml.example). The CREDENTIAL-FREE
+# mock profile used by CI and run_tests.sh is the one exception and IS committed,
+# at dbt/ci-profile/profiles.yml — see the header of that file.
 dbt/profiles.yml
 
 # dbt_packages are restored by `dbt deps` — no need to commit vendored copies
