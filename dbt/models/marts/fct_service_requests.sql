@@ -6,11 +6,16 @@
         incremental_strategy = 'merge',
         on_schema_change    = 'append_new_columns',
         cluster_by          = ["cast(created_date as date)"],
-        post_hook           = "delete from {{ this }}
-                               where service_request_id in
-                                 (select service_request_id from {{ ref('stg_service_requests') }}
-                                  where service_request_id not in
-                                    (select service_request_id from {{ ref('int_service_requests_cleaned') }}))"
+        post_hook           = [
+            "delete from {{ this }}
+             where service_request_id in
+               (select service_request_id from {{ ref('stg_service_requests') }}
+                where service_request_id not in
+                  (select service_request_id from {{ ref('int_service_requests_cleaned') }}))",
+            "delete from {{ this }}
+             where unique_key in
+               (select unique_key from {{ ref('stg_quarantine') }})",
+        ]
     )
 }}
 

@@ -8,18 +8,33 @@
         unique_key          = 'service_request_id',
         incremental_strategy = 'delete+insert',
         on_schema_change    = 'append_new_columns',
-        post_hook           = "delete from {{ this }}
-                               where service_request_id in
-                                 (select service_request_id from {{ ref('stg_service_requests') }}
-                                  where service_request_id not in
-                                    (select service_request_id from {{ ref('int_service_requests_cleaned') }}))"
+        post_hook           = [
+            "delete from {{ this }}
+             where service_request_id in
+               (select service_request_id from {{ ref('stg_service_requests') }}
+                where service_request_id not in
+                  (select service_request_id from {{ ref('int_service_requests_cleaned') }}))",
+            "delete from {{ this }}
+             where unique_key in
+               (select unique_key from {{ ref('stg_quarantine') }})",
+        ]
     )
 }}
 
-{# Reconciliation delete: removes fact rows the quality filter currently
-   quarantines (present in staging, absent from int), keeping incremental ≡
-   full-refresh without touching history outside Silver's rolling window
-   (mirrors dbt/). #}
+{# Two reconciliation deletes, because rows leave the pipeline at two
+   different points and only one of them is visible to dbt.
+
+   The first removes rows the dbt quality filter drops: present in staging,
+   absent from int. That keeps incremental ≡ full-refresh without touching
+   history outside Silver's rolling window.
+
+   The second removes rows SILVER rejected. Those never reach staging at all —
+   quarantine runs in pandas before dbt sees anything — so the first delete is
+   structurally blind to them, and a row loaded by an earlier run and rejected
+   by a later one stayed in the fact table indefinitely. Found 2026-08-22 by an
+   end-to-end run after the fetch window moved: two rows served as "In Progress"
+   in Gold while the source reported them closed seconds before they were
+   created. (mirrors dbt/) #}
 
 with requests as (
 

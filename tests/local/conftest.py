@@ -105,6 +105,15 @@ def gold_db(tmp_path_factory):
     con = duckdb.connect(str(db_path))
     con.execute("CREATE SCHEMA IF NOT EXISTS silver")
     con.execute(f"CREATE TABLE silver.service_requests ({SILVER_COLUMNS})")
+    # Empty in phase 1: r9 is a valid row that Silver rejects in phase 2, which
+    # is the case the dbt quality filter CANNOT model — a Silver-quarantined row
+    # never reaches staging at all.
+    con.execute("""
+        CREATE TABLE silver.quarantine (
+            unique_key VARCHAR, created_date TIMESTAMP, closed_date TIMESTAMP,
+            resolution_days BIGINT, quarantine_reason VARCHAR,
+            _silver_timestamp VARCHAR)
+    """)
     con.execute("""
         CREATE TABLE silver.data_quality_log (
             run_date VARCHAR, check_name VARCHAR, records_checked BIGINT,
@@ -133,6 +142,11 @@ def gold_db(tmp_path_factory):
         _row("r8", "2024-01-04 09:00:00", None,
              "DSNY", "Department of Sanitation", "Open", T1,
              address="9 RECURRING WAY", complaint="Dirty Condition"),
+        # r9 is valid now. In phase 2 SILVER rejects it, so it vanishes from
+        # silver.service_requests entirely rather than merely failing the dbt
+        # filter the way r6 does.
+        _row("r9", "2024-01-02 07:00:00", "2024-01-02 19:00:00",
+             "DOT", "Department of Transportation", "Closed", T1),
     ]))
     con.close()
 
@@ -179,6 +193,18 @@ def gold_db(tmp_path_factory):
             _silver_timestamp = TIMESTAMP '{T2}'
         WHERE unique_key = 'r6'
     """)
+    # r9 is QUARANTINED BY SILVER: the pandas transform drops it before dbt sees
+    # anything, so unlike r6 it leaves silver.service_requests completely. The
+    # original post_hook (present in staging, absent from int) is structurally
+    # blind to this, which is why the quarantine table and the second post_hook
+    # exist. Its stale fact row must still disappear.
+    con.execute("""
+        INSERT INTO silver.quarantine
+        SELECT unique_key, created_date, closed_date, -1,
+               'negative_resolution_days', CAST(_silver_timestamp AS VARCHAR)
+        FROM silver.service_requests WHERE unique_key = 'r9'
+    """)
+    con.execute("DELETE FROM silver.service_requests WHERE unique_key = 'r9'")
     con.close()
 
     _dbt(["build"], workdir)          # snapshot v2 + incremental merge

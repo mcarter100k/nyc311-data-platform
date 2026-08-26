@@ -252,7 +252,7 @@ Geocoding to a BBL/BIN remains the real fix and a separate concern.
 
 ---
 
-## Silver-quarantined rows stay in Gold forever
+## ~~Silver-quarantined rows stay in Gold forever~~ — RESOLVED 2026-08-23
 
 **Found 2026-08-22**, by the first end-to-end smoke test run after a live fetch
 moved the window.
@@ -304,6 +304,28 @@ distinguishes "new problem" from "this known one".
 Option 1 is the recommended one, and it has a second payoff: quarantined rows
 become inspectable instead of discarded, which is what the word "quarantine"
 implies and what the current code does not do.
+
+**Resolved 2026-08-23 — option 1.** `select_quarantine()` is now imported and
+its output written to `silver.quarantine`, exposed as `stg_quarantine`, and
+deleted from the fact table by a second `post_hook`. The table is **replaced**
+ every run, never appended: it means "rejected by the CURRENT fetch", and a growing
+history would be actively wrong — a row the city later corrects must stop being
+listed, or the hook would delete a valid row from Gold on every subsequent run.
+
+`reconcile.py` is green again; the two stranded rows are gone from Gold.
+
+Two things this exposed that are worth keeping in mind:
+
+- The first attempt wrote **two `post_hook =` keys** in one `config()` call.
+  That is a duplicate keyword: the second silently overrides the first, which
+  would have deleted the *original* reconciliation while looking correct. It
+  must be a list.
+- The singular dbt test `assert_no_quarantined_rows_in_gold` is **vacuous under
+  `--full-refresh`** — a full rebuild never contains quarantined rows, because
+  they are absent from staging. It only has teeth incrementally, which is also
+  the only mode where the bug exists. The behavioral fixture's `r9` covers the
+  real lifecycle: valid in phase 1, Silver-rejected in phase 2, gone from Gold
+  after the incremental build.
 
 ---
 

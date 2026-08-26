@@ -53,6 +53,7 @@ from silver_transformations import (          # noqa: E402
     drop_quarantined,
     parse_timestamps,
     quarantine_mask,
+    select_quarantine,
     standardize_borough,
 )
 
@@ -327,6 +328,34 @@ def stage3_silver() -> None:
     con.execute("CREATE OR REPLACE TABLE silver.service_requests AS SELECT * FROM df")
     n_silver = con.execute("SELECT COUNT(*) FROM silver.service_requests").fetchone()[0]
     print(f"  silver.service_requests: {n_silver:,} rows")
+
+    # Write silver.quarantine — the rows dropped above, kept rather than discarded.
+    #
+    # Until now `select_quarantine` was written and unit-tested but never
+    # imported here, so "quarantine" meant "delete" and only a count survived in
+    # fct_data_quality. That left Gold unable to correct itself: a row loaded by
+    # an earlier run and rejected by a later one stayed in the fact table
+    # forever, because quarantine happens before dbt sees anything and the fact
+    # table's reconciliation post_hook can only see rows that reached staging.
+    #
+    # REPLACED, not appended, on purpose. This table means "rows the CURRENT
+    # fetch rejects", and Silver re-pulls the whole window every run. Appending
+    # would be actively wrong: a row quarantined today and corrected by the city
+    # tomorrow would stay listed, and the post_hook would then delete a valid
+    # row from Gold on every subsequent run.
+    # noqa for the same reason as dq_df above: DuckDB's replacement scan
+    # resolves `FROM df_quarantined` in the statement below against this local
+    # variable, so the name IS the interface and static analysis cannot see it.
+    df_quarantined = select_quarantine(df_derived)  # noqa: F841
+    con.execute("""
+        CREATE OR REPLACE TABLE silver.quarantine AS
+        SELECT unique_key, created_date, closed_date, resolution_days,
+               'negative_resolution_days' AS quarantine_reason,
+               ? AS _silver_timestamp
+        FROM df_quarantined
+    """, [df["_silver_timestamp"].iloc[0] if len(df) else datetime.now(timezone.utc).isoformat()])
+    n_q = con.execute("SELECT COUNT(*) FROM silver.quarantine").fetchone()[0]
+    print(f"  silver.quarantine: {n_q:,} rows retained for inspection")
 
     # Write DQ log
     run_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
