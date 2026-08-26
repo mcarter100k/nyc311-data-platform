@@ -7,7 +7,7 @@ Bronze → Silver → Gold transformation pipeline on-laptop using DuckDB.
 No cloud credentials, no Databricks, no Snowflake required.
 
 Usage:
-    python local_runner.py                  # all 5 stages, 10,000 rows
+    python local_runner.py                  # all 5 stages, 10,000 most recent rows
     python local_runner.py --rows 50000     # larger dataset
     python local_runner.py --stage 3        # resume from stage 3 forward
     python local_runner.py --stage 5        # just reprint results
@@ -67,24 +67,63 @@ def _banner(msg: str) -> None:
 
 # ── Stage 1: Ingest ────────────────────────────────────────────────────────────
 
+# Sample mode takes the NEWEST rows, contiguously.
+#
+# It used to read `$order=":id"` from offset 0 — the top of the dataset, which
+# is its OLDEST rows (2020 onward). That sample is not the population this
+# platform reports on. Every downstream rule (the complaint taxonomy in
+# int_service_requests_cleaned, the closure_type text patterns) was derived from
+# the recent live window `--live` fetches, and the city's complaint mix has
+# moved since 2020: a 2020-first sample lands ~14.7% of rows in 'Other' against
+# the taxonomy's 5% guard, dominated by types the recent window barely contains
+# (`Request Large Bulky Item Collection`, `NonCompliance with Phased Reopening`).
+# The right fix is the sample, not the guard — the default invocation should
+# exercise the same data shape the daily run does. The guard stays at 5% and
+# still fires on the old sample; see local/README_LOCAL.md.
+#
+# Paging is KEYSET, not offset. `$order=created_date DESC` with `$offset` is not
+# stable on this dataset — measured on 2026-08-25, three offset pages skipped
+# ~20 hours of 24 Aug entirely while the equivalent keyset walk did not. That
+# matters beyond tidiness: a sample that omits the newest day while keeping
+# rows closed on that day drives `observation_days` in fct_complaint_recurrence
+# negative, because the loaded horizon (max created_date) falls behind the
+# closures inside it. Walking `created_date <= cursor` instead keeps the sample
+# a contiguous slice ending at the newest published row.
+#
+# `:id` is the tiebreak, not the sort key: it makes the ordering total so rows
+# sharing a created_date cannot reshuffle between pages. The cursor is
+# inclusive (`<=`) so tied rows on the page boundary are not skipped; the
+# unique_key seen-set drops the resulting overlap, and a page that yields
+# nothing new ends the walk rather than looping.
+SAMPLE_ORDER = "created_date DESC, :id"
+
+
 def stage1_ingest(rows: int) -> None:
-    _banner(f"Stage 1 — Ingest  ({rows:,} rows from Socrata API)")
+    _banner(f"Stage 1 — Ingest  ({rows:,} most recent rows from Socrata API)")
     RAW_DIR.mkdir(parents=True, exist_ok=True)
 
     records: list = []
-    offset = 0
+    seen: set = set()
+    cursor: str | None = None
     while len(records) < rows:
-        limit = min(PAGE_SIZE, rows - len(records))
-        params = {"$limit": limit, "$offset": offset, "$order": ":id"}
+        params = {"$limit": PAGE_SIZE, "$order": SAMPLE_ORDER}
+        if cursor is not None:
+            params["$where"] = f"created_date <= '{cursor}'"
         resp = requests.get(SOCRATA_ENDPOINT, params=params, timeout=30)
         resp.raise_for_status()
         page = resp.json()
         if not page:
             break
-        records.extend(page)
-        offset += len(page)
+        fresh = [r for r in page if r.get("unique_key") not in seen]
+        if not fresh:
+            print(f"\n  no rows older than {cursor} — stopping at {len(records):,}")
+            break
+        seen.update(r.get("unique_key") for r in fresh)
+        records.extend(fresh)
+        cursor = min(r["created_date"] for r in page)
         print(f"  fetched {len(records):,} / {rows:,} rows", end="\r", flush=True)
 
+    del records[rows:]
     print(f"\n  total fetched: {len(records):,} rows")
     RAW_FILE.write_text(json.dumps(records, indent=2))
     print(f"  written: {RAW_FILE.relative_to(LOCAL_DIR)}")
@@ -548,7 +587,7 @@ def main() -> None:
         type=int,
         default=10_000,
         metavar="N",
-        help="Rows to fetch from the Socrata API (default: 10000)",
+        help="Most recent rows to fetch from the Socrata API (default: 10000)",
     )
     parser.add_argument(
         "--stage",
@@ -569,8 +608,8 @@ def main() -> None:
     parser.add_argument(
         "--live",
         action="store_true",
-        help=f"Fetch the trailing {LIVE_DAYS} days of live data (row-capped, "
-             f":updated_at watermark) instead of the oldest --rows sample",
+        help=f"Fetch the whole trailing {LIVE_DAYS}-day window of live data "
+             f"(row-capped, created_date watermark) instead of an --rows sample",
     )
     args = parser.parse_args()
 
