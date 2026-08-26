@@ -8,6 +8,15 @@ on:
   schedule:
     - cron: "0 10 * * *"
   workflow_dispatch:
+    inputs:
+      window_days:
+        description: >
+          Width of the fetch window in days. Leave at 7 for a normal run. Widen it
+          to replay a range — dimensions rebuild from this window, so a dimension
+          can lose members the accumulating fact table still references, and one
+          wide build re-seats them without deleting any fact row.
+        required: false
+        default: "7"
 
 permissions:
   contents: read
@@ -59,7 +68,9 @@ jobs:
       - name: Run live pipeline (fetch → bronze → silver → dbt build)
         env:
           SOCRATA_APP_TOKEN: ${{ secrets.SOCRATA_APP_TOKEN }}
-        run: python local/local_runner.py --live
+          # Scheduled runs have no inputs context, so this resolves to 7.
+          WINDOW_DAYS: ${{ github.event.inputs.window_days || '7' }}
+        run: python local/local_runner.py --live --days "$WINDOW_DAYS"
 
       # Save only on success: a failed run must not advance the cached state,
       # so the next run restores the last GOOD database instead of a

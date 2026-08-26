@@ -269,16 +269,30 @@ def fetch_source_count_yesterday(get=None) -> dict:
     }
 
 
-def stage1_live() -> None:
-    _banner(f"Stage 1 — Live ingest  (trailing {LIVE_DAYS} days, cap {LIVE_ROW_CAP:,})")
+def stage1_live(days: int = LIVE_DAYS) -> None:
+    """Fetch the trailing `days` window. Default is the daily cadence.
+
+    The window is a parameter, not a constant, for one operational reason:
+    dimensions that rebuild from the window can lose members the accumulating
+    fact table still references. A wider replay is the documented remedy — one
+    build over a window covering the fact's full date range re-seats every
+    missing member without deleting a single fact row (docs/BACKLOG.md).
+
+    `fetch_live_records` already took `days`; nothing exposed it. This is also
+    the first piece of the backfill capability the backlog asks for — the same
+    parameter a `--since/--until` fetch will need.
+    """
+    _banner(f"Stage 1 — Live ingest  (trailing {days} days, cap {LIVE_ROW_CAP:,})")
+    if days != LIVE_DAYS:
+        print(f"  NOTE: non-default window ({days}d vs {LIVE_DAYS}d) — replay or backfill run")
     RAW_DIR.mkdir(parents=True, exist_ok=True)
-    records = fetch_live_records()
+    records = fetch_live_records(days=days)
     # Compact JSON, unlike the sample mode's indent=2: a full week is an order
     # of magnitude larger and this file is a pipeline intermediate, not a
     # human-reading surface.
     RAW_FILE.write_text(json.dumps(records))
     print(f"  fetched {len(records):,} rows created since "
-          f"{(datetime.now(timezone.utc) - timedelta(days=LIVE_DAYS)).date()}")
+          f"{(datetime.now(timezone.utc) - timedelta(days=days)).date()}")
     print(f"  written: {RAW_FILE.relative_to(LOCAL_DIR)}")
 
     # Source-side truth for SLO-2's reconciliation (loaded into DuckDB by
@@ -661,6 +675,14 @@ def main() -> None:
         help=f"Fetch the whole trailing {LIVE_DAYS}-day window of live data "
              f"(row-capped, created_date watermark) instead of an --rows sample",
     )
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=LIVE_DAYS,
+        help=f"Width of the --live window in days (default {LIVE_DAYS}). Widen it to "
+             f"replay a range: a dimension rebuilt from the window can lose members "
+             f"the accumulating fact still references, and one wide build re-seats them.",
+    )
     args = parser.parse_args()
 
     # --only runs a single stage and returns. Stage 1 still honours --live/--rows;
@@ -669,7 +691,7 @@ def main() -> None:
     if args.only:
         db_existed = DUCKDB_PATH.exists()
         if args.only == 1:
-            stage1_live() if args.live else stage1_ingest(args.rows)
+            stage1_live(args.days) if args.live else stage1_ingest(args.rows)
         elif args.only == 2:
             stage2_bronze()
         elif args.only == 3:
@@ -690,7 +712,7 @@ def main() -> None:
 
     if start <= 1:
         if args.live:
-            stage1_live()
+            stage1_live(args.days)
         else:
             stage1_ingest(args.rows)
     if start <= 2:
