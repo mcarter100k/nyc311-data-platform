@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -43,6 +44,13 @@ PAGE_SIZE        = 1_000
 # See ADR 010.
 LIVE_DAYS    = 7
 LIVE_ROW_CAP = 150_000
+
+# Socrata serves identical queries from replicas at different indexing states
+# (measured 2026-08-26: six identical count calls returned 0,0,358,358,358,0).
+# The source count is therefore sampled and maximised — see
+# fetch_source_count_yesterday for why a single sample is unsafe.
+SOURCE_COUNT_PROBES        = 5
+SOURCE_COUNT_PAUSE_SECONDS = 0.6
 
 # Silver transformation logic lives in silver_transformations.py so it can be
 # unit-tested without a database. This module owns I/O only.
@@ -215,22 +223,48 @@ def fetch_source_count_yesterday(get=None) -> dict:
         "$where": (f"created_date between '{target}T00:00:00.000'"
                    f" and '{target}T23:59:59.999'"),
     }
-    for attempt in (1, 2):
-        try:
-            resp = get(SOCRATA_URL, params=params, headers=headers, timeout=60)
-            break
-        except Exception as exc:
-            if attempt == 2:
-                raise RuntimeError(
-                    f"Socrata source-count query failed after one retry: {exc}"
-                ) from exc
-    resp.raise_for_status()
-    payload = resp.json()
-    if not payload or "n" not in payload[0]:
-        raise RuntimeError(f"Socrata source-count query returned no count: {payload!r}")
+    # Sample the count SEVERAL times and keep the maximum.
+    #
+    # Socrata is not read-consistent: identical queries are served by replicas at
+    # different indexing states. Measured 2026-08-26, six identical calls for the
+    # same day returned 0, 0, 358, 358, 358, 0 — the denominator of SLO-2 varying
+    # by 358 rows with no change at the source.
+    #
+    # A single sample was therefore a coin flip, and losing it is worse than
+    # noisy: slo2_completeness.sql treats a zero denominator as a PASS, so a
+    # capture landing on a lagging replica makes the completeness gate certify a
+    # comparison against nothing. That is the gate the 2026-08-18 postmortem
+    # exists to defend.
+    #
+    # Maximum, not mean or last: a row visible on ANY replica exists, so the
+    # highest count is the most complete view available. The spread is returned
+    # rather than discarded, because "the replicas disagreed" is a fact about the
+    # source worth carrying into silver.source_counts, not smoothing away.
+    samples: list[int] = []
+    for probe in range(SOURCE_COUNT_PROBES):
+        for attempt in (1, 2):
+            try:
+                resp = get(SOCRATA_URL, params=params, headers=headers, timeout=60)
+                break
+            except Exception as exc:
+                if attempt == 2:
+                    raise RuntimeError(
+                        f"Socrata source-count query failed after one retry: {exc}"
+                    ) from exc
+        resp.raise_for_status()
+        payload = resp.json()
+        if not payload or "n" not in payload[0]:
+            raise RuntimeError(f"Socrata source-count query returned no count: {payload!r}")
+        samples.append(int(payload[0]["n"]))
+        if probe < SOURCE_COUNT_PROBES - 1:
+            time.sleep(SOURCE_COUNT_PAUSE_SECONDS)
+
+    source_count = max(samples)
+    if len(set(samples)) > 1:
+        print(f"  NOTE: source replicas disagreed on {target}: {samples} — taking {source_count}")
     return {
         "target_date": target,
-        "source_count": int(payload[0]["n"]),
+        "source_count": source_count,
         "captured_at": datetime.now(timezone.utc).isoformat(),
     }
 
