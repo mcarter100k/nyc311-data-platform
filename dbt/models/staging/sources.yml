@@ -79,6 +79,27 @@ sources:
           - name: open_data_channel_type
             description: "Submission channel (PHONE, ONLINE, MOBILE, OTHER)."
 
+      - name: quarantine
+        description: >
+          Rows the Silver transform rejected this run, retained rather than
+          discarded. Quarantine happens in pandas before dbt sees anything, so
+          without this table a row loaded by an earlier run and rejected by a
+          later one stays in Gold forever: the fact table's reconciliation
+          post_hook can only see rows that reached staging, and a quarantined
+          row never does. Replaced every run, never appended — it means "rejected
+          by the CURRENT fetch". A growing history would be actively wrong, since
+          a row the city later corrects must stop being listed or the post_hook
+          would delete a valid row from Gold on every subsequent run.
+        columns:
+          - name: unique_key
+            description: "Natural key of the rejected request; the join key the post_hook deletes on."
+            tests:
+              - not_null
+              - unique
+          - name: quarantine_reason
+            description: "Why the row was rejected. 'negative_resolution_days' is the only value today."
+            tests:
+              - not_null
       - name: data_quality_log
         description: >
           One row per data quality check per pipeline run date. Written by the Silver transform

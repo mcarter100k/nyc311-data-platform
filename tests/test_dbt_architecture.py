@@ -22,6 +22,7 @@ import pytest
 ALL_MODELS = [
     "stg_service_requests",
     "stg_data_quality_log",
+    "stg_quarantine",
     "int_service_requests_cleaned",
     "dim_agency",
     "dim_date",
@@ -91,7 +92,8 @@ def test_source_database_uses_env_var():
 
 # ── 2. Materialization Strategy ───────────────────────────────────────────────
 
-@pytest.mark.parametrize("model_name", ["stg_service_requests", "stg_data_quality_log"])
+@pytest.mark.parametrize("model_name", ["stg_service_requests", "stg_data_quality_log",
+                                       "stg_quarantine"])
 def test_staging_is_view(models, model_name):
     """
     Staging must be a view, not a table. It is a thin rename/cast layer read by
