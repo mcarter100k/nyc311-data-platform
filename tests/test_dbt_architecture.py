@@ -119,17 +119,67 @@ def test_intermediate_is_table(models):
     )
 
 
-@pytest.mark.parametrize("model_name", ["dim_agency", "dim_date", "dim_location",
+@pytest.mark.parametrize("model_name", ["dim_agency", "dim_date",
                                          "fct_daily_volume", "fct_data_quality",
                                          "fct_complaint_recurrence"])
 def test_dimension_and_aggregate_facts_are_tables(models, model_name):
     """
     Dimension tables and the derived facts must be materialized as tables.
     BI tools query these directly — views would re-run expensive logic on every query.
+
+    dim_location is deliberately absent: it is incremental for retention rather
+    than for cost (see test_dim_location_is_incremental). dim_agency stays a
+    table because its retention comes from the snapshot feeding it, which never
+    deletes rows, so rebuilding the table loses nothing.
     """
     materialized = models[model_name]["config"]["materialized"]
     assert materialized == "table", (
         f"{model_name} is materialized as '{materialized}' — expected 'table'."
+    )
+
+
+def test_dim_location_is_incremental(models):
+    """
+    dim_location must be incremental — a RETENTION requirement, not a cost one.
+
+    Rebuilt as a table it was reconstructed each run from
+    int_service_requests_cleaned, which carries only Silver's rolling window,
+    while fct_service_requests accumulates history far past that window. Every
+    location that stopped appearing in the window was dropped from the
+    dimension while fact rows kept pointing at its location_id, so the FK
+    silently dangled and fct_daily_volume reattributed the volume to borough
+    'UNSPECIFIED'. A Kimball dimension grows and never loses members.
+    """
+    materialized = models["dim_location"]["config"]["materialized"]
+    assert materialized == "incremental", (
+        f"dim_location is '{materialized}' — expected 'incremental'. Rebuilding it "
+        f"drops every location that has aged out of Silver's rolling window and "
+        f"dangles the location_id of every accumulated fact row pointing at it."
+    )
+
+
+def test_dim_location_incremental_unique_key(models):
+    """
+    The accumulation is keyed on location_id, so a member observed again in a
+    later window is upserted rather than duplicated. Without a unique key the
+    strategy degrades to append and the dimension grows a duplicate row per run
+    per location, breaking its `unique` test and fanning out every join to it.
+    """
+    unique_key = models["dim_location"]["config"].get("unique_key")
+    assert unique_key == "location_id", (
+        f"dim_location unique_key is '{unique_key}' — expected 'location_id'."
+    )
+
+
+def test_dim_location_incremental_strategy(models):
+    """
+    merge on Snowflake, matching fct_service_requests. The local DuckDB mirror
+    uses delete+insert (dbt-duckdb implements no merge); that divergence is
+    registered in scripts/model_drift_baseline.json.
+    """
+    strategy = models["dim_location"]["config"].get("incremental_strategy")
+    assert strategy == "merge", (
+        f"dim_location incremental_strategy is '{strategy}' — expected 'merge'."
     )
 
 
@@ -360,22 +410,46 @@ def test_primary_key_has_unique_and_not_null(tests_by_model, model_name):
     assert has_not_null, f"{model_name} is missing a 'not_null' test on its primary key."
 
 
-# NOTE: agency_id and location_id intentionally have NO relationships tests.
-# dim_agency and dim_location are both derived from int_service_requests_cleaned
-# — the same source as the fact — so their FKs resolve by construction and a
-# relationships test on them can never fail. dim_date is the only dimension
-# built independently of the request data, so its FK test carries real signal.
-
-
-def test_fct_has_relationship_test_on_created_date_id(tests_by_model):
+# agency_id and location_id used to be excused from relationships tests on the
+# argument that dim_agency and dim_location are derived from
+# int_service_requests_cleaned — the same source as the fact — so their FKs
+# resolved by construction and the tests could never fail.
+#
+# That argument held only while Gold was rebuilt from scratch every run. It
+# stopped being true when fct_service_requests became incremental: the fact
+# accumulates history, dim_location was rebuilt from Silver's rolling window,
+# and every location aging out of the window was dropped while fact rows kept
+# pointing at it (88 dangling rows on the production artifact, growing daily,
+# and nothing noticed because the excused test was the only thing that would
+# have looked). Shared lineage is not a referential-integrity guarantee; equal
+# RETENTION is. Every FK on the fact now carries a relationships test.
+@pytest.mark.parametrize("column,dimension", [
+    ("created_date_id", "dim_date"),
+    ("location_id", "dim_location"),
+    ("agency_id", "dim_agency"),
+])
+def test_fct_has_relationship_test_on_every_foreign_key(tests_by_model, models,
+                                                        column, dimension):
     """
-    created_date_id in fct_service_requests must have a relationships test pointing
-    to dim_date. A NULL created_date_id means the request has no calendar context —
-    it disappears from all time-series analysis.
+    Every foreign key on fct_service_requests must carry a relationships test to
+    its dimension. A dangling FK is not a loud failure — the row survives, the
+    join just returns nothing, and the measure quietly lands in whatever bucket
+    the consuming model coalesces to.
     """
-    test_names = [t["name"] for t in tests_by_model.get("fct_service_requests", [])]
-    assert any("relationships" in t and "created_date_id" in t for t in test_names), (
-        "fct_service_requests.created_date_id is missing a relationships test to dim_date."
+    tests = tests_by_model.get("fct_service_requests", [])
+    matching = [
+        t for t in tests
+        if t["name"].startswith("relationships_") and column in t["name"]
+    ]
+    assert matching, (
+        f"fct_service_requests.{column} is missing a relationships test to {dimension}."
+    )
+    # Name-matching alone would pass a test pointed at the wrong dimension.
+    # Assert the real edge in the manifest instead.
+    dimension_id = models[dimension]["unique_id"]
+    assert any(dimension_id in t["depends_on"]["nodes"] for t in matching), (
+        f"fct_service_requests.{column} has a relationships test, but it does not "
+        f"reference {dimension} — the FK is being checked against the wrong table."
     )
 
 

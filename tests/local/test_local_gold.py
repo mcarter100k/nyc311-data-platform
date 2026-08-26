@@ -190,3 +190,88 @@ def test_recurrence_detects_a_repeat_and_respects_censoring(gold_db):
             assert r["days_to_next"] >= 0, (
                 f"{r['unique_key']} recurs {r['days_to_next']} days BEFORE it closed."
             )
+
+
+# ── Referential integrity across a moving Silver window ──────────────────────
+# fct_service_requests accumulates; Silver carries a rolling 7-day window. Any
+# dimension rebuilt from that window therefore forgets members the fact still
+# references. Measured on the production artifact before the fix: 88 dangling
+# location_id values, every one of them predating the window, growing ~15-20 a
+# day, and completely silent — fct_daily_volume coalesced the failed join to
+# borough 'UNSPECIFIED' and the row counts stayed plausible.
+
+def test_dim_location_keeps_members_whose_rows_left_the_window(location_retention_db):
+    """A location must not disappear from dim_location because its source rows
+    aged out of Silver. This is the actual decay mechanism: nothing rejected
+    those rows, the window simply moved past them."""
+    phase1, phase2 = location_retention_db["phase1"], location_retention_db["phase2"]
+
+    assert "QUEENS" in phase1["boroughs"], (
+        "Precondition broken: Queens must be in dim_location after phase 1, "
+        "otherwise this test proves nothing about retention."
+    )
+    assert "QUEENS" in phase2["boroughs"], (
+        "Queens left Silver's window in phase 2 and its dim_location member was "
+        "dropped with it. dim_location is being rebuilt from the window instead "
+        "of accumulating, so every fact row at that location now has a dangling "
+        f"location_id. dim_location went from {phase1['dim_rowcount']} members "
+        f"to {phase2['dim_rowcount']}."
+    )
+
+
+def test_no_orphaned_location_ids_after_the_window_moves(location_retention_db):
+    """The failure this whole fixture exists for: fact rows pointing at a
+    location_id that is no longer in dim_location."""
+    phase2 = location_retention_db["phase2"]
+    assert phase2["orphans"] == 0, (
+        f"{phase2['orphans']} fact rows reference a location_id absent from "
+        "dim_location after the window moved. The FK is dangling: joins to "
+        "dim_location silently drop these rows, and fct_daily_volume reports "
+        "their volume under borough 'UNSPECIFIED'."
+    )
+
+
+def test_window_move_does_not_shrink_accumulated_gold(location_retention_db):
+    """The fix must not be 'delete the orphans'. Rows that left Silver's window
+    were not rejected by anything — their accumulated fact rows stay, which is
+    the entire point of the fact being incremental."""
+    phase1, phase2 = location_retention_db["phase1"], location_retention_db["phase2"]
+
+    for key in ("q1", "q2"):
+        assert key in phase1["fct_keys"], f"Precondition broken: {key} missing after phase 1."
+        assert key in phase2["fct_keys"], (
+            f"{key} left Silver's window and its fact row was deleted. Nothing "
+            "rejected that row — it is outside the current fetch, not invalid. "
+            "Deleting it silently rewrites history."
+        )
+    assert phase2["fct_rowcount"] == phase1["fct_rowcount"] + 1, (
+        f"Expected the phase-2 fact to hold phase 1's {phase1['fct_rowcount']} rows "
+        f"plus the one new request, got {phase2['fct_rowcount']}."
+    )
+
+
+def test_phase2_build_passes_its_own_relationships_tests(location_retention_db):
+    """`dbt build` runs each model's tests as part of the build, so a dangling
+    FK must redden the run that created it — not a later audit."""
+    assert location_retention_db["phase2_build_returncode"] == 0, (
+        "The phase-2 dbt build failed:\n"
+        + location_retention_db["phase2_build_output"][-4000:]
+    )
+
+
+def test_relationships_test_on_location_id_actually_fires(location_retention_db):
+    """Non-vacuity. Every assertion above stays green if someone deletes the
+    relationships test from marts.yml — that is exactly how the guard was lost
+    the first time, on the reasoning that a dimension sharing the fact's source
+    could never dangle. Drop a dim_location member by hand and dbt must fail."""
+    assert location_retention_db["guard_returncode"] != 0, (
+        "A dim_location member was deleted while fact rows still referenced it, "
+        "and `dbt test` still passed. The relationships test on "
+        "fct_service_requests.location_id is missing or not selecting these rows "
+        "— referential decay would go unnoticed again.\n"
+        + location_retention_db["guard_output"][-4000:]
+    )
+    assert "relationships_fct_service_requests_location_id" in location_retention_db["guard_output"], (
+        "dbt failed, but not in the relationships test on location_id — the "
+        "guard is proving something other than what it claims."
+    )
