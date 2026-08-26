@@ -128,7 +128,13 @@ final as (
 
         -- How many days of loaded history follow this closure. A rate computed
         -- over window N is only honest across rows where this is >= N.
-        datediff('day', cast(w.closed_date as date), h.max_created_date)         as observation_days,
+        -- Floored at zero: a request closed after the horizon (created 23:40,
+        -- closed 00:20, horizon still on yesterday's date) has no observed
+        -- time, not negative time. See dbt/ for the full rationale.
+        greatest(
+            0,
+            datediff('day', cast(w.closed_date as date), h.max_created_date)
+        )                                                                       as observation_days,
 
         v.location_ticket_count,
 

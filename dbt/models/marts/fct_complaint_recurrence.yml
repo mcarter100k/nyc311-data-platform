@@ -54,7 +54,9 @@ models:
       - name: observation_days
         description: >
           Days of loaded history following this closure. A recurrence rate over
-          window N is only honest across rows where this is >= N.
+          window N is only honest across rows where this is >= N. Floored at
+          zero — a request closed after the horizon (the newest created row)
+          has no observed time, not negative time.
         tests:
           - not_null
           - dbt_utils.expression_is_true:

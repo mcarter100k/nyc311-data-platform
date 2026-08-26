@@ -22,7 +22,7 @@ export NYC311_REPO_ROOT="${REPO_ROOT}"
 
 if [ ! -x "${REPO_ROOT}/.venv-airflow/bin/airflow" ]; then
   echo "Airflow venv missing. Create it with:" >&2
-  echo "  python3.14 -m venv .venv-airflow" >&2
+  echo "  python3 -m venv .venv-airflow" >&2
   echo "  .venv-airflow/bin/pip install 'apache-airflow==3.3.1'" >&2
   exit 1
 fi

@@ -63,6 +63,31 @@ def std_borough(raw_value):
     return BOROUGH_MAP.get(str(raw_value or "").strip().upper(), "UNSPECIFIED")
 
 
+# Every relation the three rungs below read. Listed in build order so the
+# message names the earliest missing layer first.
+REQUIRED_RELATIONS = [
+    ("bronze", "service_requests"),
+    ("silver", "service_requests"),
+    ("gold", "fct_service_requests"),
+    ("gold", "fct_daily_volume"),
+    ("gold", "dim_location"),
+]
+
+
+def _missing_tables(con) -> list:
+    """Relations reconciliation needs that this database does not have.
+
+    information_schema.tables covers views too, which matters: Bronze is a
+    view over the raw file (ADR 014), not a materialised table.
+    """
+    present = {
+        (s, t) for s, t in con.sql(
+            "SELECT table_schema, table_name FROM information_schema.tables"
+        ).fetchall()
+    }
+    return [f"{s}.{t}" for s, t in REQUIRED_RELATIONS if (s, t) not in present]
+
+
 def main() -> int:
     if not RAW_FILE.exists() or not DUCKDB_PATH.exists():
         print("No pipeline artifacts found — run local_runner.py first.")
@@ -70,6 +95,25 @@ def main() -> int:
 
     raw = json.load(open(RAW_FILE))
     con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+
+    # Preflight. Reconciliation reads Bronze, Silver AND Gold, but Gold is
+    # built last (stage 4, `dbt build`) — so the database most likely to be
+    # sitting on disk when someone runs this is one from a run that FAILED at
+    # dbt. Querying it raised a raw CatalogException ("Table with name
+    # fct_service_requests does not exist!"), which reads as a bug in this tool
+    # rather than as "your pipeline did not finish". Name the missing layer and
+    # the command that builds it instead.
+    missing = _missing_tables(con)
+    if missing:
+        print("Cannot reconcile — the pipeline has not finished building.")
+        print(f"  missing: {', '.join(missing)}")
+        print("  The database exists but is incomplete, which usually means the")
+        print("  last run failed before or during stage 4 (dbt build).")
+        print("  Build the missing layers, then re-run this check:")
+        print("      python local/local_runner.py --live    # or --rows N")
+        print("      python local/reconcile.py")
+        return 1
+
     def one(q):
         return con.sql(q).fetchone()[0]
 
