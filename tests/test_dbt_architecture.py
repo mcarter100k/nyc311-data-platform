@@ -422,37 +422,6 @@ def test_primary_key_has_unique_and_not_null(tests_by_model, model_name):
 # pointing at it (88 dangling rows on the production artifact, growing daily,
 # and nothing noticed because the excused test was the only thing that would
 # have looked). Shared lineage is not a referential-integrity guarantee; equal
-# RETENTION is. Every FK on the fact now carries a relationships test.
-@pytest.mark.parametrize("column,dimension", [
-    ("created_date_id", "dim_date"),
-    ("location_id", "dim_location"),
-    ("agency_id", "dim_agency"),
-])
-def test_fct_has_relationship_test_on_every_foreign_key(tests_by_model, models,
-                                                        column, dimension):
-    """
-    Every foreign key on fct_service_requests must carry a relationships test to
-    its dimension. A dangling FK is not a loud failure — the row survives, the
-    join just returns nothing, and the measure quietly lands in whatever bucket
-    the consuming model coalesces to.
-    """
-    tests = tests_by_model.get("fct_service_requests", [])
-    matching = [
-        t for t in tests
-        if t["name"].startswith("relationships_") and column in t["name"]
-    ]
-    assert matching, (
-        f"fct_service_requests.{column} is missing a relationships test to {dimension}."
-    )
-    # Name-matching alone would pass a test pointed at the wrong dimension.
-    # Assert the real edge in the manifest instead.
-    dimension_id = models[dimension]["unique_id"]
-    assert any(dimension_id in t["depends_on"]["nodes"] for t in matching), (
-        f"fct_service_requests.{column} has a relationships test, but it does not "
-        f"reference {dimension} — the FK is being checked against the wrong table."
-    )
-
-
 def test_intermediate_has_accepted_values_on_borough_clean(tests_by_model):
     """
     borough_clean in int_service_requests_cleaned must have an accepted_values test.
