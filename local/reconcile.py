@@ -31,17 +31,25 @@ crossed), matching datediff('day', ...) in the dbt models and the cloud spec.
 
 import json
 import sys
+import time
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
 import duckdb
+import requests
 
 sys.path.insert(0, str(Path(__file__).parent))
 from local_runner import DUCKDB_PATH, RAW_FILE, SOCRATA_ENDPOINT
+
 # BOROUGH_MAP comes from its owner, not second-hand via local_runner. The
 # re-export made local_runner's import list read as if it used the map itself.
 from silver_transformations import BOROUGH_MAP
+
+# Socrata is not read-consistent (see the rung-3 comment). Point lookups are
+# probed until one succeeds; absence is only reported when every probe agrees.
+SOURCE_PROBES      = 4
+SOURCE_PROBE_PAUSE = 0.6
 
 failures = []
 
@@ -249,23 +257,51 @@ def main() -> int:
 
     print("── Rung 3: live spot-check against the source API ──────────────")
     try:
-        import requests
         sample = [r[0] for r in con.sql(
             "SELECT unique_key FROM gold.fct_service_requests USING SAMPLE 3").fetchall()]
+        # A miss is only believable if it repeats.
+        #
+        # Socrata is NOT read-consistent: identical queries are answered by
+        # replicas at different indexing states. Measured 2026-08-26, the same
+        # point lookup repeated four times returned [0, 0, 1] and [0, 1, 0] for
+        # keys that demonstrably exist, and `max(created_date)` disagreed with
+        # `$order=created_date DESC LIMIT 1` on three of five identical calls.
+        #
+        # A single empty response therefore proves nothing, and this rung used to
+        # treat it as a hard failure — so the strongest check in the repo could
+        # go red because of which replica answered the phone. Existence is a
+        # MAXIMUM over replicas: a row visible on ANY of them exists.
+        #
+        # Absence is only reported after every probe agrees, which is a stronger
+        # claim than the original made. Retries are printed rather than hidden:
+        # needing them is a fact about the source, and smoothing it away would
+        # repeat the mistake this whole reconciliation exists to prevent.
+        def _lookup(key):
+            for probe in range(1, SOURCE_PROBES + 1):
+                rows = requests.get(SOCRATA_ENDPOINT,
+                                    params={"$where": f"unique_key='{key}'"},
+                                    timeout=30).json()
+                if rows:
+                    return rows[0], probe
+                if probe < SOURCE_PROBES:
+                    time.sleep(SOURCE_PROBE_PAUSE)
+            return None, SOURCE_PROBES
+
         for k in sample:
-            api = requests.get(SOCRATA_ENDPOINT,
-                               params={"$where": f"unique_key='{k}'"},
-                               timeout=30).json()
+            a, probes = _lookup(k)
             ours = con.sql(f"""
                 SELECT f.complaint_type, l.borough, f.created_date
                 FROM gold.fct_service_requests f
                 JOIN gold.dim_location l USING (location_id)
                 WHERE f.unique_key = '{k}'
             """).fetchone()
-            if not api:
-                check(f"unique_key {k} exists at source", False, "not found")
+            if a is None:
+                check(f"unique_key {k} exists at source", False,
+                      f"absent on all {SOURCE_PROBES} probes")
                 continue
-            a = api[0]
+            if probes > 1:
+                print(f"  · {k} found on probe {probes}/{SOURCE_PROBES} "
+                      f"— source replicas disagreed, not a pipeline fault")
             same = (ours[0] == a.get("complaint_type")
                     and ours[1] == std_borough(a.get("borough"))
                     and ours[2] == parse_ts(a.get("created_date")))
@@ -273,8 +309,20 @@ def main() -> int:
                   "" if same else f"gold={ours} api={a.get('complaint_type'), a.get('borough'), a.get('created_date')}")
         # Note: mutable fields (status, closed_date) are deliberately excluded —
         # the source may legitimately have newer values than our snapshot.
-    except Exception as exc:
+    except requests.RequestException as exc:
+        # ONLY a network fault is a skip. This handler was `except Exception`,
+        # which reported every failure as "network unavailable" — so a real data
+        # defect (a fact row whose location_id has no dim_location match makes
+        # `ours` None and raises TypeError) was indistinguishable from an offline
+        # laptop, and both exited 0.
+        #
+        # Not hypothetical: while fixing this rung, a NameError of mine was
+        # swallowed and printed as a network skip. The check that exists to stop
+        # silence from looking like success was hiding its own breakage.
         print(f"  ~ skipped (network unavailable: {type(exc).__name__}) — rungs 1–2 stand alone")
+    except Exception as exc:
+        check("rung 3 completed", False,
+              f"{type(exc).__name__}: {exc} — NOT a network fault")
 
     print("─" * 64)
     if failures:
