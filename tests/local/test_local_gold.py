@@ -250,3 +250,28 @@ def test_window_move_does_not_shrink_accumulated_gold(location_retention_db):
     )
 
 
+def test_phase2_build_passes_its_own_relationships_tests(location_retention_db):
+    """`dbt build` runs each model's tests as part of the build, so a dangling
+    FK must redden the run that created it — not a later audit."""
+    assert location_retention_db["phase2_build_returncode"] == 0, (
+        "The phase-2 dbt build failed:\n"
+        + location_retention_db["phase2_build_output"][-4000:]
+    )
+
+
+def test_relationships_test_on_location_id_actually_fires(location_retention_db):
+    """Non-vacuity. Every assertion above stays green if someone deletes the
+    relationships test from marts.yml — that is exactly how the guard was lost
+    the first time, on the reasoning that a dimension sharing the fact's source
+    could never dangle. Drop a dim_location member by hand and dbt must fail."""
+    assert location_retention_db["guard_returncode"] != 0, (
+        "A dim_location member was deleted while fact rows still referenced it, "
+        "and `dbt test` still passed. The relationships test on "
+        "fct_service_requests.location_id is missing or not selecting these rows "
+        "— referential decay would go unnoticed again.\n"
+        + location_retention_db["guard_output"][-4000:]
+    )
+    assert "relationships_fct_service_requests_location_id" in location_retention_db["guard_output"], (
+        "dbt failed, but not in the relationships test on location_id — the "
+        "guard is proving something other than what it claims."
+    )
