@@ -53,21 +53,31 @@ TODAY_UTC = datetime.now(timezone.utc).date().isoformat()
 
 
 def _row(unique_key, created, closed, agency, agency_name, status, ts,
-         address="100 MAIN STREET", complaint="Noise - Residential"):
+         address="100 MAIN STREET", complaint="Noise - Residential",
+         borough="BROOKLYN", community_board="02 BROOKLYN", incident_zip="11201"):
     """One silver row. address and complaint default to a shared pair so most
     rows land at the same location — fct_complaint_recurrence keys on
     (address, complaint_type), and a fixture with NULL addresses would build an
-    empty table and silently pass any test written against it."""
+    empty table and silently pass any test written against it.
+
+    borough / community_board / incident_zip are the dim_location grain. They
+    default to a single shared combination for the same reason, and are
+    overridable so the retention fixture below can put a row at a SECOND
+    location and then take that location out of the window."""
     return (
         f"('{unique_key}', TIMESTAMP '{created}', "
         + (f"TIMESTAMP '{closed}'" if closed else "NULL")
         + f", NULL, '{agency}', '{agency_name}', '{complaint}', NULL, NULL, "
-        f"'11201', '{address}', NULL, NULL, 'BROOKLYN', '02 BROOKLYN', 40.69, -73.99, "
+        f"'{incident_zip}', '{address}', NULL, NULL, '{borough}', "
+        f"'{community_board}', 40.69, -73.99, "
         f"'{status}', NULL, 'PHONE', TIMESTAMP '{ts}')"
     )
 
 
-def _dbt(args, profiles_dir):
+def _dbt(args, profiles_dir, check=True):
+    """Run dbt against the real local/ project. check=False returns the result
+    for the caller to inspect instead of asserting success — used where a
+    NON-zero exit is the thing under test."""
     cmd = [
         dbt_executable(), *args,
         "--profiles-dir", str(profiles_dir),
@@ -76,9 +86,10 @@ def _dbt(args, profiles_dir):
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=LOCAL_PROJECT,
                             check=False)
-    assert result.returncode == 0, (
-        f"dbt {' '.join(args)} failed:\n{result.stdout[-4000:]}\n{result.stderr[-2000:]}"
-    )
+    if check:
+        assert result.returncode == 0, (
+            f"dbt {' '.join(args)} failed:\n{result.stdout[-4000:]}\n{result.stderr[-2000:]}"
+        )
     return result
 
 
@@ -251,4 +262,158 @@ def gold_db(tmp_path_factory):
         "phase1_fct_keys": phase1_fct_keys,
         "incremental": incremental,
         "full_refresh": full_refresh,
+    }
+
+
+# The second location, used only by location_retention_db below. It exists in
+# phase 1 and leaves Silver's window in phase 2 WITHOUT being quarantined —
+# which is what a rolling window does every single day, and the one case the
+# gold_db fixture above cannot express (every row there shares one location).
+QUEENS = {"borough": "QUEENS", "community_board": "04 QUEENS", "incident_zip": "11373"}
+
+
+def _seed_silver(con):
+    """The three Silver tables the local dbt project reads, plus a current DQ
+    log row so the mirrored singular test assert_dq_log_is_current passes."""
+    con.execute("CREATE SCHEMA IF NOT EXISTS silver")
+    con.execute(f"CREATE TABLE silver.service_requests ({SILVER_COLUMNS})")
+    con.execute("""
+        CREATE TABLE silver.quarantine (
+            unique_key VARCHAR, created_date TIMESTAMP, closed_date TIMESTAMP,
+            resolution_days BIGINT, quarantine_reason VARCHAR,
+            _silver_timestamp VARCHAR)
+    """)
+    con.execute("""
+        CREATE TABLE silver.data_quality_log (
+            run_date VARCHAR, check_name VARCHAR, records_checked BIGINT,
+            records_failed BIGINT, failure_rate DOUBLE, pipeline_stage VARCHAR)
+    """)
+    con.execute(f"""
+        INSERT INTO silver.data_quality_log
+        VALUES ('{TODAY_UTC}', 'null_rate_unique_key', 100, 0, 0.0, 'silver')
+    """)
+
+
+def _write_profile(workdir, db_path):
+    (workdir / "profiles.yml").write_text(
+        "nyc311_local:\n"
+        "  target: local\n"
+        "  outputs:\n"
+        "    local:\n"
+        "      type: duckdb\n"
+        f"      path: \"{db_path}\"\n"
+        "      schema: gold\n"
+        "      threads: 1\n"
+    )
+
+
+@pytest.fixture(scope="module")
+def location_retention_db(tmp_path_factory):
+    """Referential integrity of fct_service_requests.location_id across a
+    MOVING Silver window — the condition that produced silent decay in
+    production and that no other fixture reaches.
+
+    fct_service_requests is incremental and accumulates history. dim_location
+    was `materialized: table`, rebuilt every run from
+    int_service_requests_cleaned, which carries only Silver's rolling window.
+    So a location whose rows aged out of the window was dropped from the
+    dimension while fact rows kept pointing at it.
+
+    Phase 1 puts rows at two locations. Phase 2 removes one of those locations
+    from Silver the way the window does — deleted, NOT quarantined, so the
+    reconciliation post_hooks correctly leave its fact rows alone. Its
+    dimension member must survive.
+
+    The last step is the non-vacuity guard: it drops a dim_location member by
+    hand and records that `dbt test` then FAILS. Without it, deleting the
+    relationships test from marts.yml would leave every assertion here green.
+    """
+    workdir = tmp_path_factory.mktemp("locretention")
+    db_path = workdir / "nyc311_local.duckdb"
+    _write_profile(workdir, db_path)
+
+    con = duckdb.connect(str(db_path))
+    _seed_silver(con)
+    # Phase 1: two requests in Brooklyn, two in Queens.
+    con.execute("INSERT INTO silver.service_requests VALUES " + ",".join([
+        _row("k1", "2024-01-02 10:00:00", "2024-01-03 01:00:00",
+             "HPD", "Housing Preservation And Development", "Closed", T1),
+        _row("k2", "2024-01-03 09:00:00", None,
+             "NYPD", "New York City Police Dept", "Open", T1),
+        _row("q1", "2024-01-02 11:00:00", "2024-01-03 02:00:00",
+             "DSNY", "Department of Sanitation", "Closed", T1,
+             address="7 QUEENS BOULEVARD", **QUEENS),
+        _row("q2", "2024-01-02 15:00:00", None,
+             "DSNY", "Department of Sanitation", "Open", T1,
+             address="7 QUEENS BOULEVARD", **QUEENS),
+    ]))
+    con.close()
+
+    _dbt(["deps"], workdir)
+    _dbt(["build"], workdir)
+
+    def snapshot(con):
+        return {
+            "fct_keys": {r[0] for r in con.execute(
+                "SELECT unique_key FROM gold.fct_service_requests").fetchall()},
+            "fct_rowcount": con.execute(
+                "SELECT COUNT(*) FROM gold.fct_service_requests").fetchone()[0],
+            "boroughs": {r[0] for r in con.execute(
+                "SELECT borough FROM gold.dim_location").fetchall()},
+            "dim_rowcount": con.execute(
+                "SELECT COUNT(*) FROM gold.dim_location").fetchone()[0],
+            "orphans": con.execute("""
+                SELECT COUNT(*) FROM gold.fct_service_requests f
+                WHERE f.location_id IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM gold.dim_location d
+                                  WHERE d.location_id = f.location_id)
+            """).fetchone()[0],
+            "recurrence_rowcount": con.execute(
+                "SELECT COUNT(*) FROM gold.fct_complaint_recurrence").fetchone()[0],
+        }
+
+    con = duckdb.connect(str(db_path))
+    phase1 = snapshot(con)
+    con.close()
+
+    # ── Phase 2: the window moves past Queens ────────────────────────────────
+    # Deleted, not quarantined: these rows are simply no longer inside the
+    # trailing window Silver reloads. Nothing in the pipeline rejected them, so
+    # their accumulated fact rows must stay — and their dimension member with
+    # them. A fresh Brooklyn row keeps the incremental run non-empty, exactly
+    # as a real daily run would.
+    con = duckdb.connect(str(db_path))
+    con.execute("INSERT INTO silver.service_requests VALUES " + ",".join([
+        _row("k3", f"{TODAY_UTC} 09:00:00", None,
+             "NYPD", "New York City Police Dept", "Open", T2),
+    ]))
+    con.execute("DELETE FROM silver.service_requests WHERE unique_key IN ('q1', 'q2')")
+    con.close()
+
+    build = _dbt(["build"], workdir, check=False)
+
+    con = duckdb.connect(str(db_path))
+    phase2 = snapshot(con)
+    con.close()
+
+    # ── Non-vacuity guard ────────────────────────────────────────────────────
+    # Drop a dimension member by hand — precisely what the old table rebuild
+    # did on its own every run — and confirm dbt notices.
+    con = duckdb.connect(str(db_path))
+    con.execute("""
+        DELETE FROM gold.dim_location
+        WHERE location_id IN (SELECT location_id FROM gold.fct_service_requests
+                              WHERE location_id IS NOT NULL LIMIT 1)
+    """)
+    con.close()
+    guard = _dbt(["test", "--select", "fct_service_requests,test_name:relationships"],
+                 workdir, check=False)
+
+    return {
+        "phase1": phase1,
+        "phase2": phase2,
+        "phase2_build_returncode": build.returncode,
+        "phase2_build_output": build.stdout,
+        "guard_returncode": guard.returncode,
+        "guard_output": guard.stdout,
     }

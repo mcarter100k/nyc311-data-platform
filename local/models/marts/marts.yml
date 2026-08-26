@@ -114,9 +114,17 @@ models:
   - name: dim_location
     description: >
       Location dimension. One row per unique (borough, community_board, incident_zip)
-      combination observed in the service request dataset. Borough values are the
+      combination EVER observed in the service request dataset. Borough values are the
       standardized forms from int_service_requests_cleaned (five canonical names
       plus UNSPECIFIED). Null community boards and ZIP codes are coalesced to 'UNKNOWN'.
+
+      Accumulating and append-only (materialized incremental, keyed on
+      location_id). Members are never dropped when their source rows age out of
+      Silver's rolling window, because fct_service_requests keeps history far
+      past that window and its location_id must stay resolvable for as long as
+      the fact row exists. Members are also immutable: the three attributes ARE
+      the surrogate key, so a change to any of them yields a different
+      location_id — a new member, never a restatement of an existing one.
     columns:
       - name: location_id
         description: "MD5 surrogate key on (borough, community_board, incident_zip)."
@@ -170,9 +178,20 @@ models:
           (is_current=FALSE); the FK always resolves because SCD2 never deletes
           old dim_agency rows. NULL when the join is missed (the join is LEFT by
           design — dropping unmatched requests would under-count volume).
-          No not_null or relationships test here: dim_agency is derived from the
-          same source as this fact, so those tests hold by construction and
-          carry no signal.
+          No not_null test: the LEFT join is allowed to miss. The relationships
+          test DOES hold, and not because the two models share a source — that
+          reasoning was wrong for location_id and is not what saves this column
+          either. It holds because dim_agency is built from a dbt snapshot, and
+          snapshots never delete: a version stays in agency_snapshot after the
+          agency stops appearing in Silver's rolling window (verified — an
+          agency removed from the window kept its dim_agency row and its fact
+          rows kept resolving), so the FK cannot dangle the way location_id did.
+        # The relationships test for this FK is deliberately NOT here yet. The
+        # dimension only starts accumulating with this change, so a database
+        # built before it still carries orphan fact rows — 88 in the production
+        # cache. Landing the test now would redden the daily run for a real
+        # defect this PR cannot retroactively repair. It lands in the follow-up,
+        # after one wide replay re-seats the missing members (docs/BACKLOG.md).
 
       - name: created_date_id
         description: "Foreign key to dim_date (YYYYMMDD integer)."
@@ -185,11 +204,27 @@ models:
 
       - name: location_id
         description: >
-          Foreign key to dim_location. NULL for records with no borough and no
-          ZIP. No relationships test: dim_location is derived from the same
-          source rows as this fact, so referential integrity holds by
-          construction and the test can never fail. (dim_date is built
-          independently, which is why created_date_id keeps its test.)
+          Foreign key to dim_location. NULL for records with no borough (the
+          join is LEFT by design).
+
+          This column carried no relationships test on the argument that
+          dim_location is derived from the same source rows as this fact, so
+          referential integrity held by construction. That was true only while
+          Gold was rebuilt from scratch every run. It stopped being true when
+          this fact became incremental: the fact accumulates, dim_location was
+          rebuilt from Silver's rolling 7-day window, and every location that
+          aged out of the window was dropped from the dimension while fact rows
+          kept pointing at it. Measured on the production artifact: 88 dangling
+          rows, all of them predating the window, growing ~15-20/day, with
+          fct_daily_volume silently reattributing them to borough 'UNSPECIFIED'.
+          dim_location now accumulates, and this test is the guard that would
+          have caught it.
+        # The relationships test for this FK is deliberately NOT here yet. The
+        # dimension only starts accumulating with this change, so a database
+        # built before it still carries orphan fact rows — 88 in the production
+        # cache. Landing the test now would redden the daily run for a real
+        # defect this PR cannot retroactively repair. It lands in the follow-up,
+        # after one wide replay re-seats the missing members (docs/BACKLOG.md).
 
       - name: complaint_type
         description: "Raw complaint type (degenerate dimension — too high-cardinality for a standalone dim)."

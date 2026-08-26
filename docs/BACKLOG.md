@@ -383,3 +383,64 @@ already corrupted it once. (c) Drop Snowflake entirely.
 Deliberately unresolved: the answer depends on whether `dbt/` is a *deployment
 target* or a *reference artifact*, and that is a portfolio decision rather than
 a technical one.
+
+---
+
+## The cached daily-run database carries pre-existing dangling location_ids
+
+**Found:** 2026-08-25, fixing referential decay in `dim_location`.
+
+`dim_location` now accumulates (`materialized: incremental`, keyed on
+`location_id`) instead of being rebuilt each run from Silver's rolling 7-day
+window, and `fct_service_requests.location_id` has its `relationships` test
+back. That combination is **preventive, not curative**, and the difference
+matters for the next scheduled run.
+
+**Evidence.** Reproduced locally against a 54,408-row build by moving the
+Silver window forward three days and rebuilding:
+
+| | dim_location members | orphaned fact rows |
+|---|---|---|
+| Before the window moved | 540 | 0 |
+| After, old `table` materialization | 433 | 189 |
+| After, new `incremental` materialization | 540 | 0 |
+| Old materialization, then the fix applied, window unchanged | 433 | **189** |
+
+The last row is the point. `daily-run.yml` restores the previous run's DuckDB
+from the Actions cache, so the deployed database starts with a `dim_location`
+that has **already** lost members — 88 dangling fact rows at last measurement,
+growing ~15–20/day. The accumulation only preserves what the dimension holds on
+the day it is switched on; it cannot recover members already dropped. Their
+attributes are unrecoverable from the platform: the fact table stores
+`location_id` but not `borough`/`community_board`/`incident_zip`, and Silver,
+Bronze, and the raw JSON all carry only the current window.
+
+**Risk.** The restored `relationships` test runs inside `dbt build` during the
+daily run, so the first scheduled run against the cached database will **fail**
+on those pre-existing rows, and `daily-run.yml` will open a
+`daily-run-breach` issue. The test is right and the data is wrong; this is a
+one-time debt, not a regression.
+
+**Remediation (verified locally).** Replay one Silver window wide enough to
+cover the fact table's date range — the accumulating dimension then absorbs the
+missing members permanently. Reproduced end to end: from the 189-orphan
+database above, one build over the restored full window took `dim_location`
+from 433 members back to 540 and orphans to 0, with `fct_service_requests`
+unchanged at 54,408 rows (no fact row deleted). Moving the window forward again
+afterwards kept orphans at 0.
+
+**Options.**
+1. Run `local_runner.py` once with a `--rows`/`--live` window spanning the
+   cached fact's history, then re-save the cache. Exact, no new code, uses the
+   accumulation as designed. Bounded by how far back Socrata's window reach
+   goes versus how much history Gold has accumulated.
+2. Drop the Actions cache and let the next run rebuild from scratch. Simplest,
+   but discards accumulated Gold history — the thing the incremental fact
+   exists to keep.
+3. Land the model change now and the `relationships` test in a follow-up, after
+   option 1 has run. Keeps the daily run green through the transition at the
+   cost of leaving the guard off for another day.
+
+**Not an option:** deleting the orphaned fact rows. They are valid requests that
+merely aged out of the fetch window, and Gold's accumulated history is
+deliberate.
