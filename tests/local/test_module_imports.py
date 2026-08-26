@@ -31,6 +31,7 @@ LOCAL_DIR = os.path.join(ROOT, "local")
 # module is a deliberate act that shows up in review, and so a file disappearing
 # fails loudly here instead of silently shrinking the parametrisation.
 LOCAL_MODULES = [
+    "dbt_exec",
     "ingest_config",
     "local_runner",
     "reconcile",

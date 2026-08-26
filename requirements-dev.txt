@@ -4,3 +4,11 @@
 #
 # ruff runs in ci.yml's fast-gate job; its rule set lives in ruff.toml.
 ruff==0.16.3
+
+# The test runner itself. ./run_tests.sh needs these and local/requirements.txt
+# ships neither, so the README quickstart installed a venv that could not run
+# the suite it then told you to run.
+# pytest is held at the same pin as tests/unit/requirements.txt — two files
+# resolving the same tool to different versions is its own quiet bug.
+pytest==9.1.1
+pyyaml==6.0.3          # tests/test_pipeline_components.py parses dbt YAML

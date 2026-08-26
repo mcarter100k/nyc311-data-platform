@@ -1,0 +1,44 @@
+# Mock dbt profile for CI and for ./run_tests.sh — NO REAL CREDENTIALS.
+#
+# Every value below is a placeholder. There is nothing to leak here and nothing
+# to rotate: no account, user, password or key in this file is real, and none of
+# them is ever sent anywhere.
+#
+# Why this file is committed while dbt/profiles.yml is gitignored
+# ----------------------------------------------------------------
+# dbt/profiles.yml holds real Snowflake credentials in real environments, so it
+# is in .gitignore and must stay there. But three consumers all need a profile
+# that satisfies dbt's schema validator, and each had been solving that
+# separately — .github/workflows/ci.yml and .github/workflows/dbt-docs.yml each
+# `cat >` an identical heredoc, and run_tests.sh passed `--target ci` while
+# never writing a `ci` target at all, so on a clean clone it had no profile.
+# This is the one source of truth those three now share.
+#
+# It lives in its own directory, and is passed as `--profiles-dir ci-profile`
+# rather than copied over dbt/profiles.yml, specifically so that running the
+# test suite CANNOT clobber a developer's real local credentials.
+#
+# dbt/profiles.yml.example remains the documentation for real dev/prod targets;
+# it deliberately defines no `ci` target, because a credential-free placeholder
+# is not something anyone should copy into ~/.dbt/profiles.yml.
+#
+# Scope: `dbt parse` and `dbt deps` validate the profile schema without ever
+# opening a connection, which is why placeholders suffice. Any command that
+# RESOLVES SQL (`dbt compile`, `dbt run`, `dbt docs generate --no-compile`
+# excepted) does connect, and will fail against these values. That is the
+# reason every consumer parses rather than compiles.
+
+nyc311:
+  target: ci
+  outputs:
+    ci:
+      type: snowflake
+      account: "placeholder.us-east-1"
+      user: ci_user
+      password: ci_password
+      role: NYC311_TRANSFORMER
+      database: NYC311_DB
+      warehouse: NYC311_WH
+      schema: gold
+      threads: 1
+      client_session_keep_alive: false

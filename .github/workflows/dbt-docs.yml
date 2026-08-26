@@ -83,44 +83,17 @@ jobs:
       # "Compiled" tab is empty because compiled_code is only populated by a
       # command that connects. Restoring it requires real credentials.
 
-      # Write a CI-only profiles.yml into the dbt/ directory.
-      # The Snowflake credentials here are intentionally dummy values — they
-      # satisfy the dbt profile schema validator. `dbt parse` never opens a
-      # connection, so they are never exercised — but note they ARE exercised
-      # (and fail) by any command that resolves SQL, which is why this
-      # workflow parses rather than compiles.
-      #
-      # This file is written at CI runtime and is never committed to the repo
-      # (profiles.yml is in .gitignore; dbt/profiles.yml.example documents
-      # the real structure for local development).
-      - name: Write mock CI profiles.yml
-        run: |
-          cat > dbt/profiles.yml << 'EOF'
-          nyc311:
-            target: ci
-            outputs:
-              ci:
-                type: snowflake
-                # Placeholder values — `dbt parse` validates the profile
-                # schema without connecting. Replace with real credentials
-                # (via GitHub Secrets) only if compiled SQL or live catalog
-                # generation is required.
-                account: "placeholder.us-east-1"
-                user: ci_user
-                password: ci_password
-                role: NYC311_TRANSFORMER
-                database: NYC311_DB
-                warehouse: NYC311_WH
-                schema: gold
-                threads: 1
-                client_session_keep_alive: false
-          EOF
-
+      # The mock CI profile lives at dbt/ci-profile/profiles.yml — committed,
+      # credential-free, and shared with ci.yml and run_tests.sh. It replaces a
+      # heredoc here that was duplicated verbatim in ci.yml. The placeholder
+      # values satisfy dbt's profile schema validator; `dbt parse` never opens a
+      # connection, but any command that RESOLVES SQL does (and fails), which is
+      # why this workflow parses rather than compiles.
       - name: Install dbt packages (dbt deps)
         working-directory: dbt
         run: |
           dbt deps \
-            --profiles-dir . \
+            --profiles-dir ci-profile \
             --project-dir .
 
       # dbt parse resolves the full model DAG (ref(), source(), macros, Jinja)
@@ -132,7 +105,7 @@ jobs:
         working-directory: dbt
         run: |
           dbt parse \
-            --profiles-dir . \
+            --profiles-dir ci-profile \
             --project-dir . \
             --target ci \
             --no-version-check
