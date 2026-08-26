@@ -19,6 +19,18 @@ pipeline liveness. It is structurally blind to upstream staleness: after any suc
 the newest `_loaded_at` is minutes old regardless of how stale the city's source data is
 (see the 2026-08-18 postmortem).
 
+**The denominator is sampled, not asked once.** Socrata is not read-consistent:
+identical queries are answered by replicas at different indexing states. Measured
+2026-08-26, six identical count calls for the same day returned 0, 0, 358, 358,
+358, 0. A single capture was therefore a coin flip — and a losing flip is worse
+than noisy, because the query below returns **pass** on a zero denominator, so a
+capture landing on a lagging replica would certify completeness against nothing.
+`fetch_source_count_yesterday` now probes five times and keeps the maximum: a row
+visible on any replica exists, so the highest count is the most complete view
+available. Disagreement is printed and the run records the value it took. No zero
+capture has occurred in production to date (six for six non-zero); this closes the
+exposure rather than repairs a failure.
+
 **No SLO covers source staleness, deliberately.** SLO-2 does *not* — it reconciles our row
 count against the city's own count for the same day, so a day the city barely published
 reconciles at 100% and passes. Source staleness is surfaced by the non-gating

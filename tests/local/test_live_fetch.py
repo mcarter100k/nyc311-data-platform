@@ -27,7 +27,8 @@ for p in (os.path.join(ROOT, "local"), os.path.join(ROOT, "local")):
         sys.path.insert(0, p)
 
 from ingest_config import PAGE_SIZE, build_page_params
-from local_runner import LIVE_DAYS, LIVE_ROW_CAP, fetch_live_records
+from local_runner import (LIVE_DAYS, LIVE_ROW_CAP, SOURCE_COUNT_PROBES,
+                          fetch_live_records)
 
 
 class FakeResponse:
@@ -126,7 +127,9 @@ from local_runner import fetch_source_count_yesterday  # noqa: E402
 
 
 def test_source_count_queries_yesterday_utc_window():
-    get = FakeGet([[{"n": "319"}]])
+    # One response per probe: the capture samples SOURCE_COUNT_PROBES times
+    # because Socrata is not read-consistent (see below).
+    get = FakeGet([[{"n": "319"}]] * SOURCE_COUNT_PROBES)
     result = fetch_source_count_yesterday(get=get)
 
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
@@ -138,6 +141,33 @@ def test_source_count_queries_yesterday_utc_window():
         "day SLO-2 reconciles against."
     )
     assert get.calls[0]["params"]["$select"] == "count(*) as n"
+
+
+def test_source_count_takes_the_maximum_across_disagreeing_replicas():
+    """Socrata answers identical queries from replicas at different indexing states.
+
+    Measured 2026-08-26: six identical count calls for the same day returned
+    0, 0, 358, 358, 358, 0. A single sample was a coin flip, and losing it is
+    worse than noisy — slo2_completeness.sql returns PASS on a zero denominator,
+    so a capture landing on a lagging replica certifies completeness against
+    nothing. That is the gate the 2026-08-18 postmortem exists to defend.
+
+    A row visible on ANY replica exists, so the highest count is the most
+    complete view available. Zero must never win while a non-zero was seen.
+    """
+    replicas = [[{"n": "0"}], [{"n": "0"}], [{"n": "358"}], [{"n": "0"}], [{"n": "0"}]]
+    get = FakeGet(replicas)
+    result = fetch_source_count_yesterday(get=get)
+
+    assert len(get.calls) == SOURCE_COUNT_PROBES, (
+        f"Expected {SOURCE_COUNT_PROBES} probes, got {len(get.calls)} — one sample "
+        f"is a coin flip against a non-read-consistent source."
+    )
+    assert result["source_count"] == 358, (
+        f"Expected the maximum (358), got {result['source_count']}. Taking the last "
+        f"or the modal value would have captured 0 here, and SLO-2 passes on a zero "
+        f"denominator — the breach would be certified rather than caught."
+    )
 
 
 def test_source_count_failure_fails_loudly_after_one_retry():
