@@ -21,11 +21,29 @@ the newest `_loaded_at` is minutes old regardless of how stale the city's source
 
 **The denominator is sampled, not asked once.** Socrata is not read-consistent:
 identical queries are answered by replicas at different indexing states. Measured
-2026-08-26, six identical count calls for the same day returned 0, 0, 358, 358,
-358, 0. `fetch_source_counts_window` therefore probes five times and keeps the
-per-day maximum: a row visible on any replica exists, so the highest count is the
-most complete view available, and a day absent from one probe's response counts as
-that probe's zero. Disagreement is printed and the run records the value it took.
+2026-08-27 over 98 grouped count requests, Socrata answered from exactly **two**
+states and routed each request independently — the stale share was 53% pooled and
+65% in the worst single run. The disagreement is not noise: one replica is
+**behind**, never ahead, and the gap closes as a day ages
+([ADR 016](adr/016-source-settling-horizon.md)).
+`fetch_source_counts_window` therefore probes **eleven** times
+(`local/local_runner.py#"SOURCE_COUNT_PROBES        = 11"`) and keeps the per-day
+maximum, which is the estimator for a quantity that only grows — what the city has
+actually published for that day. Eleven is the smallest N holding
+P(every probe lands on the stale replica) = 0.65¹¹ = 0.0087 under 1% at the worst
+observed split; five left it at 11.6%. Measured cost of the change: **5.34 s → 11.69 s**
+for a 7-day window, ~6 s on a run whose Gold build alone is minutes. A day absent from
+a probe's response counts as that probe's zero. Each captured day records
+`probe_count`, `source_count_min` and `probes_disagreed` in `silver.source_counts`, so
+the denominator can be audited rather than trusted — the settling spread for a day is
+`source_count - source_count_min`.
+
+**Sampling makes SLO-2 stricter, and that is the intended direction.** The
+denominator is the largest count any probe saw while the numerator is whatever
+replica served the load, so raising the denominator can only lower the ratio. We
+reconcile against the best estimate of what was published rather than against the
+convenient number, and that choice spends margin against the 98% floor — the budget
+is set out under SLO-2 below.
 
 Be precise about what sampling buys, because an earlier version of this page was
 not. Max-of-N helps only when *some* replica holds the day. When the source has
@@ -71,10 +89,26 @@ fetch window, re-assessed on every run.
 window in one grouped query (`local_runner.fetch_source_counts_window` → `silver.source_counts`);
 [`int_load_completeness`](../dbt/models/intermediate/int_load_completeness.sql) says which loaded
 days are whole; this query reconciles our Gold row count against the source's count for each of
-those days. **Why 98% and not 100%:** the quality filter deliberately quarantines a tiny fraction
-(closed-before-created data-entry errors) and dedup can drop true duplicates — documented
-removals, not loss. Measured on a 14-day live load (2026-08-27) the twelve complete days
-reconciled at 0.9976–0.9998.
+those days.
+
+**Why 98% and not 100% — the budget has two terms, and the second is the larger.** The first is
+deliberate row removal: the quality filter quarantines closed-before-created data-entry errors and
+dedup drops true duplicates — documented removals, not loss, worth up to **0.24%** (the worst
+settled day of the 2026-08-27 live load reconciled at 10,521 / 10,546 = 0.9976). The second is
+**settling skew**, worth up to **0.96%** — four times larger, and unnamed here until 2026-08-27.
+The numerator comes from whichever replica served the load; the denominator is the maximum over
+eleven capture probes. When those disagree the gap lands straight in the ratio, and at 3 days —
+the youngest age at which a *stale* load of a day still reaches midnight and so still enters the
+population — the measured gap was 112 / 11,627 = 0.963%.
+
+Worst case is therefore
+`scripts/slo/slo2_completeness.sql#"WORST CASE = 0.99037 * 0.99763 = 0.9880"`: a **1.20%** budget against a 2.00% floor,
+leaving **0.80 points** of margin rather than the ~1.76 previously implied. The floor stays at
+0.98 because 1.20 < 2.00, and moving it would mean fitting a threshold to one observation window —
+but it is now roughly half consumed. This is not hypothetical: on the 2026-08-27 live load the
+gate reported `worst_day=2026-08-24  worst_day_rows_loaded=11513  worst_day_rows_published=11627`,
+a ratio of **0.9902**. The full measurement and what would move the floor are in
+[ADR 016](adr/016-source-settling-horizon.md).
 
 **What changed (2026-08-19):** SLO-2 previously compared yesterday's volume against a trailing
 7-day median, which reddened our run whenever *the city* stopped publishing (see the 2026-08-18
@@ -136,11 +170,45 @@ with `--live --days N` — is ours.
 -- loaded as a stub get RE-RECONCILED once the source fills it in: the fetch
 -- re-pulls and re-counts the whole window every run.
 --
--- Why 0.98 and not 1.00: the quality filter legitimately quarantines a tiny
--- fraction (closed-before-created data-entry errors), and dedup can drop true
--- duplicates; both are deliberate, documented row removals — not loss. On a
--- 14-day live load measured 2026-08-27 the twelve complete days reconciled at
--- 0.9976 to 0.9998, so the floor sits well below observed behaviour.
+-- WHY 0.98 AND NOT 1.00 — the loss budget, in full. This comment used to name
+-- only the first of the two terms below and read the headroom as ~1.76 points.
+-- It is ~0.80.
+--
+--   1. DELIBERATE ROW REMOVAL — up to 0.24%. The quality filter quarantines
+--      closed-before-created data-entry errors and dedup drops true duplicates.
+--      Both are documented removals, not loss. Measured 2026-08-27 on the days
+--      old enough to have stopped moving (7d+), the worst reconciled at
+--      10,521 / 10,546 = 0.9976.
+--
+--   2. SETTLING SKEW — up to 0.96%, FOUR TIMES LARGER, and previously unnamed.
+--      Socrata answers from two replicas, one of which is behind by an amount
+--      that shrinks as a day ages and reaches zero at 7 days (ADR 016). The
+--      numerator here is whatever replica served the LOAD; the denominator is
+--      the maximum over SOURCE_COUNT_PROBES capture probes, which is
+--      deliberately the freshest view available. When those disagree the gap
+--      lands directly in this ratio. Measured 2026-08-27 over 20 probes/day the
+--      gap at 3 days — the youngest age at which BOTH replicas hold a day whose
+--      coverage reaches midnight, so the youngest age at which a stale load can
+--      still be reconciled — was 112 / 11,627 = 0.963%.
+--
+--      Younger days do not widen this. At 2 days the stale replica holds only
+--      the first ~2 hours (358 rows on 2026-08-25), so a load served by it is
+--      not a complete day and never enters the population; a load served by the
+--      FRESH replica is reconciled against a denominator from that same replica
+--      and the gap is ~0. The exposure is a 3-day-old day, not a 1-day-old one.
+--
+-- WORST CASE = 0.99037 * 0.99763 = 0.9880, i.e. a 1.20% budget against a 2.00%
+-- floor: 0.80 points of margin, not the 1.76 the old comment implied. The floor
+-- STAYS at 0.98 — 1.20 < 2.00, so it is still adequate, and moving it would be
+-- fitting a threshold to one observation window. But it is now roughly half
+-- consumed, and the term that consumes it is the one nobody had measured. The
+-- worst day actually observed is the arithmetic, not a hypothetical: on the
+-- 2026-08-27 live load this gate reported worst_day = 2026-08-24 at
+-- 11,513 / 11,627 = 0.9902.
+--
+-- What would move the floor: a settling gap at 3 days above ~1.8%, or a change
+-- in what the city publishes late. ADR 016 records that the 7-day horizon comes
+-- from ONE observation window and is not a guarantee.
 --
 -- THE THREE WAYS THIS FAILS, all deliberate:
 --   * a complete day whose loaded count falls under the floor — real loss;

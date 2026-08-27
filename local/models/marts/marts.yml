@@ -262,6 +262,11 @@ models:
           How the request was closed (see int_service_requests_cleaned). The
           companion to status: status says the ticket is finished, closure_type
           says what finished it.
+
+          'Unspecified' and 'Undecodable' are different facts and were one value
+          until this pass: the source stating no resolution, versus the source
+          stating one that no rule matched (8,330 rows, 7.34% of text-bearing
+          rows on the local load).
         tests:
           - not_null
 
@@ -270,6 +275,13 @@ models:
           TRUE when closure_type is Resolved on Scene, Enforcement Action or
           Work Performed — i.e. the city did something. A request can be
           is_resolved = TRUE and is_actioned = FALSE; that is the majority case.
+
+          FALSE is not proof of inaction. closure_type = 'Undecodable' also
+          lands here — 8.45% of closed requests on the local load — and some of
+          those strings plainly describe work ("NYC Parks performed the work
+          necessary to correct the condition.", 310 rows). Any action rate built
+          on this column should be read next to
+          fct_daily_volume.undecodable_closure_requests, which sizes that floor.
         tests:
           - not_null
 
@@ -298,6 +310,22 @@ models:
       complaint_category). Derived from fct_service_requests to avoid repeated
       large aggregations in BI queries. Suitable for time-series dashboards,
       complaint category trend analysis, and borough-level performance reporting.
+
+      EVERY RATE ON THIS TABLE IS WINDOWED AND CONDITIONALLY SUPPRESSED. A rate
+      whose numerator is "closed" over a denominator of "created on this day" is
+      right-censored, and worst on the newest days — the ones a reader opens
+      first. This table used to publish four such measures over an open-ended
+      denominator; measured on the local load the same pct_resolved column read
+      0.7452 at twelve complete days of observation and 0.4003 at zero. The
+      replacements are bounded to closure_window_days and published only where
+      is_denominator_closed, which is enforced by the
+      assert_daily_volume_rates_have_closed_denominators singular test in both
+      directions: no censored rate may be published, and no eligible non-empty
+      day may be suppressed.
+
+      REMOVED, and not replaced like-for-like: pct_resolved, pct_actioned,
+      avg_resolution_days, overdue_requests. See requests_open_past_window for
+      why overdue_requests could not simply be gated.
     columns:
       - name: daily_volume_id
         description: "MD5 surrogate key on (full_date, borough, complaint_category)."
@@ -343,40 +371,151 @@ models:
           No not_null test, deliberately — NULL is a meaning this column has.
 
       - name: total_requests
-        description: "Count of service requests opened on full_date in this borough and category."
+        description: >
+          Count of service requests opened on full_date in this borough and
+          category. The one measure here that is NOT censored: a created-count
+          is whole as soon as the source has published the day, and no later
+          closure can change it. Its qualifier is is_complete_day, not
+          is_denominator_closed.
         tests:
           - not_null
           - dbt_utils.expression_is_true:
               arguments:
                 expression: "> 0"
 
-      - name: avg_resolution_days
-        description: "Average resolution days for closed requests in this group. NULL if no requests were closed."
-
-      - name: pct_resolved
-        description: "Fraction of requests at Closed status (0.0–1.0)."
-        tests:
-          - dbt_utils.expression_is_true:
-              arguments:
-                expression: "between 0 and 1"
-              config:
-                where: "pct_resolved is not null"
-
-      - name: pct_actioned
+      - name: undecodable_closure_requests
         description: >
-          Fraction of requests where the city actually did something (0.0-1.0).
-          The gap between pct_resolved and pct_actioned is the share of closures
-          that found no violation, found nothing, were duplicates, or were
-          handed off.
-        tests:
-          - dbt_utils.expression_is_true:
-              arguments:
-                expression: "between 0 and 1"
-              config:
-                where: "pct_actioned is not null"
+          Of total_requests, how many carried resolution text that the
+          closure_type decoder could not read (closure_type = 'Undecodable').
+          Those rows are is_actioned = FALSE by construction, so this is the
+          size of the decode-shaped floor underneath pct_actioned_within_window
+          at exactly the grain that percentage is published at — the number that
+          lets a reader tell a real action rate from a decoder failure.
 
-      - name: overdue_requests
-        description: "Count of requests in this group where resolution_days > 30."
+          Measured on the local load: 8,330 rows table-wide, 7.34% of every row
+          carrying resolution text and 8.45% of all CLOSED requests. Held under
+          12% of text-bearing rows by the assert_closure_decode_coverage
+          singular test.
+
+          Published unconditionally — it is a property of the rows themselves,
+          not of how long they have been observed, so nothing about it is
+          censored and nothing about it needs suppressing.
         tests:
           - not_null
+
+      - name: closure_window_days
+        description: >
+          The window every rate on this row is computed over: "closed within
+          this many days of creation", never "closed by now". Carried as data so
+          a consumer reading one row knows what the percentages mean without
+          looking up a project var. Sourced from the closure_window_days var,
+          which is 30 — the NYC administrative standard already encoded in
+          fct_service_requests.is_overdue.
+        tests:
+          - not_null
+
+      - name: observation_days
+        description: >
+          Complete days of published history following full_date, measured
+          against the same horizon fct_complaint_recurrence uses: MAX(load_day)
+          WHERE is_complete_day from int_load_completeness, never
+          max(created_date). Floored at zero — a day at or after the horizon has
+          had no observed time, not negative time.
+
+          NULL when the load contains no complete day at all, which is the one
+          case where no honest horizon exists. Written out explicitly in the
+          model rather than left to GREATEST, whose NULL handling differs
+          between Snowflake and DuckDB.
+
+      - name: is_denominator_closed
+        description: >
+          TRUE when every request created on this day has had a full and equal
+          opportunity to enter the window numerators — observation_days >=
+          closure_window_days AND the source published the whole day
+          (is_complete_day IS DISTINCT FROM FALSE). The rate columns below are
+          NULL wherever this is FALSE.
+
+          The second clause is not redundant with the first: a day the source
+          published only the first two hours of is a biased sample of itself no
+          matter how old it gets, which is the shape the 2026-08-18 publish
+          stall produced. It is DISTINCT FROM FALSE rather than = TRUE because
+          NULL means "this day has aged out of the assessable load window", not
+          "incomplete" — and = TRUE would suppress every rate in a warehouse
+          whose fact outlives the load window, i.e. all of production.
+
+          Two-valued, never NULL: with no complete day in the load the AND
+          short-circuits to FALSE, so "we cannot assess this" publishes nothing
+          rather than publishing an unknown.
+        tests:
+          - not_null
+
+      - name: requests_closed_within_window
+        description: >
+          Of total_requests, how many were closed within closure_window_days of
+          creation. NULL where is_denominator_closed is FALSE.
+
+      - name: requests_open_past_window
+        description: >
+          Of total_requests, how many were NOT closed within
+          closure_window_days. NULL where is_denominator_closed is FALSE.
+
+          This replaces overdue_requests, which was broken independently of
+          censoring. That column summed is_overdue, and is_overdue is
+          deliberately NULL while a request is open (see
+          assert_is_overdue_null_while_open) — so a request created 200 days ago
+          and still open, the worst outcome the data can express, contributed
+          ZERO to the overdue count while one closed on day 31 contributed one.
+          It counted only lateness that had already ended. This column counts
+          both, and is knowable at exactly the moment the other window measures
+          are.
+
+      - name: pct_closed_within_window
+        description: >
+          Fraction of requests created on this day that were closed within
+          closure_window_days (0.0–1.0). NULL where is_denominator_closed is
+          FALSE — which is the whole point of the column: on a 7–14 day load no
+          day is eligible and this reads NULL everywhere, because a 14-day load
+          cannot answer a 30-day question.
+
+          Replaces pct_resolved, whose denominator was open-ended.
+        tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "between 0 and 1"
+              config:
+                where: "pct_closed_within_window is not null"
+
+      - name: pct_actioned_within_window
+        description: >
+          Fraction of requests created on this day that were closed within
+          closure_window_days AND describe the city actually doing something
+          (0.0–1.0). The gap between this and pct_closed_within_window is the
+          share of in-window closures that found no violation, found nothing,
+          were duplicates, or were handed off.
+
+          Read undecodable_closure_requests beside it. Rows whose resolution
+          text the decoder could not read are is_actioned = FALSE, so this
+          figure has a floor under it of known size rather than unknown size.
+        tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "between 0 and 1"
+              config:
+                where: "pct_actioned_within_window is not null"
+
+      - name: avg_resolution_days_within_window
+        description: >
+          Mean days to close AMONG requests closed within closure_window_days.
+          Stated that way deliberately: a mean over "all closures so far" is a
+          mean over a set that keeps growing, and grows slowest at the top, so
+          it slides upward for months after the cohort is created. Bounded, it
+          is a fixed quantity per cohort, and pct_closed_within_window beside it
+          says what share of the cohort it describes.
+
+          NULL where is_denominator_closed is FALSE, and also NULL for an
+          eligible group in which nothing closed inside the window.
+
+          Replaces avg_resolution_days, which averaged every closure to date and
+          fell 1.38 → 0.07 across the local load purely as a function of how
+          recent the day was.
 

@@ -118,7 +118,7 @@ three models behind before that check existed.
 **marts** — the star:
 
 - `fct_service_requests` — the core fact table; incremental MERGE on `service_request_id` with a 1-hour lookback buffer; clustered on `cast(created_date as date)` for Snowflake scan efficiency
-- `fct_daily_volume` — pre-aggregated complaint counts by day, borough, and category for fast dashboard queries, carrying `is_complete_day` so a partial day can be excluded from an average
+- `fct_daily_volume` — pre-aggregated complaint counts by day, borough, and category for fast dashboard queries, carrying `is_complete_day` so a partial day can be excluded from an average. Every *rate* on it is bounded to `closure_window_days` and published only where `is_denominator_closed` — a closure rate over requests created recently is right-censored, so recent days publish NULL instead of a number that is wrong
 - `fct_complaint_recurrence` — one row per closed request with a usable address, measuring whether the same complaint reappeared at the same address. Emits `days_to_next_same_complaint` and `observation_days` rather than a baked-in window, so a right-censored closure cannot be silently counted as "did not recur"
 - `fct_data_quality` — every check written to the Silver quality log, with a rolling 7-day failure rate and a threshold-breach flag; makes data quality observable instead of an invisible gate
 - `dim_date` — 21-year calendar spine (2010–2030) with US federal holiday flags

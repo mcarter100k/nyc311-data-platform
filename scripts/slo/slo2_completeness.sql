@@ -22,11 +22,45 @@
 -- loaded as a stub get RE-RECONCILED once the source fills it in: the fetch
 -- re-pulls and re-counts the whole window every run.
 --
--- Why 0.98 and not 1.00: the quality filter legitimately quarantines a tiny
--- fraction (closed-before-created data-entry errors), and dedup can drop true
--- duplicates; both are deliberate, documented row removals — not loss. On a
--- 14-day live load measured 2026-08-27 the twelve complete days reconciled at
--- 0.9976 to 0.9998, so the floor sits well below observed behaviour.
+-- WHY 0.98 AND NOT 1.00 — the loss budget, in full. This comment used to name
+-- only the first of the two terms below and read the headroom as ~1.76 points.
+-- It is ~0.80.
+--
+--   1. DELIBERATE ROW REMOVAL — up to 0.24%. The quality filter quarantines
+--      closed-before-created data-entry errors and dedup drops true duplicates.
+--      Both are documented removals, not loss. Measured 2026-08-27 on the days
+--      old enough to have stopped moving (7d+), the worst reconciled at
+--      10,521 / 10,546 = 0.9976.
+--
+--   2. SETTLING SKEW — up to 0.96%, FOUR TIMES LARGER, and previously unnamed.
+--      Socrata answers from two replicas, one of which is behind by an amount
+--      that shrinks as a day ages and reaches zero at 7 days (ADR 016). The
+--      numerator here is whatever replica served the LOAD; the denominator is
+--      the maximum over SOURCE_COUNT_PROBES capture probes, which is
+--      deliberately the freshest view available. When those disagree the gap
+--      lands directly in this ratio. Measured 2026-08-27 over 20 probes/day the
+--      gap at 3 days — the youngest age at which BOTH replicas hold a day whose
+--      coverage reaches midnight, so the youngest age at which a stale load can
+--      still be reconciled — was 112 / 11,627 = 0.963%.
+--
+--      Younger days do not widen this. At 2 days the stale replica holds only
+--      the first ~2 hours (358 rows on 2026-08-25), so a load served by it is
+--      not a complete day and never enters the population; a load served by the
+--      FRESH replica is reconciled against a denominator from that same replica
+--      and the gap is ~0. The exposure is a 3-day-old day, not a 1-day-old one.
+--
+-- WORST CASE = 0.99037 * 0.99763 = 0.9880, i.e. a 1.20% budget against a 2.00%
+-- floor: 0.80 points of margin, not the 1.76 the old comment implied. The floor
+-- STAYS at 0.98 — 1.20 < 2.00, so it is still adequate, and moving it would be
+-- fitting a threshold to one observation window. But it is now roughly half
+-- consumed, and the term that consumes it is the one nobody had measured. The
+-- worst day actually observed is the arithmetic, not a hypothetical: on the
+-- 2026-08-27 live load this gate reported worst_day = 2026-08-24 at
+-- 11,513 / 11,627 = 0.9902.
+--
+-- What would move the floor: a settling gap at 3 days above ~1.8%, or a change
+-- in what the city publishes late. ADR 016 records that the 7-day horizon comes
+-- from ONE observation window and is not a guarantee.
 --
 -- THE THREE WAYS THIS FAILS, all deliberate:
 --   * a complete day whose loaded count falls under the floor — real loss;

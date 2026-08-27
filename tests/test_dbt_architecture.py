@@ -14,6 +14,8 @@ manifest without needing a live Snowflake connection. Covers:
   8. FK integrity          — relationship tests exist on all foreign keys
 """
 
+import re
+
 import pytest
 
 
@@ -374,6 +376,53 @@ def test_daily_volume_carries_load_completeness(models):
     )
 
 
+def test_daily_volume_publishes_no_uncensored_rate(manifest):
+    """
+    fct_daily_volume must not publish a rate over an open-ended denominator.
+
+    Two things are asserted, both structural, because the numeric failure is
+    invisible: a censored closure rate is a plausible-looking number, and the
+    same column read 0.7452 at twelve complete days of observation and 0.4003 at
+    zero before this was fixed.
+
+      1. The four measures that had open denominators are GONE by name.
+         pct_resolved / pct_actioned counted closures over every request created
+         that day; avg_resolution_days averaged closures-so-far; and
+         overdue_requests summed a three-valued is_overdue, so a request open
+         for 200 days counted zero.
+
+      2. The eligibility gate is still wired: the model reads the
+         closure_window_days var and the singular test that enforces it is still
+         in the project. That test is the thing that can actually fail on data —
+         this only guarantees it is present to run.
+    """
+    node = manifest["nodes"]["model.nyc311.fct_daily_volume"]
+    sql = node["raw_code"]
+
+    # \b after the name so the windowed replacements (pct_actioned_within_window)
+    # do not match: '_' is a word character, so the boundary only closes on the
+    # bare old name.
+    for removed in ("pct_resolved", "pct_actioned", "avg_resolution_days",
+                    "overdue_requests"):
+        assert not re.search(rf"\bas\s+{removed}\b", sql), (
+            f"fct_daily_volume publishes `{removed}` again. That measure's "
+            f"denominator is every request created on the day, which on recent "
+            f"days is a cohort that has not had time to close anything — the "
+            f"rate is right-censored and reads low."
+        )
+
+    assert "closure_window_days" in sql and "is_denominator_closed" in sql, (
+        "fct_daily_volume no longer gates its rates on a closed denominator."
+    )
+
+    tests = {n["name"] for n in manifest["nodes"].values()
+             if n["resource_type"] == "test"}
+    assert "assert_daily_volume_rates_have_closed_denominators" in tests, (
+        "The singular test enforcing the closed-denominator rule is gone. "
+        "Without it the gate is a convention, not a contract."
+    )
+
+
 def test_fct_daily_volume_depends_on_fct_and_dims(models):
     """
     The aggregated daily fact must read from fct_service_requests and the date
@@ -640,7 +689,7 @@ def test_intermediate_has_accepted_values_on_borough_clean(tests_by_model):
 def test_intermediate_has_accepted_values_on_complaint_category(tests_by_model):
     """
     complaint_category must have an accepted_values test. The classification
-    CASE WHEN has an else->'Other' bucket, but the categories themselves should
+    CASE WHEN has an else->'Undecodable' bucket, but the categories should
     be a closed set — this test catches typos or renamed categories.
     """
     test_names = [t["name"] for t in tests_by_model.get("int_service_requests_cleaned", [])]

@@ -62,10 +62,54 @@ def standardize_borough_value(val) -> str:
 
 
 def standardize_borough(df: pd.DataFrame) -> pd.DataFrame:
-    """Collapse every borough spelling variant to the five canonical names."""
+    """Collapse every borough spelling variant to the five canonical names.
+
+    The raw value is preserved alongside, in `_borough_raw`. Not decoration:
+    standardization is lossy in exactly the way the docstring above admits —
+    'missing', 'unrecognized', and the source's own literal 'Unspecified' all
+    become the same string — and `unrecognized_borough_mask` needs the input to
+    tell them apart. The underscore marks it internal; local_runner drops it
+    before writing Silver, so the Silver schema is unchanged.
+    """
     out = df.copy()
-    out["borough"] = out.get("borough", pd.Series(dtype=str)).apply(standardize_borough_value)
+    raw = out["borough"] if "borough" in out.columns else pd.Series(dtype=str, index=out.index)
+    out["_borough_raw"] = raw
+    out["borough"] = raw.apply(standardize_borough_value)
     return out
+
+
+def unrecognized_borough_mask(df: pd.DataFrame) -> pd.Series:
+    """True where a borough value WAS supplied and no variant matched it.
+
+    Deliberately NOT `borough == 'UNSPECIFIED'`, which is what the
+    unrecognized_borough DQ check used to count. That test conflates three
+    different facts, only one of which is a decoder failure:
+
+        borough is null / blank      the source said nothing
+        borough is 'Unspecified'     the source said, explicitly, that it does
+                                     not know — a RECOGNIZED variant, present
+                                     in config/borough_variants.csv by name
+        borough is something else    no variant matched: the actual failure
+
+    Measured on the local load, all 160 rows the old check reported as
+    'unrecognized' were the second kind — the source's own literal
+    'Unspecified', which the seed maps deliberately. The true unrecognized count
+    was ZERO, and the DQ log published a 0.125% failure rate for a check that
+    had nothing to report. A metric that cannot read zero cannot raise an alarm
+    either: a genuinely new spelling would have moved that number from 160 to
+    161 and no one would have looked.
+
+    KNOWN_BOROUGH_VARIANTS is the denominator this was always meant to use —
+    the constant existed, with a comment saying so, and nothing referenced it.
+    """
+    if "_borough_raw" not in df.columns:
+        return pd.Series(False, index=df.index)
+
+    raw = df["_borough_raw"]
+    as_text = raw.astype("string").str.strip()
+    supplied = as_text.notna() & (as_text != "")
+    recognized = as_text.str.upper().isin(KNOWN_BOROUGH_VARIANTS)
+    return (supplied & ~recognized).fillna(False)
 
 
 def deduplicate_on_unique_key(df: pd.DataFrame) -> pd.DataFrame:
@@ -215,6 +259,10 @@ def compute_dq_metrics(
                                 same frame; a row quarantined for a bad date
                                 still had a borough that was or was not
                                 recognized, so it belongs in this denominator.
+                                The NUMERATOR is unrecognized_borough_mask,
+                                evaluated on the RAW value — see that function
+                                for why `borough == 'UNSPECIFIED'` was counting
+                                160 rows the seed maps on purpose.
 
     Why one deduped frame and not two. This function used to take `df_deduped`
     and `df_derived` separately, taking counts from the first and masks from
@@ -237,9 +285,7 @@ def compute_dq_metrics(
     # unique_key|, since that is precisely what deduplicate_on_unique_key does.
     n_dupes = n_bronze - n_deduped
     n_invalid = int(quarantine_mask(df_deduped).sum())
-    n_unrecognized = (
-        int((df_deduped["borough"] == "UNSPECIFIED").sum()) if "borough" in df_deduped else 0
-    )
+    n_unrecognized = int(unrecognized_borough_mask(df_deduped).sum())
 
     def row(name, failed, checked):
         return {

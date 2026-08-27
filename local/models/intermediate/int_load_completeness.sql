@@ -20,14 +20,38 @@
 -- holds at least X rows, or at least X% of the trailing median" — is a
 -- threshold on a quantity the source itself is not consistent about. Two
 -- identical fetch queries issued minutes apart returned 65,936 and 54,446 rows
--- on 2026-08-26, a 17% spread, because Socrata serves identical queries from
--- replicas at different indexing states. A completeness rule built on raw
--- counts inherits that noise directly and would flip verdicts between runs.
--- Clock coverage does not: a thin replica of a finished day still contains
--- tickets filed at 23:5x, because those tickets exist in every replica of it.
--- The measured separation is not marginal either — on a 14-day live load every
--- complete day ended within ONE minute of midnight and the partial day ended
--- 1,314 minutes short, so the exact value of the threshold is not load-bearing.
+-- for the same 7-day window, a 17% spread, because Socrata serves identical
+-- queries from replicas at different indexing states.
+--
+-- That spread was originally read here as NOISE. It is not, and the real
+-- mechanism makes this argument stronger rather than weaker. Measured
+-- 2026-08-27 with 20 probes per day (ADR 016), the disagreement is a RECENCY
+-- LAG: one replica is behind, never ahead, and the gap closes monotonically
+-- with a day's age — 10,427 rows at 2 days, 112 at 3, 50 at 4, 4 at 5, 2 at 6,
+-- and exactly 0 from 7 days on. So a row-count threshold would not merely be
+-- noisy; it would be systematically BIASED DOWNWARD on precisely the youngest
+-- days, which are the days a completeness rule exists to judge. Half the
+-- 65,936-vs-54,446 gap is one 2-day-old day that one replica had barely begun.
+--
+-- Clock coverage is immune to that bias, and for a reason the noise framing
+-- did not capture: the source publishes a day as a TIME PREFIX. A replica
+-- either holds the whole finished day — in which case it holds the tickets
+-- filed at 23:5x, because those exist in every replica of a finished day — or
+-- it holds a prefix that stops hours short and is nowhere near midnight. Both
+-- states were observed for 2026-08-25 on 2026-08-27: one replica ended at
+-- 02:06 with 358 rows, the other at 23:59:45 with 10,785. There is no
+-- intermediate state in which a materially incomplete day passes a
+-- coverage-to-midnight test, which is exactly what a count threshold cannot
+-- promise. The measured separation is not marginal either — on a 14-day live
+-- load every complete day ended within ONE minute of midnight and the partial
+-- day ended 1,314 minutes short, so the threshold value is not load-bearing.
+--
+-- REPLICA-DEPENDENT, and honestly so: which of those two states answers the
+-- fetch decides whether a 1-to-2-day-old day reads complete at all. The verdict
+-- is correct either way — a day is marked complete only when the load actually
+-- holds it to midnight — but the horizon can differ by a day between runs on
+-- the same data. From 3 days on both replicas hold the day to midnight and the
+-- verdict is stable.
 --
 -- WHY NOT A HARDCODED DATE. Obviously: the load moves every run. But also
 -- because the trailing gap is not always one day. The 2026-08-18 upstream

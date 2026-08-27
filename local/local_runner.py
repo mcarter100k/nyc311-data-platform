@@ -45,11 +45,28 @@ PAGE_SIZE        = 1_000
 LIVE_DAYS    = 7
 LIVE_ROW_CAP = 150_000
 
-# Socrata serves identical queries from replicas at different indexing states
-# (measured 2026-08-26: six identical count calls returned 0,0,358,358,358,0).
-# The source counts are therefore sampled and maximised per day — see
-# fetch_source_counts_window for why a single sample is unsafe.
-SOURCE_COUNT_PROBES        = 5
+# Socrata serves identical queries from replicas at different indexing states.
+# The disagreement is not random noise: one replica is simply BEHIND, and the
+# gap closes as a day ages, reaching zero at 7 days (ADR 016). The source counts
+# are therefore sampled and MAXIMISED per day — see fetch_source_counts_window.
+#
+# WHY N = 11, as arithmetic rather than as a round number. Measured 2026-08-27
+# (98 grouped count requests across five runs) Socrata answered from exactly TWO
+# states and routed each request independently. The stale share was 52/98 = 0.53
+# pooled, and 13/20 = 0.65 in the worst single run. A day's captured count is
+# wrong exactly when EVERY probe lands on the stale replica, so
+#
+#     P(all N stale) = P(stale)^N          at 0.65      at 0.53
+#     N =  5   ← the previous value          0.11603     0.04182
+#     N = 10                                 0.01346     0.00175
+#     N = 11   ← chosen                      0.00875     0.00093
+#
+# 11 is the SMALLEST N holding the miss rate under 1% at the worst observed
+# split; N=5 mis-captured roughly one day in nine. Going higher buys little (12
+# gives 0.0057) and costs a round trip per day of margin we do not need. The
+# cost of 11 is 11 requests returning one row per day — see ADR 016 for the
+# measured wall-clock.
+SOURCE_COUNT_PROBES        = 11
 SOURCE_COUNT_PAUSE_SECONDS = 0.6
 
 # ── HTTP retry policy ────────────────────────────────────────────────────────
@@ -140,7 +157,8 @@ def _get_with_retry(get, url, *, params, headers=None, timeout=60, what="Socrata
 # platform reports on. Every downstream rule (the complaint taxonomy in
 # int_service_requests_cleaned, the closure_type text patterns) was derived from
 # the recent live window `--live` fetches, and the city's complaint mix has
-# moved since 2020: a 2020-first sample lands ~14.7% of rows in 'Other' against
+# moved since 2020: a 2020-first sample lands ~14.7% of rows in the taxonomy's
+# 'Undecodable' catch-all (called 'Other' when that was measured) against
 # the taxonomy's 5% guard, dominated by types the recent window barely contains
 # (`Request Large Bulky Item Collection`, `NonCompliance with Phased Reopening`).
 # The right fix is the sample, not the guard — the default invocation should
@@ -289,6 +307,14 @@ def fetch_source_counts_window(days: int = LIVE_DAYS, get=None) -> list[dict]:
     "the source says none" and "we never asked" are different facts, and
     slo2_completeness.sql treats them differently.
 
+    EACH DAY CARRIES ITS OWN PROBE EVIDENCE. `probe_count`, `source_count_min`
+    and `probes_disagreed` are written alongside the count so a later reader can
+    AUDIT the denominator instead of trusting it: the settling spread for a day
+    is `source_count - source_count_min`, and a day where the probes disagreed
+    is a day whose count depended on which replica answered. Without those
+    columns the table records a number with no way to tell a settled day from a
+    contested one.
+
     `get` is injectable for tests. Same fail-loud contract as
     fetch_live_records: if the count query fails, the run fails, because a
     missing capture would otherwise silently degrade the SLO gate.
@@ -315,21 +341,40 @@ def fetch_source_counts_window(days: int = LIVE_DAYS, get=None) -> list[dict]:
         "$limit": 5000,
     }
 
-    # Sample the counts SEVERAL times and keep the per-day maximum.
+    # Sample the counts SOURCE_COUNT_PROBES times and keep the per-day maximum.
     #
-    # Socrata is not read-consistent: identical queries are served by replicas
-    # at different indexing states. Measured 2026-08-26, six identical calls for
-    # the same day returned 0, 0, 358, 358, 358, 0 — a denominator varying by
-    # 358 rows with no change at the source.
+    # WHY THE MAXIMUM, precisely. Socrata is not read-consistent: identical
+    # queries are served by replicas at different indexing states. The earlier
+    # version of this comment called that "a denominator varying with no change
+    # at the source", which described the symptom and got the mechanism wrong.
+    # Measured 2026-08-27 over 30 probes of a 10-day window, the disagreement is
+    # a RECENCY LAG with a direction: one replica is BEHIND, never ahead, and
+    # per-day the stale count was <= the fresh count on 10 days out of 10, with
+    # the gap closing monotonically as a day ages —
     #
-    # Maximum, not mean or last: a row visible on ANY replica exists, so the
-    # highest count is the most complete view available. Note what this does and
-    # does not buy, since the earlier version of this file overclaimed it:
-    # max-of-N helps only when SOME replica holds the day. When the source has
-    # not published a day at all, every probe correctly returns 0 and no amount
-    # of sampling changes that. The protection against a zero denominator is not
-    # here — it is in the gate's choice of population and its refusal to treat
-    # zero as a pass.
+    #     age    1d      2d      3d      4d     5d     6d     7d+
+    #     gap   416  10,427     112      50      4      2       0
+    #
+    # so the maximum is not merely "the most complete view available", it is an
+    # estimator of a quantity that only ever grows: what the city has actually
+    # published for that day. Taking the mean or the last probe would estimate
+    # "what some replica happened to hold", which is not a fact about the city.
+    # The measurement is in ADR 016 (docs/adr/016-source-settling-horizon.md).
+    #
+    # THIS MAKES SLO-2 STRICTER, NOT LOOSER, and that is the intended direction.
+    # The denominator is the largest count any probe saw; the numerator is
+    # whatever the load fetch happened to be served. Raising the denominator can
+    # only lower the ratio. We are choosing to reconcile against the best
+    # estimate of what was published rather than against the convenient number,
+    # and that choice costs margin against the 0.98 floor — see the budget in
+    # scripts/slo/slo2_completeness.sql.
+    #
+    # What sampling does NOT buy, since an earlier version of this file
+    # overclaimed it: max-of-N helps only when SOME replica holds the day. When
+    # the source has not published a day at all, every probe correctly returns 0
+    # and no amount of sampling changes that. The protection against a zero
+    # denominator is not here — it is in the gate's choice of population and its
+    # refusal to treat zero as a pass.
     samples: dict[str, list[int]] = {}
     for probe in range(SOURCE_COUNT_PROBES):
         resp = _get_with_retry(get, SOCRATA_URL, params=params, headers=headers,
@@ -355,9 +400,22 @@ def fetch_source_counts_window(days: int = LIVE_DAYS, get=None) -> list[dict]:
         # another would report its non-zero value as unanimous.
         seen = seen + [0] * (SOURCE_COUNT_PROBES - len(seen))
         n = max(seen)
-        if len(set(seen)) > 1:
-            print(f"  NOTE: source replicas disagreed on {key}: {seen} — taking {n}")
-        counts.append({"target_date": key, "source_count": n, "captured_at": captured_at})
+        lo = min(seen)
+        disagreed = lo != n
+        if disagreed:
+            print(f"  NOTE: source replicas disagreed on {key}: "
+                  f"{lo}..{n} over {len(seen)} probes — taking {n}")
+        counts.append({
+            "target_date":      key,
+            "source_count":     n,
+            "captured_at":      captured_at,
+            # Audit trail for the max above. probe_count is recorded rather than
+            # assumed constant so a row captured under a different N stays
+            # interpretable after the constant moves again.
+            "source_count_min": lo,
+            "probe_count":      len(seen),
+            "probes_disagreed": disagreed,
+        })
         day += timedelta(days=1)
     return counts
 
@@ -515,6 +573,13 @@ def stage3_silver() -> None:
         print(f"  quarantining {n_invalid:,} records with negative resolution_days")
     df = drop_quarantined(df_derived)
 
+    # `_borough_raw` exists so compute_dq_metrics (above, on df_derived) can tell
+    # an unrecognized borough spelling from the source's own literal
+    # 'Unspecified' — see unrecognized_borough_mask. It is an input to a check,
+    # not a Silver column, so it is dropped before the write and the Silver
+    # schema is unchanged.
+    df = df.drop(columns=["_borough_raw"], errors="ignore")
+
     # Silver timestamp
     df["_silver_timestamp"] = datetime.now(timezone.utc).isoformat()
 
@@ -601,6 +666,19 @@ def stage3_silver() -> None:
         CREATE TABLE IF NOT EXISTS silver.source_counts (
             target_date DATE, source_count BIGINT, captured_at TIMESTAMP)
     """)
+    # The probe-evidence columns are added by ALTER rather than being written
+    # into the CREATE above, because CREATE TABLE IF NOT EXISTS is a no-op
+    # against a database from before they existed — the daily run persists its
+    # DuckDB file across runs, so a bare CREATE would leave every pre-existing
+    # deployment permanently on the old three-column shape and every INSERT
+    # below would fail on arity. ADD COLUMN IF NOT EXISTS makes stage 3 the
+    # migration, idempotently, for both a fresh file and an aged one.
+    for column, decl in (
+        ("source_count_min", "BIGINT"),
+        ("probe_count",      "INTEGER"),
+        ("probes_disagreed", "BOOLEAN"),
+    ):
+        con.execute(f"ALTER TABLE silver.source_counts ADD COLUMN IF NOT EXISTS {column} {decl}")
     if SOURCE_COUNT_FILE.exists():
         payload = json.loads(SOURCE_COUNT_FILE.read_text())
         # A file written by the pre-2026-08-27 single-day capture is a bare
@@ -610,11 +688,23 @@ def stage3_silver() -> None:
         for sc in rows:
             con.execute("DELETE FROM silver.source_counts WHERE target_date = ?",
                         [sc["target_date"]])
-            con.execute("INSERT INTO silver.source_counts VALUES (?, ?, ?)",
-                        [sc["target_date"], sc["source_count"], sc["captured_at"]])
+            # Columns are NAMED, not positional. A capture file written before
+            # the probe-evidence columns existed has no values for them, and
+            # NULL there means "captured without probe evidence" — which is
+            # honest and distinguishable from probe_count = 1.
+            con.execute("""
+                INSERT INTO silver.source_counts
+                    (target_date, source_count, captured_at,
+                     source_count_min, probe_count, probes_disagreed)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, [sc["target_date"], sc["source_count"], sc["captured_at"],
+                  sc.get("source_count_min"), sc.get("probe_count"),
+                  sc.get("probes_disagreed")])
         total = sum(r["source_count"] for r in rows)
+        contested = sum(1 for r in rows if r.get("probes_disagreed"))
         print(f"  silver.source_counts: {len(rows)} day(s) refreshed, "
-              f"{total:,} source rows {rows[0]['target_date']}..{rows[-1]['target_date']}")
+              f"{total:,} source rows {rows[0]['target_date']}..{rows[-1]['target_date']} "
+              f"({contested} still settling — replicas disagreed)")
     con.close()
 
 

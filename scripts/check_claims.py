@@ -774,6 +774,22 @@ SUPERSEDED_CLAIMS = [
         "through to midnight — and fails. It was the branch that let the gate "
         "certify a comparison against nothing. See ADR 015.",
     ),
+    # Registered as the specific retired NUMBER, not as the word "noise". The
+    # 17%-spread-is-noise framing this corrects lives in int_load_completeness's
+    # comments and in ADR 015 — neither of which this check scans (models are
+    # not docs; ADRs are history). What IS scanned is docs/SLO.md, which
+    # reproduces scripts/slo/slo2_completeness.sql verbatim, so reverting that
+    # comment reintroduces the false budget into a guarded doc. That is the
+    # reachable regression, and this is the phrase that carries it.
+    (
+        "0.9976 to 0.9998",
+        "The 0.98 floor's justification named only quarantine and dedup (up to "
+        "0.24%) and read the headroom as ~1.76 points. Settling skew adds up to "
+        "0.96% — four times larger — because the load takes whichever Socrata "
+        "replica answered while the capture takes the maximum over probes. Real "
+        "budget 1.20%, real margin 0.80 points; worst day actually measured is "
+        "11,513 / 11,627 = 0.9902 on 2026-08-27. See ADR 016.",
+    ),
 ]
 # Deliberately NOT registered here: the phantom DAG task names
 # (check_api_availability, ingest_raw, dbt_publish, notify_success) that
