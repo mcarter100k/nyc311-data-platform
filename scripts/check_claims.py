@@ -271,6 +271,26 @@ SUPERSEDED_CLAIMS = [
         "lands ~01:40 carrying data only to ~02:05 the PREVIOUS day, a ~23.5h lag.",
     ),
     (
+        "The watermark now keys on `:updated_at`",
+        "Never adopted. :updated_at is mass re-stamped nightly (~540k rows/day vs "
+        "~53k created per week, ADR 010); the only caller passes created_window. "
+        "The daily run re-pulls a trailing 7-day created_date window instead.",
+    ),
+    # Registered as the ASSERTION, not the word. A document explaining that no
+    # HttpSensor exists must stay legal — the first version of this entry banned
+    # the bare token and immediately flagged the correction that removed the
+    # claim. A tripwire that blocks the fix is worse than no tripwire.
+    (
+        "HttpSensor is a cost gate",
+        "No HttpSensor exists. check_source is a BashOperator running curl with "
+        "-o /dev/null: status only, no body inspection, no poke interval, no waiting.",
+    ),
+    (
+        "`HttpSensor` at the front validates",
+        "Same claim in docs/ARCHITECTURE.md. The gate cannot see an empty body, "
+        "which is exactly the published August 2026 stall.",
+    ),
+    (
         "core portfolio objective",
         "Databricks was removed on 2026-08-20. Any ADR rationale resting on "
         "showcasing it needs a superseding note, not a silent survival.",

@@ -136,6 +136,16 @@ joined as (
         -- is_overdue: resolution took longer than the 30-day NYC administrative standard.
         -- NULL when resolution_days is NULL (request still open).
         case
+            -- Still open: the outcome is NOT YET KNOWN, so the honest answer is
+            -- NULL. Keying on `resolution_days is null` alone did not achieve
+            -- that: the source emits rows carrying a closed_date while status is
+            -- still Open / In Progress / Assigned, so resolution_days was
+            -- populated and is_overdue came out FALSE. 4,139 such rows were
+            -- being counted as "on time" by
+            -- `COUNT(*) FILTER (WHERE NOT is_overdue)` — precisely the failure
+            -- the three-valued design exists to prevent, and which the README
+            -- claimed it did prevent.
+            when r.status <> 'Closed'      then null
             when r.resolution_days is null then null
             when r.resolution_days > 30    then true
             else false
