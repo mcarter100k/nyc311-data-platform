@@ -752,6 +752,35 @@ SUPERSEDED_CLAIMS = [
         "Databricks was removed on 2026-08-20. Any ADR rationale resting on "
         "showcasing it needs a superseding note, not a silent survival.",
     ),
+    # ── The three README findings withdrawn in the Phase 7 rewrite ──────────
+    # Each was measured, published, and then failed to reproduce. They are
+    # registered as the ASSERTION rather than the topic, so a document that
+    # EXPLAINS the withdrawal stays legal — the failure mode the HttpSensor
+    # entry above records.
+    (
+        "the problem had resolved itself before anyone arrived",
+        "Withdrawn. The claim was that No Condition Found recurs LEAST, below "
+        "Work Performed, arguing 'nothing there' closures were mostly correct "
+        "rather than premature. It reversed when the load grew from 7 days to "
+        "12: Work Performed 5.7%, No Condition Found 6.7%. Only the Access "
+        "Failed ranking reproduces (first in all 8 window x chronic specs).",
+    ),
+    (
+        "Composition flips; volume doesn't",
+        "Withdrawn. Reported a weekend RISE (8,918 -> 9,403/day) produced by "
+        "dividing weekday and weekend totals by the same day count over a window "
+        "holding 8 weekdays and 4 weekend days. Volume FALLS at weekends: "
+        "10,955 -> 9,903/day. The noise composition finding was never affected.",
+    ),
+    (
+        "| Marked resolved |",
+        "Withdrawn as a published measure. Registered as the TABLE COLUMN, not "
+        "the phrase: the prose explaining the removal must stay legal. The column "
+        "reported how much of the observation window had elapsed at snapshot "
+        "time, not city performance. Rates over unfinished cohorts are "
+        "right-censored; fct_daily_volume now returns NULL unless "
+        "is_denominator_closed.",
+    ),
     (
         "this closes the exposure",
         "Written in docs/SLO.md about the five-probe max source count (#50). "
