@@ -295,6 +295,112 @@ def test_source_counts_take_the_per_day_maximum_across_disagreeing_replicas():
     )
 
 
+def test_max_of_n_beats_every_other_estimator_on_the_measured_replica_shape():
+    """The max must win against the mean, the median, the mode, and the last.
+
+    The test above proves the max is taken on a shape where the alternatives
+    are merely different. This one uses the shape actually measured on
+    2026-08-27 for the 3-day-old day 2026-08-24 — the stale replica answering
+    more often than the fresh one — where every other estimator returns the
+    STALE value and only the max returns the published one.
+
+    Direction is what makes this correct rather than arbitrary: measured over
+    30 probes across 10 days, the lagging replica's count was <= the leading
+    replica's on 10 days out of 10, zero violations (ADR 016). The quantity
+    being estimated only ever grows, so the low reading is a lower bound and
+    the high reading is the better estimate of what the city published.
+    """
+    key = _day(3).replace("-", "_")
+    stale, fresh = 11_515, 11_627
+    # 8 stale, 3 fresh, fresh in the middle: mean 11,545.5 (a count the source
+    # never reported), median 11,515, mode 11,515, last 11,515.
+    s, f = _grouped(**{key: stale}), _grouped(**{key: fresh})
+    pages = [s] * 4 + [f] * 3 + [s] * 4
+    assert len(pages) == SOURCE_COUNT_PROBES
+    get = FakeGet(pages)
+
+    result = {r["target_date"]: r for r in fetch_source_counts_window(days=4, get=get)}
+    assert result[_day(3)]["source_count"] == fresh, (
+        "The maximum is the estimator. On this distribution the mean (11,545.5) "
+        "is a count the source never reported, and the median, the mode and the "
+        "last probe all return the STALE 11,515."
+    )
+
+
+def test_probe_evidence_is_recorded_so_the_denominator_can_be_audited():
+    """A denominator with no evidence has to be trusted rather than checked.
+
+    Each day records how many probes ran, the LOWEST count any of them saw, and
+    whether they disagreed at all. The settling spread for a day is then
+    `source_count - source_count_min` — which is how ADR 016's per-age table was
+    built — and a reader can tell a settled day from a contested one without
+    re-probing the source.
+    """
+    contested, settled = _day(3).replace("-", "_"), _day(1).replace("-", "_")
+    pages = ([_grouped(**{contested: 11_515, settled: 10_857})] * 8
+             + [_grouped(**{contested: 11_627, settled: 10_857})] * 3)
+    result = {r["target_date"]: r for r in fetch_source_counts_window(days=4, get=FakeGet(pages))}
+
+    still_settling = result[_day(3)]
+    assert still_settling["source_count"] == 11_627
+    assert still_settling["source_count_min"] == 11_515
+    assert still_settling["probes_disagreed"] is True
+    assert still_settling["source_count"] - still_settling["source_count_min"] == 112, (
+        "The recorded spread is the auditable quantity — 112 rows at 3 days old."
+    )
+
+    assert result[_day(1)]["probes_disagreed"] is False, (
+        "A day every probe agreed on must not be flagged as contested."
+    )
+    # probe_count is stored rather than inferred from the constant, so a row
+    # captured under a different N stays interpretable after the constant moves.
+    assert all(r["probe_count"] == SOURCE_COUNT_PROBES for r in result.values())
+
+
+def test_a_day_only_one_replica_has_indexed_is_not_reported_as_unanimous():
+    """A day missing from a probe's response is that probe's ZERO.
+
+    Without the padding this is the degradation that matters most: on
+    2026-08-27 the 1-day-old day was `0` on the stale replica and `416` on the
+    fresh one. Comparing only the probes that saw it would call 416 unanimous
+    and record a settling day as settled.
+    """
+    key = _day(1).replace("-", "_")
+    result = {r["target_date"]: r
+              for r in fetch_source_counts_window(
+                  days=2, get=FakeGet([[]] * 10 + [_grouped(**{key: 416})]))}
+
+    assert result[_day(1)]["source_count"] == 416
+    assert result[_day(1)]["source_count_min"] == 0
+    assert result[_day(1)]["probes_disagreed"] is True
+    assert result[_day(1)]["probe_count"] == SOURCE_COUNT_PROBES
+
+
+def test_probe_count_is_justified_by_the_measured_replica_split():
+    """N is arithmetic, not a round number, and the arithmetic is checked here.
+
+    A day's captured count is wrong exactly when EVERY probe lands on the stale
+    replica, at probability P(stale)^N. Measured 2026-08-27 the stale share was
+    0.53 pooled over 98 requests and 0.65 in the worst single run. The old N of
+    5 left an 11.6% miss rate at that worst split; the requirement is under 1%,
+    and N must be the smallest value meeting it — every extra probe is a round
+    trip against a public API bought for margin already in hand.
+    """
+    worst_observed_stale_share = 0.65
+    assert worst_observed_stale_share ** 5 > 0.01, (
+        "Guard against a silent revert to N=5: at the worst observed split it "
+        "mis-captures roughly one day in nine."
+    )
+    assert worst_observed_stale_share ** SOURCE_COUNT_PROBES < 0.01, (
+        f"N={SOURCE_COUNT_PROBES} must hold P(every probe stale) under 1% at the "
+        f"worst measured split — see ADR 016."
+    )
+    assert worst_observed_stale_share ** (SOURCE_COUNT_PROBES - 1) > 0.01, (
+        f"N={SOURCE_COUNT_PROBES} must be the SMALLEST value that does, or the "
+        f"pipeline is paying wall-clock and API calls for nothing."
+    )
+
+
 def test_source_count_failure_fails_loudly_after_the_bounded_retries():
     calls = []
 

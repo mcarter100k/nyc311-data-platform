@@ -36,15 +36,26 @@ with_resolution_days as (
 
 ),
 
--- Step 3: classify complaint_type into 21 operational categories + 'Other'.
+-- Step 3: classify complaint_type into 21 operational categories.
 -- Order matters (first match wins); the '%tree%' guard and the Animals /
 -- Construction / Environmental orderings are load-bearing — see dbt/.
+--
+-- The catch-all is 'Undecodable', not 'Other'. No rule assigns 'Other', so the
+-- bucket was by construction "no rule matched" — 189 of 189 rows on the local
+-- load carried a real complaint_type with no rule for it (Green Infrastructure,
+-- E-Scooter, LinkNYC, …), i.e. 100% decoder miss and 0% genuine other. Missing
+-- input gets its own branch first so the ELSE means one thing. See dbt/.
 
 with_complaint_category as (
 
     select
         *,
         case
+            -- ── Input missing (NOT a decode failure) ─────────────────────
+            when complaint_type is null
+              or trim(complaint_type) = ''
+                then 'Unspecified'
+
             -- ── Noise ────────────────────────────────────────────────────
             when complaint_type ilike '%noise%'
                 then 'Noise'
@@ -146,7 +157,8 @@ with_complaint_category as (
               or complaint_type ilike '%bridge condition%'
               or complaint_type ilike '%obstruction%'
               -- Snow/ice clearance is unobservable in a summer window; the
-              -- rule is declared now so winter volume cannot land in 'Other'.
+              -- rule is declared now so winter volume cannot land in the
+              -- 'Undecodable' catch-all.
               or complaint_type ilike '%snow%'
                 then 'Street Condition'
 
@@ -227,7 +239,9 @@ with_complaint_category as (
               or complaint_type ilike '%tattooing%'
                 then 'Consumer & Business'
 
-            else 'Other'
+            -- No rule matched a complaint_type that WAS supplied. Not 'Other'
+            -- — nothing here decided this belongs with the long tail.
+            else 'Undecodable'
         end                                                                     as complaint_category
 
     from with_resolution_days
@@ -237,12 +251,21 @@ with_complaint_category as (
 -- Step 4: classify how the request was closed, from the templated
 -- resolution_description text. 'Closed' != 'fixed' — see dbt/ for the full
 -- rationale and the ordering constraints.
+--
+-- TWO catch-alls, not one. Both ends of this CASE used to emit 'Unspecified',
+-- merging "the source stated no resolution" (14,185 rows) with "the source
+-- stated one and no rule matched" (8,330 rows — 7.34% of every row carrying
+-- resolution text, and 8.45% of all CLOSED requests, each one a FALSE in
+-- is_actioned). 'Unspecified' now means only the first; 'Undecodable' means the
+-- decoder failed, and fct_daily_volume publishes its count beside every
+-- percentage taken over the same rows. See dbt/.
 
 with_closure_type as (
 
     select
         *,
     case
+        -- Input missing. A decoded verdict, not a decode failure.
         when resolution_description is null
           or trim(resolution_description) = ''
           or upper(trim(resolution_description)) = 'N/A'                    then 'Unspecified'
@@ -350,7 +373,9 @@ with_closure_type as (
           or resolution_description ilike '%has requested the department of%'
           or resolution_description ilike '%out of jurisdiction%'           then 'Referred Elsewhere'
 
-        else 'Unspecified'
+        -- Resolution text WAS supplied and no rule above understood it. Never
+        -- 'Unspecified': the source specified something; this decoder failed.
+        else 'Undecodable'
     end                                                                                as closure_type
 
     from with_complaint_category

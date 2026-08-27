@@ -17,6 +17,12 @@ count went down and the coverage went up.
     every variant in the shared mapping plus unrecognized and null inputs,
     which must become UNSPECIFIED rather than null.
 
+  test_unrecognized_borough_is_not_the_unspecified_bucket
+    The unrecognized_borough DQ numerator must count decoder failures only.
+    Counting the UNSPECIFIED bucket instead reported the source's own literal
+    'Unspecified' — a variant the shared seed maps on purpose — as a failure:
+    160 rows on the local load against a true count of zero.
+
   test_resolution_days_calculation
     The primary SLA measure. Same-day closes must be 0 (not null), open
     requests null (not 0), and closed-before-created must produce a negative
@@ -62,6 +68,7 @@ from silver_transformations import (  # noqa: E402
     parse_timestamps,
     select_quarantine,
     standardize_borough,
+    unrecognized_borough_mask,
 )
 
 
@@ -93,6 +100,47 @@ def test_borough_standardization():
     assert out["borough"].notna().all(), (
         "A null borough breaks the NOT NULL contract on dim_location."
     )
+
+
+def test_unrecognized_borough_is_not_the_unspecified_bucket():
+    """The DQ numerator must count decoder failures, and only those.
+
+    Standardization is lossy on purpose — 'missing', 'unrecognized', and the
+    source's own literal 'Unspecified' all become the string 'UNSPECIFIED' so
+    dim_location's NOT NULL contract holds. The unrecognized_borough check used
+    to count that bucket, which made it report all three as decode failures.
+
+    Measured consequence on the local load: 160 rows reported unrecognized, ALL
+    of them the source's literal 'Unspecified' — a variant the shared seed maps
+    deliberately — and the true unrecognized count was zero. A published
+    0.125% failure rate for a check with nothing to report, and one that could
+    never have raised an alarm anyway, since a real new spelling would have
+    nudged 160 to 161.
+    """
+    df = pd.DataFrame({
+        "borough": [
+            "Brooklyn",       # recognized variant
+            "Unspecified",    # RECOGNIZED: the source's own explicit sentinel
+            None,             # missing, not a decode failure
+            "   ",            # blank, not a decode failure
+            "Woodside",       # the only real decode failure here
+        ],
+        "unique_key": ["a", "b", "c", "d", "e"],
+        "resolution_days": pd.array([1, 1, 1, 1, 1], dtype="Int64"),
+    })
+    derived = standardize_borough(df)
+
+    assert list(unrecognized_borough_mask(derived)) == [False, False, False, False, True], (
+        "Only a SUPPLIED borough that matches no variant is a decode failure."
+    )
+    assert (derived["borough"] == "UNSPECIFIED").sum() == 4, (
+        "Four of the five still collapse to UNSPECIFIED — which is exactly why "
+        "the mask cannot be derived from the standardized column."
+    )
+
+    rows = compute_dq_metrics(df, derived, run_date="2024-01-01")
+    boro = {r["check_name"]: r for r in rows}["unrecognized_borough"]
+    assert (boro["records_failed"], boro["records_checked"]) == (1, 5)
 
 
 def test_borough_map_comes_from_the_shared_csv():
@@ -228,7 +276,12 @@ def test_data_quality_metrics():
     deduped = pd.DataFrame({
         "unique_key":      ["a", None, "d"],
         "resolution_days": pd.array([-1, 3, None], dtype="Int64"),         # 1 invalid
-        "borough":         ["BROOKLYN", "UNSPECIFIED", "QUEENS"],          # 1 unrecognized
+        "borough":         ["BROOKLYN", "UNSPECIFIED", "QUEENS"],
+        # The RAW spellings behind those canonical names. 'Woodside' matches no
+        # variant and is the one decode failure; 'UNSPECIFIED' is a recognized
+        # variant and must NOT be counted — see
+        # test_unrecognized_borough_is_not_the_unspecified_bucket.
+        "_borough_raw":    ["Brooklyn", "Woodside", "Queens"],              # 1 unrecognized
     })
     rows = compute_dq_metrics(bronze, deduped, run_date="2024-01-01")
     by = {r["check_name"]: r for r in rows}

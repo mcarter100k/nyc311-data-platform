@@ -57,16 +57,28 @@ the Python library, not a CLI binary. Query it from Python instead —
 import duckdb
 con = duckdb.connect("local/data/nyc311_local.duckdb", read_only=True)
 
-# Action rate. The headline denominator is CLOSED requests, not all requests:
+# Action rate. The headline denominator is CLOSED requests, not all requests —
+# and it has a known floor: rows whose resolution text the closure_type decoder
+# could not read are is_actioned = FALSE, so measure that too rather than
+# quoting the rate alone.
 con.sql("""
-    select count(*) filter (where is_actioned) * 1.0 / count(*) as pct_actioned_of_closed
+    select count(*) filter (where is_actioned) * 1.0 / count(*)                as pct_actioned_of_closed,
+           count(*) filter (where closure_type = 'Undecodable') * 1.0 / count(*) as pct_undecodable
     from gold.fct_service_requests
     where is_resolved
 """).show()
 
-# gold.fct_daily_volume carries pct_actioned too, but over ALL rows — open
-# requests included — so it is a different, lower number. Same column name,
-# different denominator; check which one a chart is using.
+# gold.fct_daily_volume publishes pct_actioned_within_window at (day, borough,
+# category), with undecodable_closure_requests beside it for the same reason.
+# Every rate on that table is NULL unless is_denominator_closed — a rate over
+# requests created recently is right-censored, so it is suppressed rather than
+# printed. On a 7-day --live mirror that is every row: a 14-day load cannot
+# answer a 30-day question, and n/a is the honest answer.
+con.sql("""
+    select is_denominator_closed, count(*) as groups,
+           count(pct_closed_within_window) as groups_publishing_a_rate
+    from gold.fct_daily_volume group by 1
+""").show()
 
 # Recurrence is not in fct_daily_volume at all; it has its own fact table,
 # with the two guards (chronic locations, observation time) as columns:
@@ -111,9 +123,11 @@ This platform is operated, not just built. It runs daily against a live API, it 
 | SLO | Measures | Threshold |
 |---|---|---|
 | **SLO-1 freshness** | age of the newest `_loaded_at` in `gold.fct_service_requests` | < 26 hours — one daily cycle plus 2h grace. Measures *our* pipeline's liveness, not source staleness |
-| **SLO-2 completeness** | rows we loaded vs rows the city actually **published**, for every day the load shows as **complete** | ≥ 98% on every such day. The source's per-day counts are captured at fetch time; the 2% absorbs documented quarantine and dedup removals |
+| **SLO-2 completeness** | rows we loaded vs rows the city actually **published**, for every day the load shows as **complete** | ≥ 98% on every such day. The source's per-day counts are captured at fetch time; the 2% absorbs documented quarantine and dedup removals *and* the source's settling lag |
 
 The population is the load's own completeness verdict, not an offset from the clock: the source's publish lag is not a constant (23.3 h, 23.5 h, then 49.0 h measured within one week), so any fixed window is a whole day sometimes and a two-hour stub other times — [ADR 015](docs/adr/015-slo2-population-is-complete-days.md).
+
+The 2% is mostly not ours. Socrata answers from two replicas, one behind the other by an amount that shrinks with a day's age and reaches zero at 7 days, so a day still settling can be reconciled against a fresher count than the load was served. Quarantine and dedup account for up to 0.24% of the budget; the settling lag accounts for up to 0.96% — [ADR 016](docs/adr/016-source-settling-horizon.md).
 
 The executable queries live in [scripts/slo/](scripts/slo/); CI fails if `docs/SLO.md` and those files drift apart.
 
@@ -168,13 +182,13 @@ Gold is a Kimball star: <!--claim:fct_models-->4<!--/claim--> fact tables, <!--c
 
 ## Test Suite
 
-Two populations, deliberately not summed: **<!--claim:test_count-->235<!--/claim--> pytest tests** that need no cloud account, and **<!--claim:dbt_test_count-->128<!--/claim--> dbt data tests (<!--claim:dbt_generic_tests-->119<!--/claim--> generic + <!--claim:dbt_singular_tests-->9<!--/claim--> singular)** that run against the warehouse during `dbt build`. Both counts are recomputed in CI — the pytest one from collection, the dbt one from the parsed manifest. The dbt figure was a bare literal until 2026-08-26 and had rotted twice through merges, silently, while every marker-guarded number beside it stayed correct.
+Two populations, deliberately not summed: **<!--claim:test_count-->245<!--/claim--> pytest tests** that need no cloud account, and **<!--claim:dbt_test_count-->132<!--/claim--> dbt data tests (<!--claim:dbt_generic_tests-->121<!--/claim--> generic + <!--claim:dbt_singular_tests-->11<!--/claim--> singular)** that run against the warehouse during `dbt build`. Both counts are recomputed in CI — the pytest one from collection, the dbt one from the parsed manifest. The dbt figure was a bare literal until 2026-08-26 and had rotted twice through merges, silently, while every marker-guarded number beside it stayed correct.
 
 | Tier | Count | What it proves |
 |---|---|---|
-| **Structural** | <!--claim:structural_test_count-->164<!--/claim--> | Configuration correctness — schema resolution, incremental strategy, DAG lineage, freshness target, Terraform validity, the LOADER-has-no-TRUNCATE contract, a relationships test on every fact foreign key. Also the documentation guards' own failure modes ([tests/test_doc_guards.py](tests/test_doc_guards.py)): each check in `scripts/check_claims.py` is exercised against a synthetic tree with the thing it guards broken, because a check that cannot fail reports green and is read as evidence — this repo has shipped three of those by accident |
-| **Unit** | <!--claim:unit_test_count-->8<!--/claim--> | Silver transformation *logic* ([local/silver_transformations.py](local/silver_transformations.py)) against hand-built fixtures |
-| **Behavioral** | <!--claim:behavioral_test_count-->63<!--/claim--> | Gold *semantics* — builds the dbt project twice on seeded DuckDB and asserts on output rows: watermark lookback, SCD2 point-in-time join, update propagation, and dimension retention when Silver's rolling window moves past a member the fact still references. Also import health for every module in [local/](local/), which needs the real runtime dependencies this tier installs |
+| **Structural** | <!--claim:structural_test_count-->165<!--/claim--> | Configuration correctness — schema resolution, incremental strategy, DAG lineage, freshness target, Terraform validity, the LOADER-has-no-TRUNCATE contract, a relationships test on every fact foreign key. Also the documentation guards' own failure modes ([tests/test_doc_guards.py](tests/test_doc_guards.py)): each check in `scripts/check_claims.py` is exercised against a synthetic tree with the thing it guards broken, because a check that cannot fail reports green and is read as evidence — this repo has shipped three of those by accident |
+| **Unit** | <!--claim:unit_test_count-->9<!--/claim--> | Silver transformation *logic* ([local/silver_transformations.py](local/silver_transformations.py)) against hand-built fixtures |
+| **Behavioral** | <!--claim:behavioral_test_count-->71<!--/claim--> | Gold *semantics* — builds the dbt project twice on seeded DuckDB and asserts on output rows: watermark lookback, SCD2 point-in-time join, update propagation, and dimension retention when Silver's rolling window moves past a member the fact still references. Also import health for every module in [local/](local/), which needs the real runtime dependencies this tier installs |
 
 The structural tier is the largest and the weakest, and it is worth saying so: it catches config drift and silent contract violations in seconds, but **a model can be perfectly configured and still compute the wrong number.** That is what the other two tiers are for.
 
@@ -205,6 +219,7 @@ ADRs document the reasoning behind major technology choices: the alternatives we
 | [013](docs/adr/013-no-source-freshness-slo.md) | No source-freshness SLO — gate on what we control, warn on what we don't | A proposed third SLO was measured and rejected; source staleness stays a warning |
 | [014](docs/adr/014-transform-before-load.md) | Transform before load — Bronze is the raw file, not a warehouse table | The raw round-trip through DuckDB is gone; Bronze is a view, and the Bronze→Silver hop is honestly ETL |
 | [015](docs/adr/015-slo2-population-is-complete-days.md) | SLO-2's population is complete days, chosen by the data — not an offset from the clock | The publish lag is not a constant, so no fixed window works; the gate reads `int_load_completeness` and zero is never a pass |
+| [016](docs/adr/016-source-settling-horizon.md) | NYC 311 data settles after 7 days — the replica spread is a recency lag, not noise | The 17% spread is one replica running behind, not noise; SLO-2's real loss budget is 1.20%, not 0.24% |
 
 ---
 
@@ -243,8 +258,8 @@ terraform/      Snowflake foundation — 5 schemas, 4 roles, grant matrix (valid
 terraform/github/  this repo's own infrastructure — labels, branch protection, Pages (applied)
 config/         borough_variants.csv — one mapping, read by Python and dbt alike
 scripts/        SLO checks, claim checker, model-drift guard
-docs/           ARCHITECTURE · SLO · CLAIMS · BACKLOG · adr/ (<!--claim:adr_count-->15<!--/claim-->) · postmortems/
-tests/          <!--claim:test_count-->235<!--/claim--> pytest tests across three tiers
+docs/           ARCHITECTURE · SLO · CLAIMS · BACKLOG · adr/ (<!--claim:adr_count-->16<!--/claim-->) · postmortems/
+tests/          <!--claim:test_count-->245<!--/claim--> pytest tests across three tiers
 ```
 
 ---

@@ -61,15 +61,32 @@ with_resolution_days as (
 
 -- ── Step 3: Classify complaint types into categories ─────────────────────────
 -- The 400+ raw complaint_type values are grouped into 21 operational categories
--- (plus 'Other') for dashboard filtering and aggregate reporting. Categories
--- follow how the city is actually organised — HPD housing conditions, DOB
--- construction, DSNY waste, TLC vehicles — so a category maps to an
--- accountable owner, not just a keyword.
+-- for dashboard filtering and aggregate reporting. Categories follow how the
+-- city is actually organised — HPD housing conditions, DOB construction, DSNY
+-- waste, TLC vehicles — so a category maps to an accountable owner, not just a
+-- keyword.
+--
+-- THE CATCH-ALL IS NAMED FOR WHAT IT IS. This bucket was called 'Other', which
+-- reads as a decoded verdict — "we looked and this belongs with the long tail".
+-- It is nothing of the kind: the CASE has no rule that assigns 'Other', so the
+-- bucket is by construction "no rule matched", i.e. a decoder miss. Measured on
+-- the local load, 189 of 189 'Other' rows carried a non-null, non-blank
+-- complaint_type that simply had no rule (Green Infrastructure, E-Scooter,
+-- LinkNYC, Ferry Inquiry, …) — the bucket was 100% decoder failure and 0%
+-- genuine other. A reader cannot qualify a percentage they cannot see, so the
+-- label now says 'Undecodable'.
+--
+-- MISSING INPUT IS SPLIT OUT FIRST, for the same reason. A null or blank
+-- complaint_type makes every ILIKE below return NULL and falls to the ELSE, so
+-- without the leading branch "the source told us nothing" and "we could not
+-- decode what the source told us" would land in one bucket — which is exactly
+-- the defect this pass fixes in closure_type at Step 4. Zero rows hit it on the
+-- local load; the branch exists so the ELSE means one thing and only one thing.
 --
 -- ORDER MATTERS: CASE is first-match-wins and these patterns overlap. Each
 -- ordering constraint is commented at the rule that depends on it; the
 -- assert_complaint_classification_coverage singular test fails the build if
--- 'Other' ever exceeds 5% of rows, so a broken rule cannot silently dump
+-- 'Undecodable' ever exceeds 5% of rows, so a broken rule cannot silently dump
 -- traffic into the catch-all again (it was 36% of all rows before this pass).
 
 with_complaint_category as (
@@ -77,6 +94,11 @@ with_complaint_category as (
     select
         *,
         case
+            -- ── Input missing (NOT a decode failure) ─────────────────────
+            when complaint_type is null
+              or trim(complaint_type) = ''
+                then 'Unspecified'
+
             -- ── Noise ────────────────────────────────────────────────────
             when complaint_type ilike '%noise%'
                 then 'Noise'
@@ -178,7 +200,8 @@ with_complaint_category as (
               or complaint_type ilike '%bridge condition%'
               or complaint_type ilike '%obstruction%'
               -- Snow/ice clearance is unobservable in a summer window; the
-              -- rule is declared now so winter volume cannot land in 'Other'.
+              -- rule is declared now so winter volume cannot land in the
+              -- 'Undecodable' catch-all.
               or complaint_type ilike '%snow%'
                 then 'Street Condition'
 
@@ -259,7 +282,9 @@ with_complaint_category as (
               or complaint_type ilike '%tattooing%'
                 then 'Consumer & Business'
 
-            else 'Other'
+            -- No rule matched a complaint_type that WAS supplied. Not 'Other'
+            -- — nothing here decided this belongs with the long tail.
+            else 'Undecodable'
         end                                                                     as complaint_category
 
     from with_resolution_days
@@ -279,12 +304,40 @@ with_complaint_category as (
 --
 -- ORDER MATTERS (first match wins) and the constraints are commented inline.
 -- The largest judgment call is documented at 'Resolved on Scene'.
+--
+-- TWO CATCH-ALLS, NOT ONE — and this is the correction that matters most on
+-- this table. Both ends of this CASE used to emit 'Unspecified', so one label
+-- covered two unrelated facts:
+--
+--   the source stated no resolution at all      14,185 rows (null / '' / 'N/A')
+--   the source stated one and no rule matched    8,330 rows
+--
+-- measured on the local load, where the merged bucket held 22,515 rows (17.6%
+-- of the table). The second group is a decoder miss and it is not small: 8,330
+-- rows is 7.34% of every row carrying resolution text, and 7,572 rows — 8.45%
+-- of all CLOSED requests — where the miss flows straight into is_actioned as a
+-- FALSE. The misses are not noise either; the largest strings in it include
+-- "NYC Parks performed the work necessary to correct the condition." (310 rows,
+-- plainly Work Performed) and DOT's "…has completed the request or corrected
+-- the condition." (141 rows), which the '%was corrected%' rule cannot see.
+--
+-- So pct_actioned has a decode-shaped floor under it, and while both groups
+-- shared a label no consumer could measure that floor. They are now separate
+-- values, and fct_daily_volume publishes the 'Undecodable' count beside every
+-- percentage computed over the same rows.
+--
+-- 'Unspecified' keeps its original meaning — the decoder RAN and correctly
+-- determined there is no resolution text to read. That is a real outcome.
+-- 'Undecodable' means the decoder failed. Widening the rules is the fix for the
+-- second bucket; naming it is the prerequisite for anyone noticing it needs one.
 
 with_closure_type as (
 
     select
         *,
     case
+        -- Input missing. A decoded verdict, not a decode failure: the source
+        -- supplied no resolution text, and that is worth knowing on its own.
         when resolution_description is null
           or trim(resolution_description) = ''
           or upper(trim(resolution_description)) = 'N/A'                    then 'Unspecified'
@@ -392,7 +445,9 @@ with_closure_type as (
           or resolution_description ilike '%has requested the department of%'
           or resolution_description ilike '%out of jurisdiction%'           then 'Referred Elsewhere'
 
-        else 'Unspecified'
+        -- Resolution text WAS supplied and no rule above understood it. Never
+        -- 'Unspecified': the source specified something; this decoder failed.
+        else 'Undecodable'
     end                                                                                as closure_type
 
     from with_complaint_category
