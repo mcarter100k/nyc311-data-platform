@@ -2,15 +2,22 @@
 {#
     Publish step of the write-audit-publish pattern.
 
-    The Airflow dbt_build task runs:
+    NOT INVOKED BY ANYTHING IN THIS REPOSITORY — it is a Snowflake-target
+    operation with no caller. This comment used to open "The Airflow dbt_build
+    task runs: dbt build --vars ...", which was false: that task runs
+    `local/local_runner.py --only 4` against DuckDB, which has no ALTER SCHEMA
+    SWAP and no audit_suffix branch in its copy of generate_schema_name. Run
+    the two steps below by hand against a Snowflake target.
+
+    Step one builds AND tests every model in GOLD_AUDIT:
 
         dbt build --vars '{"audit_suffix": "_audit"}'
 
-    which builds AND tests every model in GOLD_AUDIT (see generate_schema_name).
-    Nothing is published yet — if any model or test fails, the task fails and
-    GOLD is untouched, so BI consumers never see unvalidated data.
+    (see generate_schema_name). Nothing is published yet — if any model or test
+    fails, the command fails and GOLD is untouched, so BI consumers never see
+    unvalidated data.
 
-    This operation then publishes atomically:
+    Step two publishes atomically:
 
         dbt run-operation publish_gold
 

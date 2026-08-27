@@ -424,29 +424,161 @@ def test_every_model_has_at_least_one_test(tests_by_model, model_name):
     )
 
 
-# int_service_requests_cleaned is deliberately absent: uniqueness is asserted
-# at the boundary (staging) and on the published artifact (the fact). The
-# pass-through intermediate layer cannot introduce duplicates, and re-testing
-# it costs two extra full-table scans per dbt test run with no added signal.
-@pytest.mark.parametrize("model_name", ["stg_service_requests", "dim_agency",
-                                         "dim_date", "dim_location",
-                                         "fct_service_requests", "fct_daily_volume"])
+# ── Primary key coverage ──────────────────────────────────────────────────────
+#
+# The declared grain of every model: the column, or tuple of columns, whose
+# uniqueness the model guarantees. This is the thing the tests below verify is
+# actually asserted in the warehouse — so it has to be written down. Reading it
+# out of test NAMES is what made the previous version of this guard inert.
+#
+# Every model in the manifest must appear here or in PRIMARY_KEY_EXEMPTIONS;
+# test_every_model_declares_a_primary_key_or_an_exemption enforces that, so a
+# new model cannot slip past this section by simply not being listed.
+PRIMARY_KEYS = {
+    "stg_service_requests": ("service_request_id",),
+    "stg_data_quality_log": ("run_date", "check_name"),
+    "stg_quarantine": ("unique_key",),
+    "int_load_completeness": ("load_day",),
+    "dim_agency": ("agency_key",),
+    "dim_date": ("date_id",),
+    "dim_location": ("location_id",),
+    "fct_service_requests": ("service_request_id",),
+    "fct_daily_volume": ("daily_volume_id",),
+    "fct_data_quality": ("run_date", "check_name"),
+    "fct_complaint_recurrence": ("service_request_id",),
+}
+
+# Exemptions carry their REASON, not just their name. An exemption with no
+# stated reason is indistinguishable from an oversight six months later, and a
+# bare list of names is how exemptions accumulate silently — each new one added
+# because the list already had entries.
+PRIMARY_KEY_EXEMPTIONS = {
+    "int_service_requests_cleaned": (
+        "Uniqueness is asserted at the boundary (stg_service_requests.unique_key) "
+        "and on the published artifact (fct_service_requests.service_request_id). "
+        "This layer is a row-preserving projection — it adds derived columns and "
+        "never joins or unions — so it cannot introduce duplicates, and testing "
+        "it costs two extra full-table scans per dbt test run for no new signal."
+    ),
+}
+
+
+def _test_type(test_node):
+    """The dbt test TYPE ('unique', 'not_null', 'relationships', ...).
+
+    This is the field the previous version of this guard should have read.
+    Generic tests carry test_metadata.name; singular tests (the hand-written
+    .sql files under dbt/tests/) carry no test_metadata at all and return None.
+    """
+    return (test_node.get("test_metadata") or {}).get("name")
+
+
+def _tested_columns(test_node):
+    """The set of columns a test node covers, lowercased.
+
+    Single-column generic tests set column_name. dbt_utils.unique_combination_
+    of_columns sets column_name to null and lists its columns in
+    test_metadata.kwargs.combination_of_columns.
+    """
+    column = test_node.get("column_name")
+    if column:
+        return {column.lower()}
+    kwargs = (test_node.get("test_metadata") or {}).get("kwargs") or {}
+    combination = kwargs.get("combination_of_columns") or []
+    return {c.lower() for c in combination}
+
+
+def _asserts_uniqueness_of(test_node, key_columns):
+    """Does this test node prove `key_columns` is unique?
+
+    Two legitimate shapes, both accepted:
+
+      unique                          on a column of the key
+      unique_combination_of_columns   over the key's columns
+
+    Subset, not equality, and that is deliberate rather than sloppy: uniqueness
+    of any SUBSET of a key implies uniqueness of the whole key. A `unique` test
+    on run_date alone is a strictly stronger claim than one on
+    (run_date, check_name), so refusing it would be a false negative. The
+    subset must be non-empty, which is what stops a singular test (no columns
+    at all) from matching vacuously.
+    """
+    if _test_type(test_node) not in ("unique", "unique_combination_of_columns"):
+        return False
+    covered = _tested_columns(test_node)
+    return bool(covered) and covered <= key_columns
+
+
+def test_every_model_declares_a_primary_key_or_an_exemption(models):
+    """
+    PRIMARY_KEYS + PRIMARY_KEY_EXEMPTIONS must cover the manifest exactly.
+
+    Without this, the key guard below is scoped by a hand-written list and a new
+    model escapes it by never being added — which is precisely how the previous
+    six-model list came to omit five of the twelve models in the project.
+    """
+    declared = set(PRIMARY_KEYS)
+    exempt = set(PRIMARY_KEY_EXEMPTIONS)
+    actual = set(models.keys())
+
+    overlap = declared & exempt
+    assert not overlap, (
+        f"Model(s) both declare a primary key and claim an exemption: {sorted(overlap)}. "
+        f"Pick one."
+    )
+    assert declared | exempt == actual, (
+        f"Primary-key coverage is out of sync with the compiled manifest.\n"
+        f"  no key declared and not exempt: {sorted(actual - declared - exempt)}\n"
+        f"  listed but not a model:         {sorted((declared | exempt) - actual)}"
+    )
+    for name, reason in PRIMARY_KEY_EXEMPTIONS.items():
+        assert len(reason.strip()) >= 40, (
+            f"The primary-key exemption for {name} states no substantive reason. "
+            f"An exemption without one is indistinguishable from an oversight."
+        )
+
+
+@pytest.mark.parametrize("model_name", sorted(PRIMARY_KEYS))
 def test_primary_key_has_unique_and_not_null(tests_by_model, model_name):
     """
-    Every model's surrogate key must have both unique and not_null tests.
-    A surrogate key with duplicates breaks every join downstream.
-    A null surrogate key means the row is invisible to any FK lookup.
+    Every model's declared primary key must be proven unique AND not null.
+    A key with duplicates breaks every join downstream. A null key means the row
+    is invisible to any FK lookup.
+
+    Matched on the manifest's STRUCTURED test data — test_metadata.name for the
+    test's type, column_name / kwargs for the columns it covers — not on
+    substrings of a generated test name. Name matching is why this guard could
+    not fail: `any(name.startswith("unique_"))` is satisfied by the unique test
+    on fct_service_requests.UNIQUE_KEY, so deleting the real uniqueness test on
+    service_request_id left the guard green (verified by mutation). The same
+    held for dim_date, whose PK date_id was shadowed by the unique test on
+    full_date, and for every not_null check on this list — dim_location has
+    three other not_null tests, any one of which satisfied a check that never
+    looked at which column it named.
     """
-    test_names = [t["name"] for t in tests_by_model.get(model_name, [])]
-    # Prefix match, not substring: a substring check is satisfied by the
-    # NOT_NULL test on any column merely NAMED "unique_key"
-    # (not_null_fct_service_requests_unique_key contains "unique") — deleting
-    # the real uniqueness test would still pass. Manifest test names are
-    # "<test_type>_<model>_<column>", so the prefix is unambiguous.
-    has_unique = any(t.startswith("unique_") for t in test_names)
-    has_not_null = any(t.startswith("not_null_") for t in test_names)
-    assert has_unique, f"{model_name} is missing a 'unique' test on its primary key."
-    assert has_not_null, f"{model_name} is missing a 'not_null' test on its primary key."
+    key = set(PRIMARY_KEYS[model_name])
+    tests = tests_by_model.get(model_name, [])
+
+    unique_tests = [t for t in tests if _asserts_uniqueness_of(t, key)]
+    assert unique_tests, (
+        f"{model_name}: nothing in the manifest asserts that its primary key "
+        f"({', '.join(sorted(key))}) is unique.\n"
+        f"  uniqueness tests on this model cover: "
+        f"{sorted(sorted(_tested_columns(t)) for t in tests if _test_type(t) in ('unique', 'unique_combination_of_columns')) or 'nothing'}\n"
+        f"  A unique test on a DIFFERENT column does not make the key unique."
+    )
+
+    not_null_columns = set()
+    for t in tests:
+        if _test_type(t) == "not_null":
+            not_null_columns |= _tested_columns(t)
+    missing = sorted(key - not_null_columns)
+    assert not missing, (
+        f"{model_name}: primary key column(s) {missing} have no not_null test. "
+        f"A null key column makes the row invisible to every FK lookup into "
+        f"this model.\n"
+        f"  not_null tests on this model cover: {sorted(not_null_columns) or 'nothing'}"
+    )
 
 
 # agency_id and location_id used to be excused from relationships tests on the
