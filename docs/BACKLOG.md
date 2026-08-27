@@ -97,7 +97,29 @@ semantics and destroyed every comment.
 
 ---
 
-## SLO-2 measures T-1, and T-1 may be structurally incomplete at 10:00 UTC
+## ~~SLO-2 measures T-1, and T-1 may be structurally incomplete at 10:00 UTC~~ — RESOLVED 2026-08-27
+
+**Resolved, and not by any of the three options this item listed.** The item
+asked whether to move the window to T-2, keep T-1, or move the schedule. All
+three assume the answer is an offset from the clock, and a fourth measurement
+falsified that assumption: on **2026-08-27 03:03 UTC** the newest row at the
+source was **2026-08-25 02:06 — a 49.0 h lag**, with a publish 1.4 h earlier
+that carried nothing new. Against the 23.3 h and 23.5 h readings below, the lag
+is **not a constant**, so T-2 would have been a whole day on the 25th and 26th
+and a 358-row stub on the 27th.
+
+SLO-2's population is now every day `int_load_completeness` marks complete — the
+load decides, the clock does not — and the source-count capture covers the whole
+fetch window rather than one day, which also makes a stub day re-reconcilable
+once it fills in. The `WHEN source = 0 THEN true` branch, which turned an empty
+denominator into a pass, is gone. See
+[ADR 015](adr/015-slo2-population-is-complete-days.md).
+
+The **unexplained 04:33 reading** recorded below is still unexplained, and it no
+longer blocks anything: the new design does not depend on the lag having any
+particular value. It is left standing for the same reason it was written down.
+
+The evidence that produced this item is preserved unchanged below.
 
 **Evidence, 2026-08-20.** The source backfilled after the 2026-08-18 stall, and
 the recovery exposes a publishing rhythm:
@@ -164,10 +186,17 @@ that the reconciliation makes it safe. (c) Move the schedule later than the
 source's publish — ineffective if the lag is ~23.5 h, since no same-day hour
 helps.
 
-**Status:** two consistent post-recovery observations plus a measured
-mechanism, against one recorded contradiction. The postmortem's bar was
-*several* normal days; two is not several, and the unexplained 04:33 reading is
-a live reason not to act yet. Keep accumulating.
+**Status (superseded 2026-08-27, see the resolution at the top of this item):**
+two consistent post-recovery observations plus a measured mechanism, against one
+recorded contradiction. The postmortem's bar was *several* normal days; two is
+not several, and the unexplained 04:33 reading is a live reason not to act yet.
+Keep accumulating.
+
+**What accumulating actually produced.** A third measurement at 49.0 h, which
+did not settle the "is T-1 structurally a stub" question — it dissolved it. The
+right lesson is narrower than "wait for more data": the options list was drawn
+from a single family of answers, and no amount of further observation inside
+that family would have exposed that the family was wrong.
 
 ---
 
