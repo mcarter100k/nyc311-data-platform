@@ -21,7 +21,7 @@ flowchart TD
     subgraph GOLD["Gold — dbt"]
         STG["staging<br/><i>rename + cast only</i>"]
         INT["intermediate<br/><i>business rules: categories, closure types</i>"]
-        MRT["marts<br/><i>3 facts · 3 dims · SCD2 snapshot</i>"]
+        MRT["marts<br/><i>4 facts · 3 dims · SCD2 snapshot</i>"]
     end
 
     OUT["BI / SQL<br/><i>DuckDB locally · Snowflake in the spec</i>"]
@@ -98,30 +98,56 @@ Silver is rebuilt in full from the current window each run (`CREATE OR REPLACE`)
 ---
 
 ### Gold — dbt models
-dbt builds the full star schema from Silver:
+dbt builds the full star schema from Silver. The list below is checked against the
+dbt manifest by `scripts/check_claims.py` — a model that exists but is not listed
+here fails the build, and so does a listed model that no longer exists. It fell
+three models behind before that check existed.
+
+<!--model-inventory-->
+**staging** — one view per source table, rename and cast only:
 
 - `stg_service_requests` — renames and casts columns, generates surrogate keys, maps `_silver_timestamp` as the incremental watermark
-- `int_service_requests_cleaned` — applies business classification (complaint categories, borough normalization)
-- `fct_service_requests` — the core fact table; incremental MERGE on `unique_key` with a 1-hour lookback buffer; clustered on `cast(created_date as date)` for Snowflake scan efficiency
-- `fct_daily_volume` — pre-aggregated complaint counts by day, borough, and category for fast dashboard queries
+- `stg_quarantine` — passthrough over the Silver quarantine table, so `fct_service_requests` can delete rejected rows without a mart referencing a source
+- `stg_data_quality_log` — passthrough over the per-run Silver check results
+
+**intermediate** — business rules, in SQL, once:
+
+- `int_service_requests_cleaned` — applies business classification (complaint categories, borough normalization, closure types)
+- `int_load_completeness` — one row per calendar day in the load, carrying `is_complete_day`: the source publishes on a ~23.5-hour lag, so the newest loaded day is always a partial one. Every model that needs "where does trustworthy history end" reads this rather than re-deriving it
+
+**marts** — the star:
+
+- `fct_service_requests` — the core fact table; incremental MERGE on `service_request_id` with a 1-hour lookback buffer; clustered on `cast(created_date as date)` for Snowflake scan efficiency
+- `fct_daily_volume` — pre-aggregated complaint counts by day, borough, and category for fast dashboard queries, carrying `is_complete_day` so a partial day can be excluded from an average
+- `fct_complaint_recurrence` — one row per closed request with a usable address, measuring whether the same complaint reappeared at the same address. Emits `days_to_next_same_complaint` and `observation_days` rather than a baked-in window, so a right-censored closure cannot be silently counted as "did not recur"
+- `fct_data_quality` — every check written to the Silver quality log, with a rolling 7-day failure rate and a threshold-breach flag; makes data quality observable instead of an invisible gate
 - `dim_date` — 21-year calendar spine (2010–2030) with US federal holiday flags
-- `dim_agency` — clean agency dimension with full names and abbreviations
+- `dim_agency` — SCD Type 2 agency dimension built from the snapshot, with a `[valid_from, expiry_date)` validity window
 - `dim_location` — geographic dimension: borough, community board, ZIP code (point coordinates stay on the fact as `latitude`/`longitude`)
+<!--/model-inventory-->
 
 **Outcome:** A dimensional model a BI analyst can connect to immediately. Every join is LEFT JOIN (open requests with no closed date don't silently disappear from the fact table). Every key is tested for uniqueness and non-null values.
 
 ---
 
 ### Orchestration — Airflow DAG
-Seven tasks in a linear dependency chain:
+Seven tasks in a linear dependency chain. The chain below is compared task-by-task
+against the DAG by `scripts/check_claims.py`. Until 2026-08-26 four of its seven names
+were wrong, because the chain was still describing the **cloud** DAG
+(`nyc311_pipeline.py`, `check_api_availability → ingest_raw → … → notify_success`)
+that was deleted on 2026-08-20 — and `dbt_publish` was never a task in either one. Both
+DAGs had seven tasks, so the count matched, and the count was the only thing checked.
 
+<!--dag-tasks:airflow/dags/nyc311_local.py-->
 ```
-check_api_availability → ingest_raw → load_bronze → load_silver → dbt_build → dbt_publish → notify_success
+check_source → fetch_live → load_bronze → load_silver → dbt_build → check_slos → upstream_stall_check
 ```
 
 The `check_source` task at the front runs a plain `curl` and validates the HTTP status only — it discards the body (`-o /dev/null`), so a source returning `200` with an empty array passes it; the zero-row check in `fetch_live_records` catches that one task later. There is no sensor and no waiting behaviour (an earlier version of this file described an `HttpSensor` that does not exist).
 
-**Outcome:** No wasted compute on a broken source, and no window where bad data is live in Gold. A failed build or test halts before publish; production keeps serving the last validated build.
+`check_slos` evaluates SLO-1 freshness and SLO-2 source reconciliation and exits 1 on breach, so a breach is a red run. `upstream_stall_check` is the opposite by design: it exits 0 either way, because a stall in the city's publishing must stay visible without reddening a run whose own work was correct ([ADR 013](adr/013-no-source-freshness-slo.md)).
+
+**Outcome:** No wasted compute on a broken source, and a red run names the stage that broke rather than pointing at one monolithic "run pipeline" step. This DAG is a demonstration; `.github/workflows/daily-run.yml` is what actually runs daily ([ADR 010](adr/010-scheduled-operation.md)).
 
 ---
 
@@ -134,10 +160,6 @@ Provisions the Snowflake hierarchy from scratch (all five schemas — BRONZE, SI
 - Remote state in Azure Blob with lease locking for safe team collaboration
 
 **Outcome:** A new environment (dev, staging, prod) is one `terraform apply` away. Role permissions are auditable, diffable, and version-controlled — not scattered across Snowflake worksheets run by hand.
-
----
-
-<a name="test-suite"></a>
 
 ---
 

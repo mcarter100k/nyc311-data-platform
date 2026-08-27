@@ -92,7 +92,7 @@ These are the decisions where the trade-off was genuinely close, and where the r
 `check_source` runs a plain `curl` against the API before any downstream task starts, so a dead endpoint fails the run in seconds rather than part-way through a load. Failing early is close to free; failing late means a manual replay and an incident. But be precise about what it does and does not verify: it checks the HTTP status and **discards the body** (`-o /dev/null`), so a source returning `200` with an empty array — the published August 2026 stall — passes this gate cleanly. The zero-row check in `fetch_live_records` is what actually catches that, one task later. There is no sensor, no poke interval and no waiting; an earlier version of this README described all three, none of which exist.
 
 **`FUTURE TABLES` grants interact with schema-swap publishing — and the interaction has to be designed, not assumed.**
-`SELECT ON FUTURE TABLES` lets any table dbt creates inherit reporter permissions without a Terraform re-apply ([main.tf:471-481](terraform/modules/snowflake-foundation/main.tf#L471-L481)). But Snowflake grants attach to the schema *object*, and the write-audit-publish swap renames objects — so grants defined only on GOLD stop covering it after the first publish. [ADR 009](docs/adr/009-publish-grants-under-schema-swap.md) resolves this: the grant matrix is specified symmetrically on both GOLD and GOLD_AUDIT, keeping the single atomic swap (the alternative — per-table view swaps — was rejected because it reintroduces the cross-table inconsistency window WAP exists to eliminate).
+`SELECT ON FUTURE TABLES` lets any table dbt creates inherit reporter permissions without a Terraform re-apply (`terraform/modules/snowflake-foundation/main.tf#"reporter_gold_future_tables"`). But Snowflake grants attach to the schema *object*, and the write-audit-publish swap renames objects — so grants defined only on GOLD stop covering it after the first publish. [ADR 009](docs/adr/009-publish-grants-under-schema-swap.md) resolves this: the grant matrix is specified symmetrically on both GOLD and GOLD_AUDIT, keeping the single atomic swap (the alternative — per-table view swaps — was rejected because it reintroduces the cross-table inconsistency window WAP exists to eliminate).
 
 **All dimension joins in `fct_service_requests` are LEFT JOINs.**
 Not every 311 complaint has a recognized agency code or a geocodable address. INNER JOINs against imperfect dimension coverage silently drop fact rows — a `COUNT(*)` on the fact table then disagrees with Silver, and that discrepancy surfaces at 11pm before a board presentation. NULL foreign keys in the fact table are visible and fixable. Silently dropped rows are not.
@@ -127,7 +127,7 @@ The obvious repair — key on `:updated_at` — was measured and **rejected**: t
 
 ## What is real, and what is deferred
 
-The distinction is enforced, not asserted: [scripts/check_claims.py](scripts/check_claims.py) fails CI when this README drifts from the repo, and [docs/CLAIMS.md](docs/CLAIMS.md) maps every claim to the code that enforces it and the test that verifies it.
+The distinction is enforced, not asserted: [scripts/check_claims.py](scripts/check_claims.py) fails CI when this README **or anything under docs/** drifts from the repo — counts against the code that produces them, documented DAG task names against the DAG, the dbt model inventory against the parsed manifest, every relative link and fragment against the tree, and every citation against a unique string in the file it names. [docs/CLAIMS.md](docs/CLAIMS.md) maps every claim to the code that enforces it and the test that verifies it, and both of those columns are now checked too.
 
 | Real — verifiable in this repo | Evidence |
 |---|---|
@@ -156,7 +156,7 @@ Socrata API → raw JSON → Bronze → Silver → GOLD (dbt star schema) → BI
                  pandas ──────────────────┘        └──────── dbt: staging → intermediate → marts
 ```
 
-Gold is a Kimball star: <!--claim:fct_models-->4<!--/claim--> fact tables, 3 dimensions, and a 21-year calendar spine (2010–2030). Terraform provisions the Snowflake side — 5 schemas (including `GOLD_AUDIT` for write-audit-publish and `SNAPSHOTS` for SCD2 state), 4 roles, and a least-privilege grant matrix enforced as code.
+Gold is a Kimball star: <!--claim:fct_models-->4<!--/claim--> fact tables, <!--claim:dim_models-->3<!--/claim--> dimensions, and a 21-year calendar spine (2010–2030). Terraform provisions the Snowflake side — 5 schemas (including `GOLD_AUDIT` for write-audit-publish and `SNAPSHOTS` for SCD2 state), 4 roles, and a least-privilege grant matrix enforced as code.
 
 **Full detail:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — per-layer contracts, the dbt model inventory, the stack table, and what each layer guarantees.
 
@@ -164,13 +164,13 @@ Gold is a Kimball star: <!--claim:fct_models-->4<!--/claim--> fact tables, 3 dim
 
 ## Test Suite
 
-Two populations, deliberately not summed: **<!--claim:test_count-->146<!--/claim--> pytest tests** that need no cloud account, and **122 dbt data tests (115 generic + 7 singular)** that run against the warehouse during `dbt build`. The pytest count is recomputed in CI.
+Two populations, deliberately not summed: **<!--claim:test_count-->184<!--/claim--> pytest tests** that need no cloud account, and **<!--claim:dbt_test_count-->128<!--/claim--> dbt data tests (<!--claim:dbt_generic_tests-->119<!--/claim--> generic + <!--claim:dbt_singular_tests-->9<!--/claim--> singular)** that run against the warehouse during `dbt build`. Both counts are recomputed in CI — the pytest one from collection, the dbt one from the parsed manifest. The dbt figure was a bare literal until 2026-08-26 and had rotted twice through merges, silently, while every marker-guarded number beside it stayed correct.
 
 | Tier | Count | What it proves |
 |---|---|---|
-| **Structural** | 93 | Configuration correctness — schema resolution, incremental strategy, DAG lineage, freshness target, Terraform validity, the LOADER-has-no-TRUNCATE contract, a relationships test on every fact foreign key |
-| **Unit** | 8 | Silver transformation *logic* ([local/silver_transformations.py](local/silver_transformations.py)) against hand-built fixtures |
-| **Behavioral** | 35 | Gold *semantics* — builds the dbt project twice on seeded DuckDB and asserts on output rows: watermark lookback, SCD2 point-in-time join, update propagation, and dimension retention when Silver's rolling window moves past a member the fact still references. Also import health for every module in [local/](local/), which needs the real runtime dependencies this tier installs |
+| **Structural** | <!--claim:structural_test_count-->135<!--/claim--> | Configuration correctness — schema resolution, incremental strategy, DAG lineage, freshness target, Terraform validity, the LOADER-has-no-TRUNCATE contract, a relationships test on every fact foreign key. Also the documentation guards' own failure modes ([tests/test_doc_guards.py](tests/test_doc_guards.py)): each check in `scripts/check_claims.py` is exercised against a synthetic tree with the thing it guards broken, because a check that cannot fail reports green and is read as evidence — this repo has shipped three of those by accident |
+| **Unit** | <!--claim:unit_test_count-->8<!--/claim--> | Silver transformation *logic* ([local/silver_transformations.py](local/silver_transformations.py)) against hand-built fixtures |
+| **Behavioral** | <!--claim:behavioral_test_count-->41<!--/claim--> | Gold *semantics* — builds the dbt project twice on seeded DuckDB and asserts on output rows: watermark lookback, SCD2 point-in-time join, update propagation, and dimension retention when Silver's rolling window moves past a member the fact still references. Also import health for every module in [local/](local/), which needs the real runtime dependencies this tier installs |
 
 The structural tier is the largest and the weakest, and it is worth saying so: it catches config drift and silent contract violations in seconds, but **a model can be perfectly configured and still compute the wrong number.** That is what the other two tiers are for.
 
@@ -217,7 +217,14 @@ python local/local_runner.py --live      # live data; omit --live for a sample
 Three requirements files, because the pipeline and the test suite need different dbt adapters: `local/` runs on **dbt-duckdb**, while `run_tests.sh` parses the `dbt/` project and needs **dbt-snowflake**. `requirements-dev.txt` carries the test tooling (pytest, pyyaml, ruff). CI runs this exact install and then `./run_tests.sh` in the `front-door` job.
 
 Airflow (optional, demonstration): `./scripts/airflow_local.sh ui` → localhost:8080.
-Cloud deployment steps, which require your own Azure + Snowflake accounts, are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+**There is no cloud deployment runbook, and this line used to promise one.** It said the
+steps were in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the link resolved, so the
+link checker passed, and the steps were not there. What exists is the Terraform module
+under [terraform/](terraform/) — validated in CI, never applied — and the open decision
+about how Silver would reach Snowflake at all ([ADR 008](docs/adr/008-prototype-scope.md)).
+Writing a runbook for a path nobody has walked would be the same kind of claim this repo
+spends a checker removing.
 
 ---
 
@@ -232,7 +239,7 @@ terraform/github/  this repo's own infrastructure — labels, branch protection,
 config/         borough_variants.csv — one mapping, read by Python and dbt alike
 scripts/        SLO checks, claim checker, model-drift guard
 docs/           ARCHITECTURE · SLO · CLAIMS · BACKLOG · adr/ (<!--claim:adr_count-->14<!--/claim-->) · postmortems/
-tests/          124 pytest tests across three tiers
+tests/          <!--claim:test_count-->184<!--/claim--> pytest tests across three tiers
 ```
 
 ---
