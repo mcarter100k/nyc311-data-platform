@@ -11,6 +11,14 @@ name: CI
 #                       upsert) regress.
 # No `needs:` between them: a red check names its failure class directly,
 # and total wall time is the slowest tier, not the sum. See ADR 011.
+#
+# Every job below sets timeout-minutes. The GitHub default is 6 HOURS, so a
+# job that hangs on a network read burns a runner all afternoon and — because
+# these are required checks — leaves the PR pending rather than red. Measured
+# over the last 12 runs: fast-gate 0.6m, unit 0.4m, behavioral-duckdb 1.5m,
+# front-door 2.0m (maxima). The values are ~8x those, generous enough that a
+# slow pip mirror is not a false failure and tight enough that a hang is
+# reported in minutes.
 on:
   push:
     branches:
@@ -29,6 +37,7 @@ jobs:
   fast-gate:
     name: fast-gate
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -119,6 +128,7 @@ jobs:
   unit:
     name: unit
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -155,6 +165,7 @@ jobs:
   behavioral-duckdb:
     name: behavioral-duckdb
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -196,6 +207,7 @@ jobs:
   front-door:
     name: front-door
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

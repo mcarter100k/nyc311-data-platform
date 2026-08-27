@@ -35,6 +35,16 @@ jobs:
     name: Live fetch, build, SLO check
     runs-on: ubuntu-latest
 
+    # The default job timeout is 6 HOURS. Combined with the queueing
+    # concurrency group above — correct for dedup, but it means a queued run
+    # waits rather than replacing — one hung run could hold the group long
+    # enough to swallow the next day's scheduled trigger, and the pipeline
+    # would go silent without a single red run. Measured over the last 12 runs:
+    # median 1.7m, max 3.9m. 15m is ~4x the worst observed, leaves room for a
+    # slow Socrata fetch, and guarantees the group is clear many hours before
+    # the next 10:00 UTC trigger.
+    timeout-minutes: 15
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -97,7 +107,13 @@ jobs:
       # raises `IO Error: No files found` on first query. Gold and Silver are
       # materialised and survive; raw — the thing a postmortem most wants —
       # does not. Uploading the pair keeps the evidence bundle self-contained.
+      #
+      # The `if: always()` below is load-bearing and was missing: with no `if:`
+      # key a step defaults to success(), so this upload was SKIPPED on exactly
+      # the runs the comment above says it exists for. It went unnoticed
+      # because every failure to date happened downstream of this step.
       - name: Upload DuckDB artifact
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: nyc311-duckdb-${{ github.run_id }}

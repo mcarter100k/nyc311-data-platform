@@ -7,20 +7,31 @@ Tests the non-dbt pieces of the pipeline without needing live cloud credentials:
   2. Terraform             — HCL syntax validity via terraform validate
   3. GitHub Actions        — workflow YAML structure
   4. profiles.yml.example  — connection config correctness
+  5. Workflow operations   — timeouts, SHA pinning, evidence-on-failure, and
+                             the daily-run heartbeat's decision logic
 
-A fifth category — Databricks notebooks — was removed with the Databricks path;
+A sixth category — Databricks notebooks — was removed with the Databricks path;
 this header listed it for some time after the tests themselves were gone, which
 is the failure mode `file_contains` below exists to prevent in the other
 direction.
 """
 
 import ast
+import importlib
 import os
 import subprocess
+import sys
+from datetime import datetime, timezone
+
 import yaml
 import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# scripts/ is a directory of standalone checkers, not a package. Section 5b
+# imports one of them to test its decision function directly rather than
+# asserting on its source text.
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -281,3 +292,257 @@ def test_profiles_example_uses_key_pair_for_prod():
     assert file_contains(PROFILES_PATH, "private_key_path"), (
         "profiles.yml.example prod target does not configure RSA key-pair auth."
     )
+
+
+# ── 5. Workflow operational guarantees ────────────────────────────────────────
+# The tests above check one workflow's shape (dbt-docs.yml). These check
+# properties that must hold across EVERY workflow, plus the two step-level
+# guarantees that were silently absent until they were looked for:
+# evidence-on-failure in daily-run.yml, and a job timeout anywhere at all.
+
+WORKFLOW_DIR = os.path.join(ROOT, ".github", "workflows")
+
+
+def load_workflow(name):
+    with open(os.path.join(WORKFLOW_DIR, name)) as f:
+        return yaml.safe_load(f)
+
+
+def all_workflow_files():
+    return sorted(
+        f for f in os.listdir(WORKFLOW_DIR) if f.endswith((".yml", ".yaml"))
+    )
+
+
+def test_every_workflow_is_valid_yaml():
+    """
+    Extends the dbt-docs.yml-only check above to the whole directory. An
+    unparseable workflow is not an error in the GitHub UI — it simply never
+    runs, which for daily-run.yml means silent data staleness.
+    """
+    for name in all_workflow_files():
+        try:
+            load_workflow(name)
+        except yaml.YAMLError as e:
+            pytest.fail(f"{name} is not valid YAML: {e}")
+
+
+def test_every_job_declares_a_timeout():
+    """
+    Every job must set timeout-minutes. The GitHub default is 6 HOURS.
+    daily-run.yml queues rather than cancels on its concurrency group, so one
+    hung run could hold the group past the next day's 10:00 UTC trigger and
+    take the pipeline offline without ever going red.
+    """
+    missing = [
+        f"{name}:{job_id}"
+        for name in all_workflow_files()
+        for job_id, job in load_workflow(name)["jobs"].items()
+        if "timeout-minutes" not in job
+    ]
+    assert not missing, (
+        f"jobs with no timeout-minutes (they default to 6 hours): {missing}"
+    )
+
+
+def test_every_action_reference_is_sha_pinned():
+    """
+    Every `uses:` must name a 40-character commit SHA, not a tag. Tags are
+    mutable: a compromised or retagged action would execute inside a workflow
+    holding issues: write on this repository.
+    """
+    unpinned = []
+    for name in all_workflow_files():
+        for job_id, job in load_workflow(name)["jobs"].items():
+            for step in job.get("steps", []):
+                ref = step.get("uses", "").partition("@")[2]
+                if not (len(ref) == 40 and all(c in "0123456789abcdef" for c in ref)):
+                    if "uses" in step:
+                        unpinned.append(f"{name}:{job_id}:{step['uses']}")
+    assert not unpinned, f"action references not pinned to a full commit SHA: {unpinned}"
+
+
+def test_daily_run_uploads_evidence_even_when_the_pipeline_fails():
+    """
+    The upload step must carry `if: always()`.
+
+    A step with no `if:` key defaults to success(), so this upload — the one
+    the workflow comments describe as existing FOR the postmortem — was skipped
+    on precisely the runs that needed it. It went unnoticed because all three
+    historical failures happened downstream of the upload step.
+    """
+    steps = load_workflow("daily-run.yml")["jobs"]["daily-run"]["steps"]
+    upload = next(s for s in steps if s.get("name") == "Upload DuckDB artifact")
+    assert upload.get("if") == "always()", (
+        "Upload DuckDB artifact has no `if: always()` — on a pipeline failure "
+        "it defaults to success() and no evidence bundle is produced."
+    )
+
+
+def test_heartbeat_watches_the_daily_run_on_its_own_schedule():
+    """
+    The heartbeat must be independently scheduled. Its whole purpose is to
+    speak when daily-run.yml does not run, so it cannot be triggered by
+    daily-run.yml or share its schedule.
+    """
+    wf = load_workflow("heartbeat.yml")
+    # PyYAML 1.1 resolves the bare key `on` to the boolean True; GitHub's own
+    # parser keeps it as the string "on". Accept whichever this PyYAML produced.
+    triggers = wf.get("on", wf.get(True))
+    assert "schedule" in triggers, "heartbeat.yml is not on a schedule"
+    assert triggers["schedule"], "heartbeat.yml declares an empty schedule"
+
+
+def test_heartbeat_job_is_least_privilege():
+    """
+    The heartbeat reads the Actions API and files an issue. It must hold
+    exactly `actions: read` + `issues: write` over the read-only default, and
+    nothing more — it never touches code, packages, or Pages.
+    """
+    wf = load_workflow("heartbeat.yml")
+    assert wf["permissions"] == {"contents": "read"}, (
+        "heartbeat.yml must default to contents: read at the workflow level"
+    )
+    assert wf["jobs"]["heartbeat"]["permissions"] == {
+        "contents": "read",
+        "actions": "read",
+        "issues": "write",
+    }, "heartbeat job permissions drifted from least privilege"
+
+
+def test_heartbeat_dedups_issues_instead_of_filing_a_new_one_each_run():
+    """
+    The heartbeat runs every 4 hours. Without the repo's list-then-comment
+    dedup it would file six issues a day for one outage, and the alert would
+    be ignored within a day of being right.
+    """
+    path = os.path.join(WORKFLOW_DIR, "heartbeat.yml")
+    assert file_contains(path, "gh issue list --label daily-run-breach --state open"), (
+        "heartbeat.yml does not look for an existing open issue before creating one"
+    )
+    assert file_contains(path, "gh issue comment"), (
+        "heartbeat.yml never comments on an existing issue — it can only create"
+    )
+
+
+# ── 5b. Heartbeat decision logic ──────────────────────────────────────────────
+# The workflow above cannot be executed in a test, but the decision it makes
+# can: check_daily_run_heartbeat.evaluate() takes the two API facts, a clock,
+# and a threshold, and returns a verdict with no I/O of its own.
+
+heartbeat = importlib.import_module("check_daily_run_heartbeat")
+
+NOW = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def test_heartbeat_passes_on_a_recent_success():
+    v = heartbeat.evaluate(
+        workflow_state="active",
+        last_success_completed_at="2026-08-27T10:00:00Z",
+        now=NOW,
+        threshold_hours=26,
+    )
+    assert v.ok is True
+    assert v.code == "live"
+    assert v.age_hours == pytest.approx(2.0)
+
+
+def test_heartbeat_fails_when_the_last_success_is_older_than_the_threshold():
+    v = heartbeat.evaluate(
+        workflow_state="active",
+        last_success_completed_at="2026-08-26T09:00:00Z",
+        now=NOW,
+        threshold_hours=26,
+    )
+    assert v.ok is False
+    assert v.code == "stale"
+    assert v.age_hours == pytest.approx(27.0)
+
+
+def test_heartbeat_threshold_boundary_is_exclusive_at_26h():
+    """26.0h exactly is a breach; a second under it is not. Pinning the
+    comparison direction so a refactor cannot silently widen the window."""
+    just_inside = heartbeat.evaluate(
+        workflow_state="active",
+        last_success_completed_at="2026-08-26T10:00:01Z",
+        now=NOW,
+        threshold_hours=26,
+    )
+    exactly_at = heartbeat.evaluate(
+        workflow_state="active",
+        last_success_completed_at="2026-08-26T10:00:00Z",
+        now=NOW,
+        threshold_hours=26,
+    )
+    assert just_inside.ok is True
+    assert exactly_at.ok is False
+
+
+def test_heartbeat_fails_a_disabled_workflow_even_with_a_fresh_success():
+    """
+    The failure mode that motivates the whole check. GitHub disables scheduled
+    workflows on public repos after 60 days without repository activity, and a
+    maintainer can disable one by hand. Either way the last success can still
+    be minutes old while no future run will ever fire — so 'disabled' must
+    outrank freshness, not be masked by it.
+    """
+    v = heartbeat.evaluate(
+        workflow_state="disabled_inactivity",
+        last_success_completed_at="2026-08-27T11:59:00Z",
+        now=NOW,
+        threshold_hours=26,
+    )
+    assert v.ok is False
+    assert v.code == "workflow-disabled"
+
+
+def test_heartbeat_fails_when_the_workflow_has_never_succeeded():
+    """An empty run list must not read as 'age unknown, therefore fine'."""
+    v = heartbeat.evaluate(
+        workflow_state="active",
+        last_success_completed_at=None,
+        now=NOW,
+        threshold_hours=26,
+    )
+    assert v.ok is False
+    assert v.code == "never-succeeded"
+
+
+def test_heartbeat_only_counts_successes_on_the_watched_branch(monkeypatch):
+    """
+    The runs query must carry a branch filter, and the workflow must pass
+    `main`. Actions cache scoping means a run dispatched from a feature branch
+    saves into that branch's cache and never advances main's accumulated
+    DuckDB — counting it would silence the alert for a day while main's data
+    actually aged. Asserted at the API call, not just in the workflow text.
+    """
+    calls = []
+
+    def fake_gh_api(path):
+        calls.append(path)
+        if "/runs" in path:
+            return {"workflow_runs": [{"updated_at": "2026-08-27T10:00:00Z"}]}
+        return {"state": "active"}
+
+    monkeypatch.setattr(heartbeat, "gh_api", fake_gh_api)
+    state, last = heartbeat.fetch_facts("o/r", "daily-run.yml", "main")
+
+    assert state == "active"
+    assert last == "2026-08-27T10:00:00Z"
+    runs_call = next(c for c in calls if "/runs" in c)
+    assert "branch=main" in runs_call, f"runs query has no branch filter: {runs_call}"
+    assert "status=success" in runs_call, f"runs query does not filter to successes: {runs_call}"
+    assert file_contains(os.path.join(WORKFLOW_DIR, "heartbeat.yml"), "--branch main"), (
+        "heartbeat.yml does not pass --branch main to the checker"
+    )
+
+
+def test_heartbeat_default_threshold_matches_slo1():
+    """
+    The default must stay the SLO-1 number. The external watcher and the
+    internal freshness SLO measure one commitment from two sides; if the
+    default drifted below 26 the heartbeat would file breaches for runs SLO-1
+    still passes.
+    """
+    assert heartbeat.DEFAULT_THRESHOLD_HOURS == 26.0
+    assert file_contains(os.path.join(ROOT, "docs", "SLO.md"), "< 26")

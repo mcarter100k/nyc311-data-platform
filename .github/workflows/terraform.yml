@@ -23,6 +23,10 @@ jobs:
   validate:
     name: Format check and validate (${{ matrix.dir }})
     runs-on: ubuntu-latest
+    # Default is 6 hours. Measured max over the last 12 runs: 0.2m per matrix
+    # leg. `terraform init` reaches the provider registry, which is the only
+    # step here that can hang.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
