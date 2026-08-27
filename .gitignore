@@ -79,3 +79,6 @@ local/.user.yml
 **/*.tfstate
 **/*.tfstate.backup
 tfplan
+
+# Agent worktrees — ephemeral clones, never part of the repo.
+.claude/

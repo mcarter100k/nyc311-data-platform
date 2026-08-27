@@ -47,10 +47,32 @@ LIVE_ROW_CAP = 150_000
 
 # Socrata serves identical queries from replicas at different indexing states
 # (measured 2026-08-26: six identical count calls returned 0,0,358,358,358,0).
-# The source count is therefore sampled and maximised — see
-# fetch_source_count_yesterday for why a single sample is unsafe.
+# The source counts are therefore sampled and maximised per day — see
+# fetch_source_counts_window for why a single sample is unsafe.
 SOURCE_COUNT_PROBES        = 5
 SOURCE_COUNT_PAUSE_SECONDS = 0.6
+
+# ── HTTP retry policy ────────────────────────────────────────────────────────
+# `requests` raises only on connection-level faults. A 429 or a 503 comes back
+# as an ordinary Response object, and until 2026-08-27 both fetch paths called
+# `resp.raise_for_status()` OUTSIDE their retry loop — so the two likeliest
+# transient faults against a public rate-limited API got zero retries, while
+# only socket errors got one. Rate limiting is precisely what an unauthenticated
+# or lightly-authenticated Socrata client meets first.
+#
+# Retryable is deliberately narrow: 429 plus the 5xx codes that mean "try
+# again". Every other non-2xx (401, 403, 404, a malformed query's 400) is a
+# fault that repeating cannot fix, and is raised on the first response so the
+# run fails fast with the real status rather than after two pointless waits.
+#
+# ATTEMPTS counts total tries, so 3 = two retries. Backoff is exponential from
+# BACKOFF_SECONDS (1s, then 2s): long enough to outlast a rate-limit bucket,
+# short enough that a genuinely dead source still reddens the run promptly.
+# The fail-loud contract of ADR 010 is unchanged — exhausting the attempts
+# raises, a capped fetch raises, a zero-row fetch raises.
+HTTP_ATTEMPTS          = 3
+HTTP_BACKOFF_SECONDS   = 1.0
+HTTP_RETRYABLE_STATUS  = frozenset({429, 500, 502, 503, 504})
 
 # Silver transformation logic lives in silver_transformations.py so it can be
 # unit-tested without a database. This module owns I/O only.
@@ -71,6 +93,42 @@ def _banner(msg: str) -> None:
     print(f"\n{'─' * 64}")
     print(f"  {msg}")
     print(f"{'─' * 64}")
+
+
+def _get_with_retry(get, url, *, params, headers=None, timeout=60, what="Socrata request"):
+    """One HTTP GET with bounded retries on transient faults. Fails loudly.
+
+    THE BUG THIS FIXES. `raise_for_status()` used to sit after the retry loop
+    in both fetch paths, so an HTTP-level fault was never retried — only an
+    exception from `get` itself was. `requests` returns 429 and 5xx as normal
+    responses, which made the most likely transient faults the least protected.
+
+    Retry on a connection-level exception or an HTTP_RETRYABLE_STATUS response;
+    raise immediately on any other non-2xx (see the constant for why); return
+    the response on success. The final failure is a RuntimeError naming the
+    caller, so a red run says which fetch died and after how many attempts.
+    """
+    reason: BaseException | None = None
+    for attempt in range(1, HTTP_ATTEMPTS + 1):
+        try:
+            resp = get(url, params=params, headers=headers, timeout=timeout)
+        except Exception as exc:                       # connection-level fault
+            reason = exc
+        else:
+            # A fake/injected response need not carry status_code; absent means
+            # "not a retryable status", and raise_for_status below still rules.
+            if getattr(resp, "status_code", None) in HTTP_RETRYABLE_STATUS:
+                reason = RuntimeError(f"HTTP {resp.status_code} from the source")
+            else:
+                resp.raise_for_status()                # non-retryable: fail now
+                return resp
+
+        if attempt == HTTP_ATTEMPTS:
+            raise RuntimeError(
+                f"{what} failed after {HTTP_ATTEMPTS} attempts "
+                f"({HTTP_ATTEMPTS - 1} retries): {reason}"
+            ) from reason
+        time.sleep(HTTP_BACKOFF_SECONDS * 2 ** (attempt - 1))
 
 
 # ── Stage 1: Ingest ────────────────────────────────────────────────────────────
@@ -117,8 +175,10 @@ def stage1_ingest(rows: int) -> None:
         params = {"$limit": PAGE_SIZE, "$order": SAMPLE_ORDER}
         if cursor is not None:
             params["$where"] = f"created_date <= '{cursor}'"
-        resp = requests.get(SOCRATA_ENDPOINT, params=params, timeout=30)
-        resp.raise_for_status()
+        # Same retry policy as the live path: a 429 mid-walk used to abort the
+        # whole sample, because raise_for_status ran with no retry around it.
+        resp = _get_with_retry(requests.get, SOCRATA_ENDPOINT, params=params,
+                               timeout=30, what="Socrata sample fetch")
         page = resp.json()
         if not page:
             break
@@ -146,9 +206,9 @@ def fetch_live_records(days: int = LIVE_DAYS, cap: int = LIVE_ROW_CAP, get=None)
     rows/day measured vs ~53k/week created — ADR 010), so the daily run
     windows on created_date and re-pulls the whole window, which still
     captures status updates for rows inside it. `get` is injectable for
-    tests; nothing here retries more than once, caps are hard failures, and
-    zero rows is a failure — the scheduled run must be red or fully green,
-    never partially loaded.
+    tests; transient HTTP faults are retried by _get_with_retry and nothing
+    else is, caps are hard failures, and zero rows is a failure — the
+    scheduled run must be red or fully green, never partially loaded.
     """
     from ingest_config import SOCRATA_URL, build_page_params
 
@@ -165,16 +225,8 @@ def fetch_live_records(days: int = LIVE_DAYS, cap: int = LIVE_ROW_CAP, get=None)
     page = 0
     while True:
         params = build_page_params("created_window", run_date, page)
-        for attempt in (1, 2):
-            try:
-                resp = get(SOCRATA_URL, params=params, headers=headers, timeout=60)
-                break
-            except Exception as exc:
-                if attempt == 2:
-                    raise RuntimeError(
-                        f"Socrata fetch failed after one retry on page {page}: {exc}"
-                    ) from exc
-        resp.raise_for_status()
+        resp = _get_with_retry(get, SOCRATA_URL, params=params, headers=headers,
+                               what=f"Socrata fetch on page {page}")
         batch = resp.json()
         if not batch:
             break
@@ -196,16 +248,50 @@ def fetch_live_records(days: int = LIVE_DAYS, cap: int = LIVE_ROW_CAP, get=None)
     return records
 
 
-def fetch_source_count_yesterday(get=None) -> dict:
-    """Ask the source how many requests IT has for yesterday (UTC).
+def fetch_source_counts_window(days: int = LIVE_DAYS, get=None) -> list[dict]:
+    """Ask the source how many requests IT has for EVERY day in the fetch window.
 
-    This single number is what turns SLO-2 into a reconciliation: our
-    completeness is measured against what the city actually published, not
-    against a historical volume guess. Captured at fetch time — the same
-    API, the same auth, the same one-retry/fail-loud contract as
+    WHY A WINDOW AND NOT A DAY. This used to capture exactly one day —
+    UTC-yesterday — and SLO-2 reconciled against that day. Both halves were
+    wrong, for the same reason:
+
+      * The source publishes on a LAG, so UTC-yesterday is never a whole day.
+        A publish lands ~01:40 carrying data only to ~02:05 of the previous
+        day, which makes yesterday a ~2-hour stub — 358 rows against a ~10,500
+        median (measured 2026-08-25), or literally zero.
+      * The lag is NOT A CONSTANT, so no fixed offset fixes it. Measured on
+        2026-08-27 the newest row at the source was 49.0 hours old with a
+        publish 1.4 hours earlier; the same measurement taken twice earlier the
+        same week gave 23.3h and 23.5h. Moving the capture from T-1 to T-2
+        would have worked on those days and produced a stub on this one.
+
+    So the day to reconcile cannot be chosen at fetch time by arithmetic on the
+    clock. It is chosen at GATE time from the data itself — the newest day the
+    LOAD shows as complete, per `int_load_completeness`, which judges each day
+    by clock coverage rather than by a row-count threshold the source is not
+    read-consistent enough to support.
+
+    That inverts the capture: the fetch stage cannot know which day the gate
+    will pick, so it captures every day the window covers and lets the gate
+    choose. Two things fall out of that, both of which the single-day capture
+    could not do:
+
+      * A day loaded as a stub is RE-CAPTURED on every subsequent run while it
+        stays inside the window, so it is re-reconciled once the source fills
+        it in. The old capture asked about a day once, on the one morning it
+        was guaranteed to be incomplete, and never revisited it.
+      * A multi-day publish stall is handled without special-casing: the gate
+        simply finds its newest complete day further back, and the counts for
+        that day are present because the whole window was captured.
+
+    ZEROS ARE RECORDED EXPLICITLY. Days the source has nothing for are absent
+    from the grouped response and are written as 0 rather than left missing —
+    "the source says none" and "we never asked" are different facts, and
+    slo2_completeness.sql treats them differently.
+
+    `get` is injectable for tests. Same fail-loud contract as
     fetch_live_records: if the count query fails, the run fails, because a
     missing capture would otherwise silently degrade the SLO gate.
-    `get` is injectable for tests.
     """
     from ingest_config import SOCRATA_URL
 
@@ -217,56 +303,63 @@ def fetch_source_count_yesterday(get=None) -> dict:
     if token:
         headers["X-App-Token"] = token
 
-    target = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
+    today = datetime.now(timezone.utc).date()
+    start = today - timedelta(days=days)
+    # ONE grouped request covers the whole window, so widening it from a day to
+    # a fortnight costs no extra round trips — the per-day counts come back in
+    # a single response.
     params = {
-        "$select": "count(*) as n",
-        "$where": (f"created_date between '{target}T00:00:00.000'"
-                   f" and '{target}T23:59:59.999'"),
+        "$select": "date_trunc_ymd(created_date) as day, count(*) as n",
+        "$where": f"created_date >= '{start.isoformat()}T00:00:00'",
+        "$group": "date_trunc_ymd(created_date)",
+        "$limit": 5000,
     }
-    # Sample the count SEVERAL times and keep the maximum.
+
+    # Sample the counts SEVERAL times and keep the per-day maximum.
     #
-    # Socrata is not read-consistent: identical queries are served by replicas at
-    # different indexing states. Measured 2026-08-26, six identical calls for the
-    # same day returned 0, 0, 358, 358, 358, 0 — the denominator of SLO-2 varying
-    # by 358 rows with no change at the source.
-    #
-    # A single sample was therefore a coin flip, and losing it is worse than
-    # noisy: slo2_completeness.sql treats a zero denominator as a PASS, so a
-    # capture landing on a lagging replica makes the completeness gate certify a
-    # comparison against nothing. That is the gate the 2026-08-18 postmortem
-    # exists to defend.
+    # Socrata is not read-consistent: identical queries are served by replicas
+    # at different indexing states. Measured 2026-08-26, six identical calls for
+    # the same day returned 0, 0, 358, 358, 358, 0 — a denominator varying by
+    # 358 rows with no change at the source.
     #
     # Maximum, not mean or last: a row visible on ANY replica exists, so the
-    # highest count is the most complete view available. The spread is returned
-    # rather than discarded, because "the replicas disagreed" is a fact about the
-    # source worth carrying into silver.source_counts, not smoothing away.
-    samples: list[int] = []
+    # highest count is the most complete view available. Note what this does and
+    # does not buy, since the earlier version of this file overclaimed it:
+    # max-of-N helps only when SOME replica holds the day. When the source has
+    # not published a day at all, every probe correctly returns 0 and no amount
+    # of sampling changes that. The protection against a zero denominator is not
+    # here — it is in the gate's choice of population and its refusal to treat
+    # zero as a pass.
+    samples: dict[str, list[int]] = {}
     for probe in range(SOURCE_COUNT_PROBES):
-        for attempt in (1, 2):
-            try:
-                resp = get(SOCRATA_URL, params=params, headers=headers, timeout=60)
-                break
-            except Exception as exc:
-                if attempt == 2:
-                    raise RuntimeError(
-                        f"Socrata source-count query failed after one retry: {exc}"
-                    ) from exc
-        resp.raise_for_status()
+        resp = _get_with_retry(get, SOCRATA_URL, params=params, headers=headers,
+                               what="Socrata source-count query")
         payload = resp.json()
-        if not payload or "n" not in payload[0]:
-            raise RuntimeError(f"Socrata source-count query returned no count: {payload!r}")
-        samples.append(int(payload[0]["n"]))
+        if payload is None or not isinstance(payload, list):
+            raise RuntimeError(f"Socrata source-count query returned no counts: {payload!r}")
+        for row in payload:
+            if "day" not in row or "n" not in row:
+                raise RuntimeError(f"Socrata source-count row is missing columns: {row!r}")
+            samples.setdefault(str(row["day"])[:10], []).append(int(row["n"]))
         if probe < SOURCE_COUNT_PROBES - 1:
             time.sleep(SOURCE_COUNT_PAUSE_SECONDS)
 
-    source_count = max(samples)
-    if len(set(samples)) > 1:
-        print(f"  NOTE: source replicas disagreed on {target}: {samples} — taking {source_count}")
-    return {
-        "target_date": target,
-        "source_count": source_count,
-        "captured_at": datetime.now(timezone.utc).isoformat(),
-    }
+    captured_at = datetime.now(timezone.utc).isoformat()
+    counts: list[dict] = []
+    day = start
+    while day <= today:
+        key = day.isoformat()
+        seen = samples.get(key, [])
+        # A day missing from a probe's response is a zero FROM that probe, so
+        # pad before comparing — otherwise a day seen by one replica and not
+        # another would report its non-zero value as unanimous.
+        seen = seen + [0] * (SOURCE_COUNT_PROBES - len(seen))
+        n = max(seen)
+        if len(set(seen)) > 1:
+            print(f"  NOTE: source replicas disagreed on {key}: {seen} — taking {n}")
+        counts.append({"target_date": key, "source_count": n, "captured_at": captured_at})
+        day += timedelta(days=1)
+    return counts
 
 
 def stage1_live(days: int = LIVE_DAYS) -> None:
@@ -296,11 +389,16 @@ def stage1_live(days: int = LIVE_DAYS) -> None:
     print(f"  written: {RAW_FILE.relative_to(LOCAL_DIR)}")
 
     # Source-side truth for SLO-2's reconciliation (loaded into DuckDB by
-    # stage 3, read by scripts/slo/slo2_completeness.sql).
-    count = fetch_source_count_yesterday()
-    SOURCE_COUNT_FILE.write_text(json.dumps(count))
-    print(f"  source reports {count['source_count']:,} requests created "
-          f"{count['target_date']} (written: {SOURCE_COUNT_FILE.relative_to(LOCAL_DIR)})")
+    # stage 3, read by scripts/slo/slo2_completeness.sql). Captured for the
+    # WHOLE window, not one day: the gate picks its day from the load's own
+    # completeness verdict, which is not knowable here. See
+    # fetch_source_counts_window.
+    counts = fetch_source_counts_window(days=days)
+    SOURCE_COUNT_FILE.write_text(json.dumps(counts))
+    total = sum(c["source_count"] for c in counts)
+    print(f"  source reports {total:,} requests created across {len(counts)} days "
+          f"{counts[0]['target_date']}..{counts[-1]['target_date']} "
+          f"(written: {SOURCE_COUNT_FILE.relative_to(LOCAL_DIR)})")
 
 
 # ── Stage 2: Bronze ────────────────────────────────────────────────────────────
@@ -493,17 +591,30 @@ def stage3_silver() -> None:
     # target for SLO-2. Accumulates across runs like the DQ log; idempotent
     # per target_date. NOT a dbt source: no model reads it — it exists solely
     # for scripts/slo/slo2_completeness.sql.
+    #
+    # ONE ROW PER DAY OF THE WINDOW, and the overwrite-by-date is what makes a
+    # day re-reconcilable: a day first captured as a stub is captured again on
+    # every later run while it stays in the window, and the fresher, fuller
+    # count replaces the stub. Rows for days that have aged out of the window
+    # are left alone, so the table keeps history the gate no longer assesses.
     con.execute("""
         CREATE TABLE IF NOT EXISTS silver.source_counts (
             target_date DATE, source_count BIGINT, captured_at TIMESTAMP)
     """)
     if SOURCE_COUNT_FILE.exists():
-        sc = json.loads(SOURCE_COUNT_FILE.read_text())
-        con.execute("DELETE FROM silver.source_counts WHERE target_date = ?",
-                    [sc["target_date"]])
-        con.execute("INSERT INTO silver.source_counts VALUES (?, ?, ?)",
-                    [sc["target_date"], sc["source_count"], sc["captured_at"]])
-        print(f"  silver.source_counts: {sc['source_count']:,} for {sc['target_date']}")
+        payload = json.loads(SOURCE_COUNT_FILE.read_text())
+        # A file written by the pre-2026-08-27 single-day capture is a bare
+        # object; tolerate it so an existing working tree does not need a
+        # re-fetch before stage 3 will run.
+        rows = payload if isinstance(payload, list) else [payload]
+        for sc in rows:
+            con.execute("DELETE FROM silver.source_counts WHERE target_date = ?",
+                        [sc["target_date"]])
+            con.execute("INSERT INTO silver.source_counts VALUES (?, ?, ?)",
+                        [sc["target_date"], sc["source_count"], sc["captured_at"]])
+        total = sum(r["source_count"] for r in rows)
+        print(f"  silver.source_counts: {len(rows)} day(s) refreshed, "
+              f"{total:,} source rows {rows[0]['target_date']}..{rows[-1]['target_date']}")
     con.close()
 
 
