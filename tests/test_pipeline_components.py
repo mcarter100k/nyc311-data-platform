@@ -19,6 +19,7 @@ direction.
 import ast
 import importlib
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -58,6 +59,98 @@ def file_contains(path, *strings):
         code_lines = [line.split("#", 1)[0] for line in f]
     content = "\n".join(code_lines)
     return all(s in content for s in strings)
+
+
+def hcl_top_level_blocks(text):
+    """Yield (header, body) for every TOP-LEVEL block in an HCL document.
+
+    This is a brace-DEPTH-AWARE SCAN, NOT A FULL HCL PARSER. It tracks nesting
+    depth so a block ends at its OWN closing brace, and steps over double-quoted
+    strings (with backslash escapes) and `#` / `//` line comments so braces
+    inside them do not move the depth. It does not understand heredocs
+    (`<<EOT`), `/* */` block comments, or object-literal values — none of which
+    appear in this repo's .tf files. If one is introduced, this scanner must be
+    revisited; python-hcl2 is not a declared dependency of this repo, so a real
+    parser was not available.
+
+    Why depth matters: the naive line scan this replaced ended a resource at
+    the first line equal to `}`, which is the closing brace of the first NESTED
+    block (`on_schema_object { future { ... } }`). Everything after it — in HCL,
+    argument order is free — escaped the scan entirely.
+
+    `header` is the last non-blank line before the opening `{`, e.g.
+    `resource "snowflake_grant_privileges_to_account_role" "loader_db_usage" {`.
+    `body` is the raw text between the braces.
+    """
+    blocks = []
+    depth = 0
+    i = 0
+    n = len(text)
+    start = 0
+    header = None
+    body_start = None
+    in_string = False
+    in_comment = False
+
+    while i < n:
+        ch = text[i]
+
+        if in_comment:
+            if ch == "\n":
+                in_comment = False
+            i += 1
+            continue
+
+        if in_string:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            i += 1
+            continue
+
+        if ch == '"':
+            in_string = True
+            i += 1
+            continue
+
+        if ch == "#" or text[i:i + 2] == "//":
+            in_comment = True
+            i += 1
+            continue
+
+        if ch == "{":
+            depth += 1
+            if depth == 1:
+                preamble = text[start:i].strip()
+                header = preamble.splitlines()[-1].strip() if preamble else ""
+                body_start = i + 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                blocks.append((header, text[body_start:i]))
+                start = i + 1
+        i += 1
+
+    return blocks
+
+
+def hcl_string_list(body, attr):
+    """Return the string elements of `attr = ["A", "B"]` inside an HCL body.
+
+    Only the block's OWN attribute is matched (the search is anchored to a line
+    start and stops at the first `]`), and only quoted elements are returned —
+    a computed value such as `privileges = var.something` yields None so the
+    caller can distinguish "no such attribute" from "not a literal list".
+    """
+    match = re.search(
+        r"^[ \t]*" + re.escape(attr) + r"\s*=\s*\[([^\]]*)\]",
+        body, re.MULTILINE,
+    )
+    if match is None:
+        return None
+    return re.findall(r'"([^"]*)"', match.group(1))
 
 
 # ── 1. Airflow DAG (the one that runs) ────────────────────────────────────────
@@ -178,27 +271,115 @@ def test_terraform_snowflake_foundation_outputs_role_names_map():
     )
 
 
-def test_terraform_loader_bronze_grants_no_truncate():
-    """
-    The LOADER role must not have TRUNCATE on Bronze tables. Bronze is an
-    append-only audit layer — giving LOADER the ability to TRUNCATE would
-    allow a service account to wipe the entire raw data history.
-    """
+# Privileges that let the holder empty a Bronze table, either directly or by
+# containing the one that does.
+#
+#   TRUNCATE        — the privilege itself.
+#   ALL PRIVILEGES  — Snowflake's docs: "Grants all privileges, except
+#     OWNERSHIP, on a table." TRUNCATE is an ordinary table privilege in that
+#     list, so ALL CONTAINS IT. `ALL` is the documented synonym.
+#     https://docs.snowflake.com/en/user-guide/security-access-control-privileges
+#   OWNERSHIP       — the same page says OWNERSHIP "Grants full control over
+#     the table". It does NOT enumerate TRUNCATE under OWNERSHIP, so this is
+#     the one entry below that is an inference rather than a quoted guarantee:
+#     an owner holds the object with grant option and can therefore grant
+#     itself TRUNCATE at will. Treated as equivalent, and flagged here as an
+#     inference so the next reader does not mistake it for a citation.
+#
+# Terraform's snowflake_grant_privileges_to_account_role also exposes a boolean
+# `all_privileges = true` that grants the same set without naming a privilege;
+# it is checked separately below because it is not a list element.
+BRONZE_DESTRUCTIVE_PRIVILEGES = {"TRUNCATE", "ALL PRIVILEGES", "ALL", "OWNERSHIP"}
+
+
+def loader_bronze_grant_blocks():
+    """Every top-level grant resource that gives the LOADER role something on
+    BRONZE. Selected by CONTENT (role reference + Bronze reference), never by
+    resource name, so renaming or adding a resource cannot drop it from the
+    guard's coverage."""
     main_path = os.path.join(TERRAFORM_DIR, "modules", "snowflake-foundation", "main.tf")
     with open(main_path) as f:
         content = f.read()
 
-    in_loader_bronze_block = False
-    for line in content.splitlines():
-        if "loader_bronze_future_tables" in line:
-            in_loader_bronze_block = True
-        if in_loader_bronze_block and "TRUNCATE" in line and not line.strip().startswith("#"):
-            pytest.fail(
-                "LOADER role has TRUNCATE on Bronze future tables. "
-                "Remove TRUNCATE — Bronze is append-only."
-            )
-        if in_loader_bronze_block and line.strip() == "}":
-            in_loader_bronze_block = False
+    found = []
+    for header, body in hcl_top_level_blocks(content):
+        if not header.startswith('resource "snowflake_grant'):
+            continue
+        # Strip comments before matching: the prose above these resources talks
+        # about TRUNCATE and Bronze at length, and must not be evidence.
+        code = "\n".join(line.split("#", 1)[0] for line in body.splitlines())
+        if "snowflake_role.loader" not in code:
+            continue
+        if "fq_bronze" not in code and "BRONZE" not in code:
+            continue
+        found.append((header, code))
+    return found
+
+
+def test_terraform_loader_bronze_grants_no_truncate():
+    """
+    The LOADER role must not be able to TRUNCATE Bronze. Bronze is an
+    append-only audit layer — a service account that can empty it can erase the
+    entire raw data history, and nothing downstream would report a gap.
+
+    Scope: EVERY LOADER grant touching Bronze, current tables and future,
+    matched on the role and schema the block references rather than on one
+    hand-written resource name. The predecessor scanned a single named resource
+    line by line and had three holes, each proven inert before this replaced it:
+
+      1. It ended the block at the first line equal to `}` — the closing brace
+         of the NESTED `future { ... }` block — so a `privileges` list written
+         after `on_schema_object` (legal HCL; argument order is free) was never
+         read. Verified: a LOADER TRUNCATE grant written that way PASSED.
+      2. Renaming the resource made the scan match nothing and pass having
+         examined no lines at all. Verified: renamed + TRUNCATE granted PASSED.
+      3. It matched the literal word TRUNCATE, so `ALL PRIVILEGES` on Bronze's
+         CURRENT tables — a grant the old guard did not look at in any case —
+         went straight through. Verified: PASSED.
+
+    Vacuity is now fatal: if no LOADER-on-Bronze table grant is found at all,
+    this fails rather than passes, because "found nothing to check" and "checked
+    and found it clean" must never produce the same colour.
+
+    KNOWN LIMIT, recorded rather than quietly fixed. loader_bronze_schema grants
+    LOADER `CREATE TABLE` on BRONZE, so LOADER OWNS every Bronze table it
+    creates — and an owner holds the object with grant option and can grant
+    itself TRUNCATE. The append-only property is therefore weaker than "no
+    TRUNCATE grant exists" makes it sound. Closing that means moving table
+    creation to another role, which is an infrastructure decision, not a test
+    change; this guard states the gap instead of implying it is covered.
+    """
+    blocks = loader_bronze_grant_blocks()
+
+    assert blocks, (
+        "No LOADER grant on BRONZE found in modules/snowflake-foundation/main.tf. "
+        "Either the grants moved to another file (point this guard at it) or "
+        "they were deleted. Failing rather than passing: a guard that finds "
+        "nothing to inspect has verified nothing."
+    )
+
+    assert any("TABLES" in code for _, code in blocks), (
+        "LOADER has grants on BRONZE but none on TABLES — the object type this "
+        "guard exists to constrain. If the table grant genuinely moved, update "
+        "this guard; do not let it pass by having nothing to check."
+    )
+
+    violations = []
+    for header, code in blocks:
+        privileges = hcl_string_list(code, "privileges") or []
+        for privilege in privileges:
+            if privilege.strip().upper() in BRONZE_DESTRUCTIVE_PRIVILEGES:
+                violations.append(f"{header.strip()}\n      privileges include {privilege!r}")
+        if re.search(r"^\s*all_privileges\s*=\s*true", code, re.MULTILINE):
+            violations.append(f"{header.strip()}\n      sets all_privileges = true")
+
+    assert not violations, (
+        "LOADER can empty BRONZE. Bronze is append-only — the privilege layer "
+        "is what enforces that, not convention:\n    "
+        + "\n    ".join(violations)
+        + "\n  TRUNCATE, ALL PRIVILEGES/ALL, OWNERSHIP and all_privileges = true "
+        "all confer the ability to empty a table."
+    )
 
 
 # ── 3. GitHub Actions Workflow ────────────────────────────────────────────────
