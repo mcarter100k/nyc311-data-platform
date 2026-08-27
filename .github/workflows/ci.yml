@@ -188,7 +188,29 @@ jobs:
       # SCD2 point-in-time join, upsert propagation, and the mocked live-fetch
       # contract tests.
       - name: Behavioral tests
-        run: pytest tests/local -v
+        run: pytest tests/local -v -ra --junitxml=local-report.xml
+
+      # Same gate the unit tier has, for the same reason and after the same
+      # failure. Every test in tests/local sits behind a module-level
+      # importorskip (duckdb and dbt-duckdb in conftest.py, pandas in two
+      # files), so a dependency that stops resolving turns all 63 into skips
+      # and this job green. That is not hypothetical: until this commit,
+      # test_bronze_is_a_view.py's two database tests were skipped on EVERY run
+      # of this job — they were gated on local/data/nyc311_local.duckdb, which
+      # nothing in CI has ever built — and run 33039271264 on main reported
+      # "61 passed, 2 skipped" and passed. A skip is not a pass.
+      - name: Enforce zero skips
+        run: |
+          python - << 'EOF'
+          import xml.etree.ElementTree as ET
+          root = ET.parse("local-report.xml").getroot()
+          suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+          tests = sum(int(s.get("tests", 0)) for s in suites)
+          skipped = sum(int(s.get("skipped", 0)) for s in suites)
+          assert tests > 0, "zero behavioral tests collected — the tier is hollow"
+          assert skipped == 0, f"{skipped} test(s) skipped — this job exists so importorskip can never hollow it out"
+          print(f"{tests} behavioral tests ran, 0 skipped")
+          EOF
 
   # ── front-door ────────────────────────────────────────────────────────────
   # Runs ./run_tests.sh — the command the README documents as THE way to run
