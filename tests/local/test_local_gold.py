@@ -192,6 +192,130 @@ def test_recurrence_detects_a_repeat_and_respects_censoring(gold_db):
             )
 
 
+# ── The observation horizon ──────────────────────────────────────────────────
+# observation_days was measured against max(created_date) over the load. That
+# reads as obviously right and is systematically wrong: the source publishes on
+# a ~23.5h lag, so its newest created_date is never a whole day — measured on
+# live loads it held 358, 372, 382 and 832 rows against a ~10,500 median. Every
+# closure was therefore credited with up to a full day of observation that had
+# not happened, and the error was differential across closure_type, which is the
+# one dimension this table exists to compare.
+#
+# The fixture timeline is built so the two horizons differ loudly: only Jan 4 is
+# a complete day, while the newest CREATED day is TODAY. Old horizon → ~950;
+# correct horizon → 1 and 2.
+
+def test_completeness_marks_only_the_fully_published_day(gold_db):
+    """int_load_completeness must judge each day on its own tail coverage, not
+    on being the newest day. The fixture publishes Jan 4 through 23:50 and every
+    other day only into working hours."""
+    rows = {r["load_day"]: r for r in gold_db["incremental"]["completeness"]}
+    assert rows, "int_load_completeness built no rows."
+
+    assert rows["2024-01-04"]["is_complete_day"] is True, (
+        "Jan 4 is covered to 23:50 — inside the 60-minute tail window — and must "
+        f"be complete. Got {rows['2024-01-04']}."
+    )
+    for day in ("2024-01-01", "2024-01-02", "2024-01-03"):
+        assert rows[day]["is_complete_day"] is False, (
+            f"{day}'s newest request is a working-hours one, leaving hundreds of "
+            f"minutes of the day unpublished; it must not read complete. "
+            f"Got {rows[day]}."
+        )
+
+    newest = max(rows)
+    assert rows[newest]["is_complete_day"] is False, (
+        f"The newest loaded day ({newest}) reads as complete. That is the exact "
+        "shape of the defect: under a ~23.5h publish lag the newest day is "
+        "always partial, and the horizon must not sit on it."
+    )
+
+
+def test_observation_days_measure_to_the_last_complete_day(gold_db):
+    """The regression test for the defect itself, in numbers.
+
+    Horizon = Jan 4 (the only complete day), NOT the newest created day. r1
+    closed Jan 3 → 1 day observed. r2 closed Jan 4 → 0, floored because nothing
+    published follows it. Under the old max(created_date) horizon both would be
+    in the high hundreds."""
+    by_key = {r["unique_key"]: r for r in gold_db["incremental"]["recurrence"]}
+
+    assert by_key["r1"]["observation_days"] == 1, (
+        f"r1 closed 2024-01-03 and the last COMPLETE published day is 2024-01-04, "
+        f"so exactly one day of history follows it. Got "
+        f"{by_key['r1']['observation_days']} — a value in the hundreds means the "
+        f"horizon is back on max(created_date), which is a partial day."
+    )
+    assert by_key["r2"]["observation_days"] == 0, (
+        f"r2 closed 2024-01-04, the last complete day itself, so no published "
+        f"history follows it. Got {by_key['r2']['observation_days']}."
+    )
+    assert by_key["r7"]["observation_days"] == 2, (
+        f"r7 closed 2024-01-02, two days before the horizon. Got "
+        f"{by_key['r7']['observation_days']}."
+    )
+
+
+def test_horizon_tests_pass_on_a_clean_build(gold_db):
+    """Precondition for the two sabotage tests below: both guards are green
+    before anything is broken, so a failure there is attributable."""
+    clean = gold_db["guards"]["clean"]
+    assert clean["returncode"] == 0, (
+        "The horizon guards fail on an unsabotaged build — they are not "
+        "measuring what they claim:\n" + clean["output"][-4000:]
+    )
+
+
+def test_horizon_guard_fires_when_the_horizon_runs_past_the_last_complete_day(gold_db):
+    """Non-vacuity, direction one. Advancing the horizon by a day is the defect
+    verbatim. It floors nothing, so the floor guard must stay GREEN and only the
+    horizon guard may fire — otherwise the two tests are one test."""
+    sabotage = gold_db["guards"]["horizon_advanced"]
+    assert sabotage["returncode"] != 0, (
+        "observation_days was advanced by a day — the horizon now sits one day "
+        "past the last completely published day, which is precisely the bug this "
+        "model was shipped with — and dbt test still passed.\n"
+        + sabotage["output"][-4000:]
+    )
+    assert "assert_recurrence_horizon_is_last_complete_day" in sabotage["output"], (
+        "dbt failed, but not in the horizon test — the guard is proving "
+        "something other than what it claims.\n" + sabotage["output"][-4000:]
+    )
+    assert "PASS assert_observation_days_floor_is_explained" in sabotage["output"], (
+        "The floor guard also fired on an over-advanced horizon. It is supposed "
+        "to catch the opposite failure; if it fires on both, one of the two "
+        "tests is redundant.\n" + sabotage["output"][-4000:]
+    )
+
+
+def test_floor_guard_fires_when_every_row_is_floored(gold_db):
+    """Non-vacuity, direction two — and the specific thing the old test could
+    not see. `observation_days >= 0` sat on GREATEST(0, ...), so a horizon that
+    froze or fell behind floored every row and the test reported PASS while the
+    sample silently drained out of every `observation_days >= N` filter."""
+    sabotage = gold_db["guards"]["all_floored"]
+    assert sabotage["returncode"] != 0, (
+        "Every observation_days was set to 0 — the state a frozen or backdated "
+        "horizon produces — and dbt test still passed. This is exactly the "
+        "condition the old `>= 0` test was blind to.\n"
+        + sabotage["output"][-4000:]
+    )
+    assert "assert_observation_days_floor_is_explained" in sabotage["output"], (
+        "dbt failed, but not in the floor test.\n" + sabotage["output"][-4000:]
+    )
+
+
+def test_horizon_guards_recover_after_the_model_is_rebuilt(gold_db):
+    """Both failures above must be caused by the sabotage and nothing else:
+    rebuild fct_complaint_recurrence from its source and they go green again."""
+    reverted = gold_db["guards"]["reverted"]
+    assert reverted["returncode"] == 0, (
+        "The horizon guards stayed red after fct_complaint_recurrence was "
+        "rebuilt, so the earlier failures cannot be attributed to the "
+        "sabotage:\n" + reverted["output"][-4000:]
+    )
+
+
 # ── Referential integrity across a moving Silver window ──────────────────────
 # fct_service_requests accumulates; Silver carries a rolling 7-day window. Any
 # dimension rebuilt from that window therefore forgets members the fact still

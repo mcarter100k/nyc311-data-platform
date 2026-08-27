@@ -82,12 +82,31 @@ closed as (
 
 ),
 
--- Latest created_date in the loaded data — the horizon against which
--- observation time is measured.
+-- The horizon against which observation time is measured: the newest day the
+-- source has published IN FULL.
+--
+-- It used to be max(created_date) over the load, and that was wrong in a way
+-- that survived review because it looks obviously right. The source publishes
+-- on a ~23.5h lag, so the newest created_date is NEVER a whole day — it is the
+-- first two hours of one (358, 372, 382, 832 rows measured, against a ~10,500
+-- median). Measuring observation time against it credited every closure with
+-- up to a full extra day it never had, and the error was differential across
+-- closure_type, which is the dimension this table exists to compare.
+--
+-- The completeness rule lives in int_load_completeness, once, because
+-- fct_daily_volume needs the same concept for its per-day figures. MAX over
+-- complete days rather than MAX over days is also what makes a multi-day gap
+-- safe: the 2026-08-18 upstream stall (docs/postmortems/) left two trailing
+-- days unusable, and nothing here needs to know that.
+--
+-- NULL is possible — a load holding less than one complete day has no honest
+-- horizon — and it is deliberately NOT defaulted to anything. See the
+-- observation_days expression below for what happens then.
 horizon as (
 
-    select max(cast(created_date as date)) as max_created_date
-    from source
+    select max(load_day) as last_complete_date
+    from {{ ref('int_load_completeness') }}
+    where is_complete_day
 
 ),
 
@@ -149,23 +168,44 @@ final as (
         w.closed_date,
         w.days_to_next_same_complaint,
 
-        -- How many days of loaded history follow this closure. A rate computed
-        -- over window N is only honest across rows where this is >= N.
+        -- How many days of COMPLETELY PUBLISHED history follow this closure. A
+        -- rate computed over window N is only honest across rows where this is
+        -- >= N, and that guarantee is only as good as the horizon: under the
+        -- old max(created_date) horizon a row reading 3 had really had ~2.04
+        -- days, because the newest loaded day contributed ~2 hours.
         --
         -- Floored at zero, and the floor is load-bearing rather than cosmetic.
-        -- The horizon is the newest CREATED row, because a recurrence is a new
-        -- ticket; but any bounded load can contain a request closed after that
-        -- horizon — the city keeps closing tickets between publishes, so a row
-        -- created 23:40 and closed 00:20 sits past a horizon that is still on
-        -- yesterday's date. The raw difference is then negative, which is not a
-        -- meaning this column has: "days of loaded history following this
-        -- closure" bottoms out at none. Zero is also the correct value for the
-        -- consumer contract — `observation_days >= N` excludes these rows from
-        -- every window, exactly as right-censoring requires.
-        greatest(
-            0,
-            datediff('day', cast(w.closed_date as date), h.max_created_date)
-        )                                                                       as observation_days,
+        -- Any bounded load contains requests closed after the horizon — the
+        -- city keeps closing tickets during the ~23.5h the newest day has not
+        -- finished publishing — and the raw difference is then negative, which
+        -- is not a meaning this column has: "days of published history
+        -- following this closure" bottoms out at none. Zero is also the correct
+        -- value for the consumer contract, since `observation_days >= N`
+        -- excludes these rows from every window, exactly as right-censoring
+        -- requires.
+        --
+        -- The floor is NOT a licence to floor everything, which is precisely
+        -- what a broken horizon would do, silently and invisibly to a `>= 0`
+        -- test. assert_observation_days_floor_is_explained.sql requires every
+        -- floored row to be a row that closed on or after the last complete
+        -- day, and assert_recurrence_horizon_is_last_complete_day.sql recovers
+        -- the horizon back out of this column and compares it to
+        -- int_load_completeness.
+        --
+        -- The NULL horizon case is explicit rather than left to GREATEST, whose
+        -- NULL handling differs by warehouse: Snowflake returns NULL from
+        -- GREATEST(0, NULL) while DuckDB returns 0. Relying on that would make
+        -- "we have no complete day" a loud failure on one engine and a table
+        -- full of silent zeros on the other. Written out, both engines produce
+        -- NULL, the not_null test reddens the build, and nobody consumes a
+        -- fabricated horizon.
+        case
+            when h.last_complete_date is null then null
+            else greatest(
+                0,
+                datediff('day', cast(w.closed_date as date), h.last_complete_date)
+            )
+        end                                                                     as observation_days,
 
         v.location_ticket_count,
 
