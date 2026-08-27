@@ -10,33 +10,50 @@ A medallion data platform over NYC's 311 service requests — **it runs daily ag
 
 ## What the data says
 
-Any pipeline can move rows. These came out of this one — measured on the 72,312 requests it loaded for **12–19 Aug 2026**:
+Any pipeline can move rows. These came out of this one — measured on the 127,255 requests it loaded for the twelve complete days **13–24 Aug 2026**. Each finding below is reported at the strength the data actually supports, which in one case is *not at all*.
 
-**"Closed" usually does not mean "fixed."** The city closed 46,627 requests in that window. Reading each closure's own text, **only 35.9% describe the city doing anything** — the rest closed as *no violation found*, *nothing there*, duplicate, or handed off.
+**"Closed" usually does not mean "fixed" — and the rate is a range, not a number.** The city closed 89,506 requests in that window. Reading each closure's own text, between **35% and 44%** describe the city doing anything; the rest closed as *no violation found*, *nothing there*, duplicate, or handed off.
 
-| Category | Marked resolved | Actually actioned |
+It is a range because 7,571 closures — 8.5% of them — carry resolution text no rule could classify. The low end assumes none of those were real work, the high end assumes all were. Both are wrong; the truth is inside, and the interval is the honest way to say we cannot pin it down.
+
+| Category | Actioned (low–high) | Uncertainty |
 |---|---|---|
-| Illegal Parking | 93% | 42% |
-| Abandoned Vehicle | 93% | 28% |
-| **Homeless Services** | **89%** | **16%** |
-| Noise | 89% | 32% |
+| Illegal Parking | 42–43% | 0.7pp |
+| Noise | 40–41% | 1.5pp |
+| **Homeless Services** | **17–20%** | 3.6pp |
+| Street Condition | 28–46% | 17.9pp |
+| Water & Sewer | 17–40% | 22.3pp |
 
-A resolution rate of 89% and an action rate of 16% describe very different cities. The platform reports both, because reporting only the first would be flattering and wrong.
+The last two rows are the point. For Illegal Parking the answer is known to within a percentage point. For Water & Sewer the decoder cannot classify enough of the text to say whether the city acted on a fifth or two fifths of complaints — so the platform publishes the interval rather than picking a midpoint and calling it a finding.
 
-**The weekend city complains about different things, not more things.** Total volume barely moves (8,918/day → 9,403/day), but noise complaints **multiply 2.4×** — 1,411/day on weekdays to 3,410/day at weekends. Composition flips; volume doesn't.
+An earlier version of this table carried a "Marked resolved" column showing 89–93% against these action rates. It has been removed: it measured how much of the window had elapsed at snapshot time, not how the city performed. Rates over requests that have not finished being open are right-censored, and `fct_daily_volume` now returns NULL for them rather than a number ([ADR 016](docs/adr/016-source-settling-horizon.md)).
 
-**And "nothing found" mostly means nothing was there.** The only test of resolution quality available from 311 alone is whether the same complaint reappears at the same address. Comparing recurrence within 3 days, excluding chronic locations and controlling for how much observation time each closure actually had:
+**The weekend city complains about different things, and slightly fewer of them.** Volume *falls* at weekends — 10,955/day on weekdays to 9,903/day — while noise complaints **more than double**, 1,730/day to 3,589/day. Composition flips hard; volume drifts down.
 
-| Closed as | Recurred |
+An earlier version of this README had the volume comparison the other way round, reporting a weekend *rise* from 8,918 to 9,403. That came from dividing weekday and weekend totals by the same number of days when the window held eight of one and four of the other. The composition finding was never affected — noise really does double — but the headline it sat under was backwards.
+
+**A closure the city couldn't complete is the one that comes back.** The only test of resolution quality available from 311 alone is whether the same complaint reappears at the same address. One result survives every way of asking:
+
+| Closed as | Recurred within 3 days |
 |---|---|
-| Access Failed — the city couldn't get in | **15.3%** |
-| No Violation Found | 12.3% |
-| Work Performed | 9.2% |
-| **No Condition Found** | **8.5%** |
+| **Access Failed — the city couldn't get in** | **13.8%** |
+| Resolved on Scene | 10.5% |
+| Duplicate | 10.4% |
+| Enforcement Action | 10.4% |
+| Referred Elsewhere | 10.2% |
+| No Violation Found | 9.7% |
+| No Condition Found | 6.7% |
+| Work Performed | 5.7% |
 
-Physical work sticks; failed access does not. But the result that matters is the last row: closures reporting *"nothing there"* recur **least**, which argues they were mostly correct — the problem had resolved itself before anyone arrived — rather than premature. That distinction is invisible in the resolution rate, and it reverses the obvious assumption.
+Every decoded closure type with at least 200 closures, not a selection.
 
-Caveats, because they are load-bearing: one week of history supports only a 3-day window, and recurrence is evidence rather than proof — a repeat can mean the fix failed *or* that the condition is legal and residents keep reporting it. Excluding chronic locations roughly halves the spread, so an unfiltered rate is not a finding. Both guards are columns on [`fct_complaint_recurrence`](dbt/models/marts/fct_complaint_recurrence.sql).
+*Access Failed* ranks first in **all eight** specifications tried — recurrence windows of 2, 3, 4 and 5 days, each with and without chronic locations — leading the runner-up by 1.1 to 5.8 points. A complaint nobody could reach is not resolved, and the data says so consistently.
+
+**The finding this section used to lead with has been withdrawn.** It claimed that *No Condition Found* recurred **least** — below *Work Performed* — and argued that "nothing there" closures were therefore mostly correct rather than premature. On the current twelve-day load that ordering is reversed: *Work Performed* recurs least at 5.7%, *No Condition Found* at 6.7%. The original numbers came from an earlier seven-day load, and the comparison flipped between the two. A conclusion that changes sign when the window grows was never strong enough to publish, and the honest thing is to say so rather than quietly restate it with new digits.
+
+What that leaves is a narrower claim and a real limit. Absolute recurrence rates are not portable at all — *Work Performed* moves between 4.2% and 15.8% depending only on the window and whether chronic locations are included, a nearly fourfold spread on identical data. Only the *ranking* of Access Failed is stable, and only among closure types whose text could actually be decoded; ranked over all rows, the top slot goes to `Unspecified` — closures with no resolution text at all — which is an absence of information, not a finding about the city.
+
+Recurrence is also evidence rather than proof: a repeat can mean the fix failed *or* that the condition is legal and residents keep reporting it. Both guards — chronic locations, observation time — are columns on [`fct_complaint_recurrence`](dbt/models/marts/fct_complaint_recurrence.sql), so any of the eight specifications above can be reproduced.
 
 Run the same analysis yourself in about a minute — no cloud account needed:
 
@@ -47,8 +64,17 @@ python local/local_runner.py --live          # fetch → bronze → silver → d
 ```
 
 **You will not get the numbers above, and that is expected.** `--live` fetches a
-trailing seven days ending *today*, so your window is not 12–19 Aug 2026 — the
-counts and percentages will differ. The comparisons should hold; the digits will not.
+trailing seven days ending *today*, so your window is not 13–24 Aug 2026 — the
+counts and percentages will differ.
+
+Be careful how much you expect to survive the change, because this README has
+already been wrong about that. Only the Access Failed ranking has been shown to
+hold across specifications; the recurrence comparison that used to headline this
+section reversed when the window grew from seven days to twelve. Treat a single
+window as one observation, not as a result. A seven-day `--live` window is also
+narrower than the twelve complete days measured above, and `fct_daily_volume`
+will return NULL for every rate in it — a 7-day load cannot answer a 30-day
+question, and `n/a` is the correct answer rather than a bug.
 
 Then query Gold. There is no `duckdb` command to run: `pip install duckdb` ships
 the Python library, not a CLI binary. Query it from Python instead —
