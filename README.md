@@ -57,16 +57,28 @@ the Python library, not a CLI binary. Query it from Python instead —
 import duckdb
 con = duckdb.connect("local/data/nyc311_local.duckdb", read_only=True)
 
-# Action rate. The headline denominator is CLOSED requests, not all requests:
+# Action rate. The headline denominator is CLOSED requests, not all requests —
+# and it has a known floor: rows whose resolution text the closure_type decoder
+# could not read are is_actioned = FALSE, so measure that too rather than
+# quoting the rate alone.
 con.sql("""
-    select count(*) filter (where is_actioned) * 1.0 / count(*) as pct_actioned_of_closed
+    select count(*) filter (where is_actioned) * 1.0 / count(*)                as pct_actioned_of_closed,
+           count(*) filter (where closure_type = 'Undecodable') * 1.0 / count(*) as pct_undecodable
     from gold.fct_service_requests
     where is_resolved
 """).show()
 
-# gold.fct_daily_volume carries pct_actioned too, but over ALL rows — open
-# requests included — so it is a different, lower number. Same column name,
-# different denominator; check which one a chart is using.
+# gold.fct_daily_volume publishes pct_actioned_within_window at (day, borough,
+# category), with undecodable_closure_requests beside it for the same reason.
+# Every rate on that table is NULL unless is_denominator_closed — a rate over
+# requests created recently is right-censored, so it is suppressed rather than
+# printed. On a 7-day --live mirror that is every row: a 14-day load cannot
+# answer a 30-day question, and n/a is the honest answer.
+con.sql("""
+    select is_denominator_closed, count(*) as groups,
+           count(pct_closed_within_window) as groups_publishing_a_rate
+    from gold.fct_daily_volume group by 1
+""").show()
 
 # Recurrence is not in fct_daily_volume at all; it has its own fact table,
 # with the two guards (chronic locations, observation time) as columns:
@@ -168,12 +180,12 @@ Gold is a Kimball star: <!--claim:fct_models-->4<!--/claim--> fact tables, <!--c
 
 ## Test Suite
 
-Two populations, deliberately not summed: **<!--claim:test_count-->235<!--/claim--> pytest tests** that need no cloud account, and **<!--claim:dbt_test_count-->128<!--/claim--> dbt data tests (<!--claim:dbt_generic_tests-->119<!--/claim--> generic + <!--claim:dbt_singular_tests-->9<!--/claim--> singular)** that run against the warehouse during `dbt build`. Both counts are recomputed in CI — the pytest one from collection, the dbt one from the parsed manifest. The dbt figure was a bare literal until 2026-08-26 and had rotted twice through merges, silently, while every marker-guarded number beside it stayed correct.
+Two populations, deliberately not summed: **<!--claim:test_count-->237<!--/claim--> pytest tests** that need no cloud account, and **<!--claim:dbt_test_count-->132<!--/claim--> dbt data tests (<!--claim:dbt_generic_tests-->121<!--/claim--> generic + <!--claim:dbt_singular_tests-->11<!--/claim--> singular)** that run against the warehouse during `dbt build`. Both counts are recomputed in CI — the pytest one from collection, the dbt one from the parsed manifest. The dbt figure was a bare literal until 2026-08-26 and had rotted twice through merges, silently, while every marker-guarded number beside it stayed correct.
 
 | Tier | Count | What it proves |
 |---|---|---|
-| **Structural** | <!--claim:structural_test_count-->164<!--/claim--> | Configuration correctness — schema resolution, incremental strategy, DAG lineage, freshness target, Terraform validity, the LOADER-has-no-TRUNCATE contract, a relationships test on every fact foreign key. Also the documentation guards' own failure modes ([tests/test_doc_guards.py](tests/test_doc_guards.py)): each check in `scripts/check_claims.py` is exercised against a synthetic tree with the thing it guards broken, because a check that cannot fail reports green and is read as evidence — this repo has shipped three of those by accident |
-| **Unit** | <!--claim:unit_test_count-->8<!--/claim--> | Silver transformation *logic* ([local/silver_transformations.py](local/silver_transformations.py)) against hand-built fixtures |
+| **Structural** | <!--claim:structural_test_count-->165<!--/claim--> | Configuration correctness — schema resolution, incremental strategy, DAG lineage, freshness target, Terraform validity, the LOADER-has-no-TRUNCATE contract, a relationships test on every fact foreign key. Also the documentation guards' own failure modes ([tests/test_doc_guards.py](tests/test_doc_guards.py)): each check in `scripts/check_claims.py` is exercised against a synthetic tree with the thing it guards broken, because a check that cannot fail reports green and is read as evidence — this repo has shipped three of those by accident |
+| **Unit** | <!--claim:unit_test_count-->9<!--/claim--> | Silver transformation *logic* ([local/silver_transformations.py](local/silver_transformations.py)) against hand-built fixtures |
 | **Behavioral** | <!--claim:behavioral_test_count-->63<!--/claim--> | Gold *semantics* — builds the dbt project twice on seeded DuckDB and asserts on output rows: watermark lookback, SCD2 point-in-time join, update propagation, and dimension retention when Silver's rolling window moves past a member the fact still references. Also import health for every module in [local/](local/), which needs the real runtime dependencies this tier installs |
 
 The structural tier is the largest and the weakest, and it is worth saying so: it catches config drift and silent contract violations in seconds, but **a model can be perfectly configured and still compute the wrong number.** That is what the other two tiers are for.
@@ -244,7 +256,7 @@ terraform/github/  this repo's own infrastructure — labels, branch protection,
 config/         borough_variants.csv — one mapping, read by Python and dbt alike
 scripts/        SLO checks, claim checker, model-drift guard
 docs/           ARCHITECTURE · SLO · CLAIMS · BACKLOG · adr/ (<!--claim:adr_count-->15<!--/claim-->) · postmortems/
-tests/          <!--claim:test_count-->235<!--/claim--> pytest tests across three tiers
+tests/          <!--claim:test_count-->237<!--/claim--> pytest tests across three tiers
 ```
 
 ---

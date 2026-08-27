@@ -45,6 +45,22 @@ vars:
   # resolution, and it dominates any unfiltered recurrence rate.
   chronic_location_min_tickets: 5
 
+  # fct_daily_volume. Every rate on that table is bounded to this window
+  # ("closed within N days of creation", not "closed by now") and is published
+  # only for days that N complete days of history follow. Days newer than that
+  # publish NULL, because their denominators are still filling: measured on a
+  # 14-day local load the same pct_resolved column read 0.7452 at 12 days
+  # observed and 0.4003 at zero, and the second number is not a bad day for the
+  # city, it is a cohort that has not happened yet.
+  #
+  # 30 is not a free parameter. It is the NYC administrative standard already
+  # encoded in fct_service_requests.is_overdue (resolution_days > 30), so the
+  # window this table publishes over and the deadline the city is held to stay
+  # one number in one place. Consequence, stated rather than hidden: on a 7–14
+  # day mirror NO day is eligible and every rate column reads NULL — the correct
+  # answer for a 14-day load asked a 30-day question.
+  closure_window_days: 30
+
   # int_load_completeness. A loaded day counts as COMPLETE when the newest
   # request created on it lands within this many minutes of midnight.
   #

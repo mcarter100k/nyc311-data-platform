@@ -44,9 +44,17 @@ models:
       - name: complaint_category
         description: >
           Grouped complaint category derived from complaint_type via CASE WHEN
-          pattern matching (21 operational categories plus 'Other'). Categories
-          follow how the city is organised, so each maps to an accountable
-          agency. 'Other' is held under 5% by the
+          pattern matching (21 operational categories). Categories follow how
+          the city is organised, so each maps to an accountable agency.
+
+          TWO NON-CATEGORIES, deliberately distinct. 'Unspecified' means the
+          source supplied no complaint_type at all (0 rows on the local load).
+          'Undecodable' means it supplied one and no rule matched it — a decoder
+          miss, not a verdict, which is why it is no longer called 'Other'.
+          Measured on the local load, all 189 rows of the old 'Other' bucket
+          were of the second kind: real long-tail types (Green Infrastructure,
+          E-Scooter, LinkNYC, Ferry Inquiry) that the CASE has no rule for.
+          'Undecodable' is held under 5% of rows by the
           assert_complaint_classification_coverage singular test.
         tests:
           - not_null
@@ -74,7 +82,8 @@ models:
                   - 'Housing & Building Maintenance'
                   - 'Public Safety & Quality of Life'
                   - 'Consumer & Business'
-                  - 'Other'
+                  - 'Unspecified'
+                  - 'Undecodable'
 
       - name: closure_type
         description: >
@@ -83,8 +92,19 @@ models:
           problem was fixed: on one week of live data only 36.7% of closed
           requests describe any action. Action outcomes are Resolved on Scene,
           Enforcement Action and Work Performed; the rest closed without the
-          city doing anything. 'Unspecified' covers null text plus boilerplate
-          that states no outcome ("see notes", "status is on our website").
+          city doing anything.
+
+          TWO NON-OUTCOMES, deliberately distinct — they were one value until
+          this pass and the merge hid a large decoder miss. 'Unspecified' means
+          the source stated no resolution (null, blank, or the literal 'N/A'):
+          14,185 rows on the local load, and a real decoded verdict.
+          'Undecodable' means it stated one and no rule matched: 8,330 rows,
+          7.34% of every row carrying resolution text and 8.45% of all CLOSED
+          requests, each one landing in is_actioned as a FALSE. The strings in
+          it are not junk — "NYC Parks performed the work necessary to correct
+          the condition." (310 rows) is plainly Work Performed. Read
+          fct_daily_volume.undecodable_closure_requests beside any percentage
+          derived from is_actioned; it is the size of the floor under it.
         tests:
           - not_null
           - accepted_values:
@@ -100,6 +120,7 @@ models:
                   - 'Referred Elsewhere'
                   - 'Pending'
                   - 'Unspecified'
+                  - 'Undecodable'
 
       - name: resolution_days
         description: >
