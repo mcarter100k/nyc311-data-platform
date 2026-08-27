@@ -1,0 +1,69 @@
+version: 2
+
+models:
+  - name: int_load_completeness
+    description: >
+      One row per calendar day present in the loaded source window, carrying
+      the verdict "has the source published this day IN FULL?".
+
+      This is the single definition of a complete day. Nothing downstream
+      re-derives it: fct_complaint_recurrence takes its observation horizon as
+      MAX(load_day) WHERE is_complete_day, and fct_daily_volume joins the flag
+      onto each day so per-day figures (weekend vs weekday volume, for one) can
+      exclude a day the source has only half-published.
+
+      The rule is clock coverage, not row count. The source publishes with a
+      ~23.5h lag, so its newest day always stops after the first couple of
+      hours; and its row counts are not stable enough to threshold on (two
+      identical fetches minutes apart returned 65,936 and 54,446 rows). A day
+      is complete when its newest request lands within complete_day_tail_minutes
+      of midnight — a property a thin replica of a finished day still has.
+
+      Completeness is judged per day, so an arbitrary number of trailing
+      partial or missing days (the 2026-08-18 upstream stall produced two) is
+      handled by taking the maximum complete day rather than the maximum day.
+
+      A day absent from this table is not "incomplete" — it is outside the
+      currently loaded window and therefore not assessable from this build.
+    columns:
+      - name: load_day
+        description: "Calendar date of creation. Grain of this table."
+        tests:
+          - unique
+          - not_null
+
+      - name: requests_created
+        description: >
+          Requests created on this day that are present in the load. Reported
+          for context only — deliberately NOT the completeness rule, because
+          the source is not read-consistent about counts.
+        tests:
+          - not_null
+
+      - name: last_created_at
+        description: "Newest created_date on this day. The measurement the verdict rests on."
+        tests:
+          - not_null
+
+      - name: requests_in_tail_window
+        description: >
+          Requests created within complete_day_tail_minutes of midnight. The
+          audit margin behind is_complete_day: 311–695 on every complete day of
+          a 14-day live load, 0 on the partial one.
+        tests:
+          - not_null
+
+      - name: minutes_short_of_midnight
+        description: >
+          Minutes between last_created_at and the end of the day. 1 on a
+          complete day; 1,314 on the trailing partial day measured 2026-08-26.
+        tests:
+          - not_null
+
+      - name: is_complete_day
+        description: >
+          TRUE when minutes_short_of_midnight <= complete_day_tail_minutes.
+          Consumers take MAX(load_day) WHERE is_complete_day as the end of
+          trustworthy history.
+        tests:
+          - not_null

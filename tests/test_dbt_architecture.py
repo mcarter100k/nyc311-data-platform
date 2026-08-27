@@ -24,6 +24,7 @@ ALL_MODELS = [
     "stg_data_quality_log",
     "stg_quarantine",
     "int_service_requests_cleaned",
+    "int_load_completeness",
     "dim_agency",
     "dim_date",
     "dim_location",
@@ -332,6 +333,44 @@ def test_fct_service_requests_depends_on_all_dims_and_intermediate(models):
     missing = required - deps
     assert not missing, (
         f"fct_service_requests is missing dependencies: {missing}"
+    )
+
+
+def test_recurrence_horizon_comes_from_load_completeness(models):
+    """
+    fct_complaint_recurrence must take its observation horizon from
+    int_load_completeness.
+
+    This pins the fix for a defect that reads as obviously correct in the SQL:
+    the horizon used to be max(created_date) over the load. The source publishes
+    on a ~23.5h lag, so the newest created_date is never a whole day — it is the
+    first couple of hours of one — and every observation_days value was inflated
+    by up to a full day against a horizon that did not exist yet. A future edit
+    that drops this dependency has almost certainly re-derived the horizon
+    locally, which is the shape of the original bug.
+    """
+    deps = _dep_names(models["fct_complaint_recurrence"])
+    assert "int_load_completeness" in deps, (
+        "fct_complaint_recurrence no longer depends on int_load_completeness — "
+        "its observation horizon is being derived somewhere else. The last "
+        "COMPLETE load day is the only honest horizon; the newest loaded day is "
+        "always partial."
+    )
+
+
+def test_daily_volume_carries_load_completeness(models):
+    """
+    fct_daily_volume must also read int_load_completeness. Every figure on that
+    table is a per-day figure, and the newest loaded day is a ~2-hour day; a
+    daily mean taken across it without the flag is contaminated the same way the
+    recurrence horizon was. The point of the shared model is that both consumers
+    read ONE definition — this asserts the second one still does.
+    """
+    deps = _dep_names(models["fct_daily_volume"])
+    assert "int_load_completeness" in deps, (
+        "fct_daily_volume no longer depends on int_load_completeness — its "
+        "is_complete_day flag is gone or locally re-derived, and per-day "
+        "averages across a partial day are back."
     )
 
 
