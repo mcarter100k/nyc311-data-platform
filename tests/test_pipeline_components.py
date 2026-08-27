@@ -3,7 +3,8 @@ Pipeline Component Tests — NYC 311 Data Platform
 
 Tests the non-dbt pieces of the pipeline without needing live cloud credentials:
 
-  1. Airflow DAG           — syntax validity, task count, dependency chain
+  1. Airflow DAG           — syntax validity, task count, and the dependency
+                             GRAPH reconstructed from the file's AST (§1b)
   2. Terraform             — HCL syntax validity via terraform validate
   3. GitHub Actions        — workflow YAML structure
   4. profiles.yml.example  — connection config correctness
@@ -106,6 +107,287 @@ def test_local_dag_invokes_the_pipeline_venv_explicitly():
     interpreter rather than whatever python is on PATH."""
     assert file_contains(DAG_PATH, "PIPELINE_PY"), (
         "Tasks must invoke the pipeline venv explicitly, not ambient python."
+    )
+
+
+# ── 1b. The DAG's dependency GRAPH, not just its task names ───────────────────
+#
+# The tests above assert that seven task_id STRINGS appear in the file. That is
+# satisfied by a DAG whose tasks are wired in any order, or in no order at all.
+# Three mutations were run against the suite as it stood on 2026-08-26 and all
+# three passed green:
+#
+#   1. `dbt_build` moved ahead of `load_silver` — transform before the data it
+#      transforms has been loaded.
+#   2. the `dbt_build >> check_slos` edge deleted — `check_slos` and
+#      `upstream_stall_check` become roots and fire at DAG start, evaluating
+#      SLOs against yesterday's warehouse.
+#   3. the entire dependency block deleted — seven tasks, no edges, everything
+#      fires at once.
+#
+# Each of those is a catastrophic orchestration bug that ships silently. The
+# checks below read the actual edge list.
+#
+# WHY THE SOURCE AND NOT THE BUILT DAG
+# ------------------------------------
+# The honest test would import the DAG and read `task.upstream_task_ids`,
+# because that is what Airflow itself will do. It is not available here: this
+# suite runs in `.venv`, which has no Airflow (Airflow lives in `.venv-airflow`,
+# kept separate on purpose — see the DAG docstring). And the usual guard,
+# `pytest.importorskip("airflow")`, is actively DANGEROUS in this repo: `import
+# airflow` SUCCEEDS from the repo root because `airflow/` is a directory and
+# Python treats it as a namespace package, so importorskip would neither skip
+# nor import anything real:
+#
+#     >>> import airflow; airflow.__file__ is None      # True — namespace pkg
+#     >>> from airflow.sdk import DAG                   # ModuleNotFoundError
+#
+# So these tests parse the file's AST and reconstruct the `>>` / `<<` chains
+# into an edge list. That is weaker than the built DAG — it cannot see edges
+# created by anything the extractor does not model, which is why
+# `dag_dependency_edges` RAISES on constructs it does not understand rather
+# than returning a quietly incomplete graph.
+#
+# REACHABILITY, NOT EXACT SEQUENCE
+# --------------------------------
+# `REQUIRED_ORDERING` is asserted as "b is reachable from a", not as adjacency
+# and not as an exact task sequence. The distinction is the whole point: the
+# constraints below are the SEMANTIC ones (you cannot transform data you have
+# not loaded), so inserting a task between two of them, or running `check_slos`
+# and `upstream_stall_check` in parallel off `dbt_build`, is a harmless change
+# and must stay green. Reversing two of them is a data-corruption bug and must
+# go red. An exact-sequence equality would conflate the two and get itself
+# deleted the first time someone parallelised anything.
+
+# Ordering relationships that must hold for the pipeline to be correct.
+REQUIRED_ORDERING = [
+    # Don't spend a fetch on a source that isn't answering.
+    ("check_source", "fetch_live"),
+    # Medallion order: raw lands before bronze, bronze before silver.
+    ("fetch_live", "load_bronze"),
+    ("load_bronze", "load_silver"),
+    # dbt reads silver. Building first would transform stale or absent data.
+    ("load_silver", "dbt_build"),
+    # SLO-1 freshness is measured on what dbt just built, not what was there
+    # before the run.
+    ("dbt_build", "check_slos"),
+    # Same for the stall warning: it reads the DuckDB the build populates.
+    # Deliberately NOT pinned to `check_slos` — the two are independent readers
+    # and parallelising them is a legitimate change.
+    ("dbt_build", "upstream_stall_check"),
+]
+
+# The only task that may have no upstream. Anything else without an upstream is
+# an orphan that fires at DAG start — mutation 2 above.
+DAG_ROOT_TASKS = {"check_source"}
+
+# Dependency helpers that create edges this AST reader cannot see. Their
+# presence makes the reconstructed graph a lie, so it refuses to return one.
+UNMODELLED_DEPENDENCY_HELPERS = {"chain", "chain_linear", "cross_downstream"}
+
+
+def _task_ids_by_variable(tree):
+    """Map `x` -> "the_task_id" for every `x = SomeOperator(task_id="...")`.
+
+    The `>>` chains reference python variables, not task_ids. Resolving through
+    this map means a variable renamed without its task_id (or vice versa) is
+    caught rather than silently producing edges between names that don't exist.
+    """
+    mapping = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+            continue
+        task_id = next(
+            (
+                kw.value.value
+                for kw in node.value.keywords
+                if kw.arg == "task_id"
+                and isinstance(kw.value, ast.Constant)
+                and isinstance(kw.value.value, str)
+            ),
+            None,
+        )
+        if task_id is None:
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                mapping[target.id] = task_id
+    return mapping
+
+
+def _endpoints(node, task_ids, edges):
+    """Reduce a dependency expression to (entry tasks, exit tasks), collecting
+    edges into `edges` on the way.
+
+    `a >> b >> c` parses as `BinOp(BinOp(a, >>, b), >>, c)`, so the edge b->c
+    needs the EXIT of the left subtree, not its root. Lists fan out: for
+    `[a, b] >> c` the entry and exit sets are both {a, b}, producing a->c and
+    b->c. Raises on any node shape it does not model, so an unreadable
+    expression fails loudly instead of contributing zero edges.
+    """
+    if isinstance(node, ast.Name):
+        if node.id not in task_ids:
+            raise AssertionError(
+                f"Dependency chain references '{node.id}', which is not a "
+                f"variable assigned an operator with a task_id. Known tasks: "
+                f"{sorted(task_ids)}"
+            )
+        return {task_ids[node.id]}, {task_ids[node.id]}
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        members = set()
+        for element in node.elts:
+            entry, exit_ = _endpoints(element, task_ids, edges)
+            members |= entry | exit_
+        return members, members
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.RShift, ast.LShift)):
+        left_entry, left_exit = _endpoints(node.left, task_ids, edges)
+        right_entry, right_exit = _endpoints(node.right, task_ids, edges)
+        if isinstance(node.op, ast.RShift):
+            edges.update((u, d) for u in left_exit for d in right_entry)
+            return left_entry, right_exit
+        # `a << b` means b is upstream of a.
+        edges.update((u, d) for u in right_exit for d in left_entry)
+        return right_entry, left_exit
+    raise AssertionError(
+        f"Unreadable dependency expression at line {getattr(node, 'lineno', '?')}: "
+        f"{ast.dump(node)[:200]}. Extend _endpoints() rather than leaving the "
+        f"reconstructed graph incomplete."
+    )
+
+
+def dag_dependency_edges(path=DAG_PATH):
+    """Return (task_ids_by_variable, {(upstream_task_id, downstream_task_id)}).
+
+    Reads the SOURCE, not a DAG object built by Airflow — see the section
+    comment above for why. Raises rather than returning an empty or partial
+    graph, so a missing file, a deleted dependency block, or a dependency
+    helper this reader cannot model is a test FAILURE and never a silent pass.
+    """
+    assert os.path.exists(path), (
+        f"{path} does not exist. If the DAG was renamed, update DAG_PATH — "
+        f"do not let this guard find nothing to check."
+    )
+    tree = parse_python(path)
+    task_ids = _task_ids_by_variable(tree)
+    assert task_ids, (
+        f"No `variable = Operator(task_id=...)` assignments found in {path}. "
+        f"Either the DAG defines no tasks or it builds them in a way this "
+        f"reader cannot follow; in both cases the graph below would be empty."
+    )
+
+    edges = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id in UNMODELLED_DEPENDENCY_HELPERS:
+                raise AssertionError(
+                    f"{path} line {node.lineno} uses {func.id}(), which creates "
+                    f"dependencies this AST reader does not model. The "
+                    f"reconstructed graph would be missing edges and the "
+                    f"ordering assertions would be vacuous. Extend "
+                    f"dag_dependency_edges() to handle it."
+                )
+            if isinstance(func, ast.Attribute) and func.attr in (
+                "set_downstream",
+                "set_upstream",
+            ):
+                base_entry, base_exit = _endpoints(func.value, task_ids, edges)
+                for arg in node.args:
+                    arg_entry, arg_exit = _endpoints(arg, task_ids, edges)
+                    if func.attr == "set_downstream":
+                        edges.update((u, d) for u in base_exit for d in arg_entry)
+                    else:
+                        edges.update((u, d) for u in arg_exit for d in base_entry)
+        elif isinstance(node, ast.Expr) and isinstance(node.value, ast.BinOp):
+            if isinstance(node.value.op, (ast.RShift, ast.LShift)):
+                _endpoints(node.value, task_ids, edges)
+
+    assert edges, (
+        f"{path} declares tasks but NO dependencies between them. Every task "
+        f"would fire at DAG start. If the `>>` chain moved or was deleted, this "
+        f"is the bug; if it moved to a construct this reader cannot see, extend "
+        f"dag_dependency_edges()."
+    )
+    return task_ids, edges
+
+
+def _reachable_from(edges, start):
+    """Task ids reachable downstream of `start`. Cycle-safe (visited set)."""
+    downstream = {}
+    for upstream, downstream_task in edges:
+        downstream.setdefault(upstream, set()).add(downstream_task)
+    seen, stack = set(), [start]
+    while stack:
+        for nxt in downstream.get(stack.pop(), ()):
+            if nxt not in seen:
+                seen.add(nxt)
+                stack.append(nxt)
+    return seen
+
+
+def test_local_dag_dependency_graph_is_readable_and_complete():
+    """Anti-vacuity guard for every ordering assertion below.
+
+    Those assertions are all of the form "b is reachable from a". On an empty
+    graph that form fails, but only because reachability is empty — which is
+    the right answer for the wrong reason and would not survive someone
+    "fixing" a test by relaxing it. This states the precondition directly: the
+    file exists, all seven tasks resolve, and every one of them appears in the
+    edge list.
+    """
+    task_ids, edges = dag_dependency_edges()
+
+    missing = [t for t in EXPECTED_TASKS if t not in set(task_ids.values())]
+    assert not missing, f"DAG does not define task(s): {missing}"
+
+    wired = {t for edge in edges for t in edge}
+    unwired = [t for t in EXPECTED_TASKS if t not in wired]
+    assert not unwired, (
+        f"Task(s) {unwired} are defined but appear in no dependency edge — "
+        f"they would run immediately at DAG start."
+    )
+
+
+@pytest.mark.parametrize("upstream,downstream", REQUIRED_ORDERING)
+def test_local_dag_orders_tasks_correctly(upstream, downstream):
+    """`downstream` must be reachable from `upstream` in the real edge list.
+
+    Reachability, not adjacency: inserting a task between the two is fine,
+    reversing them is not. See the section comment for the distinction.
+    """
+    _, edges = dag_dependency_edges()
+    reachable = _reachable_from(edges, upstream)
+    assert downstream in reachable, (
+        f"'{downstream}' does not run after '{upstream}' in nyc311_local. "
+        f"Reachable from '{upstream}': {sorted(reachable) or 'nothing'}. "
+        f"Edges: {sorted(edges)}"
+    )
+
+
+def test_local_dag_has_no_orphaned_tasks():
+    """Only `check_source` may start with no upstream.
+
+    A task with no upstream is not "unordered", it is scheduled at DAG start.
+    Deleting one `>>` is enough to make `check_slos` evaluate SLOs against the
+    previous run's warehouse, on a green DAG.
+    """
+    _, edges = dag_dependency_edges()
+    has_upstream = {downstream for _, downstream in edges}
+    roots = {t for t in EXPECTED_TASKS if t not in has_upstream}
+    assert roots == DAG_ROOT_TASKS, (
+        f"Tasks with no upstream should be exactly {sorted(DAG_ROOT_TASKS)}, "
+        f"but are {sorted(roots)}. Extra roots fire at DAG start."
+    )
+
+
+def test_local_dag_is_acyclic():
+    """Airflow rejects a cyclic DAG at parse time — but nothing here parses it
+    with Airflow, so the cycle would only surface on the scheduler."""
+    _, edges = dag_dependency_edges()
+    cyclic = [t for t in EXPECTED_TASKS if t in _reachable_from(edges, t)]
+    assert not cyclic, (
+        f"Task(s) {cyclic} are reachable from themselves — the DAG has a cycle "
+        f"and Airflow will refuse to import it. Edges: {sorted(edges)}"
     )
 
 
