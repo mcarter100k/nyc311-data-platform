@@ -80,7 +80,7 @@ Every dbt invocation now emits two deprecation classes:
 
 | Deprecation | Occurrences | What it wants |
 |---|---|---|
-| `PropertyMovedToConfigDeprecation` | 2 | `freshness:` is a top-level property of `sources[0].tables[0]` in `models/staging/sources.yml`; it must move under that table's `config:` |
+| `PropertyMovedToConfigDeprecation` | 2 | `freshness:` is a top-level property of `sources[0].tables[0]` in `dbt/models/staging/sources.yml`; it must move under that table's `config:` |
 | `MissingArgumentsPropertyInGenericTestDeprecation` | 16 | generic-test parameters (`dbt_utils.unique_combination_of_columns`, `accepted_values`, `relationships`, `dbt_utils.expression_is_true`) must nest under an `arguments:` key rather than sitting top-level |
 
 **Risk.** Warnings only today — nothing fails. They become hard errors at the
