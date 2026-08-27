@@ -15,9 +15,15 @@ models:
       The rule is clock coverage, not row count. The source publishes with a
       ~23.5h lag, so its newest day always stops after the first couple of
       hours; and its row counts are not stable enough to threshold on (two
-      identical fetches minutes apart returned 65,936 and 54,446 rows). A day
-      is complete when its newest request lands within complete_day_tail_minutes
-      of midnight — a property a thin replica of a finished day still has.
+      identical fetches minutes apart returned 65,936 and 54,446 rows for the
+      same window). That gap is a recency lag rather than noise — one replica
+      is behind, never ahead, and settles to zero at 7 days (ADR 016) — which
+      makes a count threshold systematically biased low on exactly the youngest
+      days. A day is complete when its newest request lands within
+      complete_day_tail_minutes of midnight, a property a thin replica of a
+      FINISHED day still has, because the source publishes each day as a time
+      prefix: a replica holds the day to 23:5x or stops hours short, with no
+      intermediate state that could pass this test while materially incomplete.
 
       Completeness is judged per day, so an arbitrary number of trailing
       partial or missing days (the 2026-08-18 upstream stall produced two) is
@@ -36,7 +42,8 @@ models:
         description: >
           Requests created on this day that are present in the load. Reported
           for context only — deliberately NOT the completeness rule, because
-          the source is not read-consistent about counts.
+          the source is not read-consistent about counts, and its inconsistency
+          is a downward lag on young days rather than symmetric noise.
         tests:
           - not_null
 

@@ -123,9 +123,11 @@ This platform is operated, not just built. It runs daily against a live API, it 
 | SLO | Measures | Threshold |
 |---|---|---|
 | **SLO-1 freshness** | age of the newest `_loaded_at` in `gold.fct_service_requests` | < 26 hours — one daily cycle plus 2h grace. Measures *our* pipeline's liveness, not source staleness |
-| **SLO-2 completeness** | rows we loaded vs rows the city actually **published**, for every day the load shows as **complete** | ≥ 98% on every such day. The source's per-day counts are captured at fetch time; the 2% absorbs documented quarantine and dedup removals |
+| **SLO-2 completeness** | rows we loaded vs rows the city actually **published**, for every day the load shows as **complete** | ≥ 98% on every such day. The source's per-day counts are captured at fetch time; the 2% absorbs documented quarantine and dedup removals *and* the source's settling lag |
 
 The population is the load's own completeness verdict, not an offset from the clock: the source's publish lag is not a constant (23.3 h, 23.5 h, then 49.0 h measured within one week), so any fixed window is a whole day sometimes and a two-hour stub other times — [ADR 015](docs/adr/015-slo2-population-is-complete-days.md).
+
+The 2% is mostly not ours. Socrata answers from two replicas, one behind the other by an amount that shrinks with a day's age and reaches zero at 7 days, so a day still settling can be reconciled against a fresher count than the load was served. Quarantine and dedup account for up to 0.24% of the budget; the settling lag accounts for up to 0.96% — [ADR 016](docs/adr/016-source-settling-horizon.md).
 
 The executable queries live in [scripts/slo/](scripts/slo/); CI fails if `docs/SLO.md` and those files drift apart.
 
@@ -217,6 +219,7 @@ ADRs document the reasoning behind major technology choices: the alternatives we
 | [013](docs/adr/013-no-source-freshness-slo.md) | No source-freshness SLO — gate on what we control, warn on what we don't | A proposed third SLO was measured and rejected; source staleness stays a warning |
 | [014](docs/adr/014-transform-before-load.md) | Transform before load — Bronze is the raw file, not a warehouse table | The raw round-trip through DuckDB is gone; Bronze is a view, and the Bronze→Silver hop is honestly ETL |
 | [015](docs/adr/015-slo2-population-is-complete-days.md) | SLO-2's population is complete days, chosen by the data — not an offset from the clock | The publish lag is not a constant, so no fixed window works; the gate reads `int_load_completeness` and zero is never a pass |
+| [016](docs/adr/016-source-settling-horizon.md) | NYC 311 data settles after 7 days — the replica spread is a recency lag, not noise | The 17% spread is one replica running behind, not noise; SLO-2's real loss budget is 1.20%, not 0.24% |
 
 ---
 
