@@ -75,8 +75,15 @@ jobs:
       - name: Structural pytest
         run: pytest tests/ --ignore=tests/unit --ignore=tests/local -q
 
-      # Fail the build if README counts or links have drifted from the repo.
-      - name: Check README claims against the repo
+      # Fail the build if README.md or anything under docs/ has drifted from the
+      # repo: counts, links and fragments, citation anchors, the documented DAG
+      # task names, and the dbt model inventory.
+      #
+      # MUST run after `dbt parse` above. Three claims and the model inventory
+      # are read from dbt/target/manifest.json; without it the script exits 2
+      # ("cannot check") rather than passing silently. Reordering these steps
+      # turns this check red with an instruction, not green with a hole.
+      - name: Check README and docs/ claims against the repo
         run: python scripts/check_claims.py
 
       # Fail the build if the dbt/ and local/ model mirrors drifted apart
