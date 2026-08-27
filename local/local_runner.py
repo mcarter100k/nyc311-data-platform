@@ -140,7 +140,8 @@ def _get_with_retry(get, url, *, params, headers=None, timeout=60, what="Socrata
 # platform reports on. Every downstream rule (the complaint taxonomy in
 # int_service_requests_cleaned, the closure_type text patterns) was derived from
 # the recent live window `--live` fetches, and the city's complaint mix has
-# moved since 2020: a 2020-first sample lands ~14.7% of rows in 'Other' against
+# moved since 2020: a 2020-first sample lands ~14.7% of rows in the taxonomy's
+# 'Undecodable' catch-all (called 'Other' when that was measured) against
 # the taxonomy's 5% guard, dominated by types the recent window barely contains
 # (`Request Large Bulky Item Collection`, `NonCompliance with Phased Reopening`).
 # The right fix is the sample, not the guard — the default invocation should
@@ -514,6 +515,13 @@ def stage3_silver() -> None:
     if n_invalid:
         print(f"  quarantining {n_invalid:,} records with negative resolution_days")
     df = drop_quarantined(df_derived)
+
+    # `_borough_raw` exists so compute_dq_metrics (above, on df_derived) can tell
+    # an unrecognized borough spelling from the source's own literal
+    # 'Unspecified' — see unrecognized_borough_mask. It is an input to a check,
+    # not a Silver column, so it is dropped before the write and the Silver
+    # schema is unchanged.
+    df = df.drop(columns=["_borough_raw"], errors="ignore")
 
     # Silver timestamp
     df["_silver_timestamp"] = datetime.now(timezone.utc).isoformat()
