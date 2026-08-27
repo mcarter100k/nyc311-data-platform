@@ -168,11 +168,11 @@ Gold is a Kimball star: <!--claim:fct_models-->4<!--/claim--> fact tables, <!--c
 
 ## Test Suite
 
-Two populations, deliberately not summed: **<!--claim:test_count-->226<!--/claim--> pytest tests** that need no cloud account, and **<!--claim:dbt_test_count-->128<!--/claim--> dbt data tests (<!--claim:dbt_generic_tests-->119<!--/claim--> generic + <!--claim:dbt_singular_tests-->9<!--/claim--> singular)** that run against the warehouse during `dbt build`. Both counts are recomputed in CI — the pytest one from collection, the dbt one from the parsed manifest. The dbt figure was a bare literal until 2026-08-26 and had rotted twice through merges, silently, while every marker-guarded number beside it stayed correct.
+Two populations, deliberately not summed: **<!--claim:test_count-->235<!--/claim--> pytest tests** that need no cloud account, and **<!--claim:dbt_test_count-->128<!--/claim--> dbt data tests (<!--claim:dbt_generic_tests-->119<!--/claim--> generic + <!--claim:dbt_singular_tests-->9<!--/claim--> singular)** that run against the warehouse during `dbt build`. Both counts are recomputed in CI — the pytest one from collection, the dbt one from the parsed manifest. The dbt figure was a bare literal until 2026-08-26 and had rotted twice through merges, silently, while every marker-guarded number beside it stayed correct.
 
 | Tier | Count | What it proves |
 |---|---|---|
-| **Structural** | <!--claim:structural_test_count-->155<!--/claim--> | Configuration correctness — schema resolution, incremental strategy, DAG lineage, freshness target, Terraform validity, the LOADER-has-no-TRUNCATE contract, a relationships test on every fact foreign key. Also the documentation guards' own failure modes ([tests/test_doc_guards.py](tests/test_doc_guards.py)): each check in `scripts/check_claims.py` is exercised against a synthetic tree with the thing it guards broken, because a check that cannot fail reports green and is read as evidence — this repo has shipped three of those by accident |
+| **Structural** | <!--claim:structural_test_count-->164<!--/claim--> | Configuration correctness — schema resolution, incremental strategy, DAG lineage, freshness target, Terraform validity, the LOADER-has-no-TRUNCATE contract, a relationships test on every fact foreign key. Also the documentation guards' own failure modes ([tests/test_doc_guards.py](tests/test_doc_guards.py)): each check in `scripts/check_claims.py` is exercised against a synthetic tree with the thing it guards broken, because a check that cannot fail reports green and is read as evidence — this repo has shipped three of those by accident |
 | **Unit** | <!--claim:unit_test_count-->8<!--/claim--> | Silver transformation *logic* ([local/silver_transformations.py](local/silver_transformations.py)) against hand-built fixtures |
 | **Behavioral** | <!--claim:behavioral_test_count-->63<!--/claim--> | Gold *semantics* — builds the dbt project twice on seeded DuckDB and asserts on output rows: watermark lookback, SCD2 point-in-time join, update propagation, and dimension retention when Silver's rolling window moves past a member the fact still references. Also import health for every module in [local/](local/), which needs the real runtime dependencies this tier installs |
 
@@ -244,7 +244,7 @@ terraform/github/  this repo's own infrastructure — labels, branch protection,
 config/         borough_variants.csv — one mapping, read by Python and dbt alike
 scripts/        SLO checks, claim checker, model-drift guard
 docs/           ARCHITECTURE · SLO · CLAIMS · BACKLOG · adr/ (<!--claim:adr_count-->15<!--/claim-->) · postmortems/
-tests/          <!--claim:test_count-->226<!--/claim--> pytest tests across three tiers
+tests/          <!--claim:test_count-->235<!--/claim--> pytest tests across three tiers
 ```
 
 ---
