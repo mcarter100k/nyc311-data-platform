@@ -37,6 +37,9 @@ jobs:
   build:
     name: Build dbt docs site
     runs-on: ubuntu-latest
+    # Default is 6 hours. Measured max over the last 11 runs: 0.7m. A hang here
+    # holds the `pages` concurrency group, so every later push queues behind it.
+    timeout-minutes: 10
 
     steps:
 
@@ -232,6 +235,9 @@ jobs:
     # as a dry-run; only the publish is gated.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # Measured max: 0.2m. The Pages API can legitimately queue a deployment,
+    # so 10m rather than something tighter.
+    timeout-minutes: 10
     permissions:
       contents: read
       pages: write     # publish to GitHub Pages
