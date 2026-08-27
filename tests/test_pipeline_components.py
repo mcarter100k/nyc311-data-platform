@@ -590,7 +590,14 @@ def loader_bronze_grant_blocks():
         # Strip comments before matching: the prose above these resources talks
         # about TRUNCATE and Bronze at length, and must not be evidence.
         code = "\n".join(line.split("#", 1)[0] for line in body.splitlines())
-        if "snowflake_role.loader" not in code:
+        # Match BOTH provider spellings of the role resource. The Snowflake
+        # provider renamed `snowflake_role` to `snowflake_account_role`, so a
+        # file part-migrated to the new name would still satisfy the vacuity
+        # assert below (the un-migrated grants keep matching) while a newly
+        # added grant written the new way became invisible. Verified: an
+        # `ALL PRIVILEGES` grant on Bronze written as `snowflake_account_role`
+        # PASSED the content selector before this line covered both spellings.
+        if not re.search(r"\bsnowflake_(?:account_)?role\.loader\b", code):
             continue
         if "fq_bronze" not in code and "BRONZE" not in code:
             continue
