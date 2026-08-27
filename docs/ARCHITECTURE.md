@@ -71,7 +71,7 @@ engines cannot disagree.
 ## Outcomes at Each Layer
 
 ### Raw Ingestion — `local_runner.py` stage 1
-Pulls 311 records from the Socrata API in 50,000-row pages (the API maximum), writing raw JSON to `local/data/raw/`. The daily path fetches a trailing 7-day window on `created_date`, fails on a row-cap breach or a zero-row response, and captures the source's own count for yesterday — the number that makes SLO-2 a reconciliation. An optional `SOCRATA_APP_TOKEN` raises the rate limit; no other credential is required.
+Pulls 311 records from the Socrata API in 50,000-row pages (the API maximum), writing raw JSON to `local/data/raw/`. The daily path fetches a trailing 7-day window on `created_date`, fails on a row-cap breach or a zero-row response, and captures the source's own per-day counts across that whole window in one grouped query — the numbers that make SLO-2 a reconciliation. Transient HTTP faults (429, 5xx) are retried with exponential backoff; anything else fails the run. An optional `SOCRATA_APP_TOKEN` raises the rate limit; no other credential is required.
 
 **Outcome:** An unmodified copy of exactly what the API returned, replayable into Silver and Gold without re-calling the source. It is a rolling 7-day window, not a permanent archive — the file is overwritten each run, so "replay" means replay of the current window.
 

@@ -215,9 +215,14 @@ def ast_test_count(directory: str) -> int:
         # `@parametrize("m", LOCAL_MODULES)` scored 1 instead of len(LOCAL_MODULES),
         # and the failure mode is a claim-checker that is quietly wrong about the
         # number it exists to police.
+        # Sets count too: `@parametrize("s", sorted(HTTP_RETRYABLE_STATUS))` where
+        # the constant is a set literal. Ignoring Set undercounted the behavioral
+        # tier by 4 and the marker was set to the WRONG value to match — a
+        # claim-checker confidently wrong about the number it exists to police,
+        # which is the third time this counter has had that bug.
         constants = {}
         for node in tree.body:
-            if isinstance(node, ast.Assign) and isinstance(node.value, (ast.List, ast.Tuple)):
+            if isinstance(node, ast.Assign) and isinstance(node.value, (ast.List, ast.Tuple, ast.Set)):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
                         constants[target.id] = len(node.value.elts)
@@ -233,10 +238,42 @@ def ast_test_count(directory: str) -> int:
                             and len(deco.args) >= 2):
                         continue
                     arg = deco.args[1]
-                    if isinstance(arg, (ast.List, ast.Tuple)):
+                    # Unwrap a builtin that merely reorders/retypes its argument.
+                    # `sorted(NAME)` is a Call, not a Name, so the plain lookup
+                    # below missed it entirely and scored 1.
+                    if (isinstance(arg, ast.Call)
+                            and isinstance(arg.func, ast.Name)
+                            and arg.func.id in {"sorted", "list", "tuple", "set", "reversed"}
+                            and len(arg.args) == 1):
+                        arg = arg.args[0]
+                    if isinstance(arg, (ast.List, ast.Tuple, ast.Set)):
                         n *= max(1, len(arg.elts))
                     elif isinstance(arg, ast.Name) and arg.id in constants:
                         n *= max(1, constants[arg.id])
+                    else:
+                        # UNRESOLVABLE — refuse to guess.
+                        #
+                        # This counter has been silently wrong three times: over
+                        # a named list, over a set literal, and over a constant
+                        # IMPORTED from another module, which this file's AST
+                        # cannot see. Each time it scored 1, and each time the
+                        # README marker was set to match the wrong value — a
+                        # checker confidently wrong about the one number it
+                        # exists to police.
+                        #
+                        # Silently undercounting is the worst behaviour
+                        # available. Refuse, and name the remedy — the same
+                        # principle as exiting 2 on a missing manifest rather
+                        # than warning inside a green job.
+                        raise SystemExit(
+                            f"claim check CANNOT COUNT: "
+                            f"{os.path.relpath(path, ROOT)}:{deco.lineno}\n"
+                            f"  parametrize argument is neither a literal nor a "
+                            f"module-level constant in this file, so its cases "
+                            f"cannot be counted from the AST.\n"
+                            f"  Bind it to a module-level name in this file, or "
+                            f"inline the list."
+                        )
                 total += n
     return total
 
@@ -714,6 +751,28 @@ SUPERSEDED_CLAIMS = [
         "core portfolio objective",
         "Databricks was removed on 2026-08-20. Any ADR rationale resting on "
         "showcasing it needs a superseding note, not a silent survival.",
+    ),
+    (
+        "this closes the exposure",
+        "Written in docs/SLO.md about the five-probe max source count (#50). "
+        "False: max-of-N helps only when SOME replica holds the day. When the "
+        "source has not published the day at all, every probe correctly returns "
+        "0. The zero denominator is closed by SLO-2's population and by zero "
+        "no longer being a pass — see ADR 015.",
+    ),
+    (
+        "published for yesterday",
+        "SLO-2 no longer measures T-1, or any fixed offset from the clock. The "
+        "publish lag is not a constant (23.3h, 23.5h, then 49.0h measured in "
+        "one week), so every offset is a ~2-hour stub on some days. The "
+        "population is every day int_load_completeness marks complete — ADR 015.",
+    ),
+    (
+        "a zero source count passes",
+        "Deleted on 2026-08-27. Within SLO-2's population a zero source count "
+        "is a CONTRADICTION — the load says the source published that day "
+        "through to midnight — and fails. It was the branch that let the gate "
+        "certify a comparison against nothing. See ADR 015.",
     ),
 ]
 # Deliberately NOT registered here: the phantom DAG task names

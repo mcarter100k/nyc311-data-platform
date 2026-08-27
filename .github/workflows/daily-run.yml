@@ -60,8 +60,10 @@ jobs:
           restore-keys: |
             nyc311-duckdb-
 
-      # Trailing-7-day created_date window, hard 150k row cap, no retries
-      # beyond one — any failure here is a red run, never a partial load.
+      # Trailing-7-day created_date window, hard 150k row cap. Transient HTTP
+      # faults (429, 5xx) retry twice with exponential backoff; everything else
+      # — a non-retryable status, a cap breach, a zero-row fetch, exhausted
+      # retries — is a red run, never a partial load.
       # SOCRATA_APP_TOKEN reaches the fetcher via env (local_runner.py reads
       # os.environ); an unset secret resolves to empty, which the runner
       # treats as unauthenticated.

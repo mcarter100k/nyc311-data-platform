@@ -33,6 +33,22 @@ finding.
 
 ## Did the control work
 
+> **Correction, 2026-08-27.** The section below concluded that it did, on the
+> strength of a `372 / 372` reconciliation. That evidence was weaker than it
+> reads. Aug 19 eventually held **10,701** rows; 372 was the ~2-hour stub the
+> source's publish lag leaves in T-1 at 10:00 UTC. The control therefore
+> certified **3.5%** of that day and reported it as a pass — and on a day where
+> the capture returned zero, `slo2_completeness.sql`'s `WHEN source = 0 THEN
+> true` branch would have passed against nothing at all. The reasoning below
+> about *which question to ask* stands and is unchanged; the claim that this run
+> demonstrated the control working does not. SLO-2's population was rebuilt on
+> 2026-08-27 — see [ADR 015](../adr/015-slo2-population-is-complete-days.md).
+>
+> The same correction applies to the upstream-stall warning noted in the
+> recovery timeline: it did not fire because Aug 19 was anomalous. It fired
+> because the stub day is what T-1 always looks like, and it went on firing
+> every day thereafter.
+
 This is the part worth being precise about, because the redesign was made on
 one incident's evidence and this was its first real exercise.
 
@@ -131,5 +147,5 @@ designed for.
 |---|---|---|
 | Close #7 when the source backfills and a scheduled run passes; finalize this postmortem (status → reviewed, add recovery timeline) | #7 | ✓ postmortem finalized 2026-08-20. **#7 was closed early**: at 08:25:07Z, ~2h before the qualifying run finished at 10:25:40Z. Both conditions did hold by 10:25, but not at the moment of closing — recorded rather than quietly corrected, because a criterion that gets marked met before it is met is exactly the failure this column exists to prevent |
 | Decide on SLO-3 (source freshness: max `created_date` in Gold within N hours) — closes the SLO-1 blind spot named above | [ADR 013](../adr/013-no-source-freshness-slo.md) | ✓ rejected after measurement — the blind spot is closed by a warning, not a gate |
-| Revisit SLO-2's window (T-1 vs T-2) only if several *normal* post-recovery days show T-1 chronically incomplete at 10:00 UTC — threshold changes require accumulated evidence, not one incident | [BACKLOG](../BACKLOG.md) | open — first clean post-recovery observation logged 2026-08-20 (T-1 = 372 rows), plus a measured ~24h publish lag that would explain it structurally. One day is not "several"; still accumulating |
+| Revisit SLO-2's window (T-1 vs T-2) only if several *normal* post-recovery days show T-1 chronically incomplete at 10:00 UTC — threshold changes require accumulated evidence, not one incident | [BACKLOG](../BACKLOG.md), [ADR 015](../adr/015-slo2-population-is-complete-days.md) | ✓ resolved 2026-08-27 — and the framing was wrong. A third measurement put the publish lag at **49.0 h** against the earlier 23.3 h and 23.5 h, so the lag is not a constant and T-2 is a stub on some days too. The window is no longer an offset from the clock at all: SLO-2's population is every day `int_load_completeness` marks complete |
 | Dataset-split claims correction (README, sources.yml, ADR notes) | shipped in the same PR as this postmortem | ✓ |

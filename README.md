@@ -111,13 +111,15 @@ This platform is operated, not just built. It runs daily against a live API, it 
 | SLO | Measures | Threshold |
 |---|---|---|
 | **SLO-1 freshness** | age of the newest `_loaded_at` in `gold.fct_service_requests` | < 26 hours — one daily cycle plus 2h grace. Measures *our* pipeline's liveness, not source staleness |
-| **SLO-2 completeness** | rows we loaded vs rows the city actually **published** for yesterday | ≥ 98%. The source's own count is captured at fetch time; the 2% absorbs documented quarantine and dedup removals |
+| **SLO-2 completeness** | rows we loaded vs rows the city actually **published**, for every day the load shows as **complete** | ≥ 98% on every such day. The source's per-day counts are captured at fetch time; the 2% absorbs documented quarantine and dedup removals |
+
+The population is the load's own completeness verdict, not an offset from the clock: the source's publish lag is not a constant (23.3 h, 23.5 h, then 49.0 h measured within one week), so any fixed window is a whole day sometimes and a two-hour stub other times — [ADR 015](docs/adr/015-slo2-population-is-complete-days.md).
 
 The executable queries live in [scripts/slo/](scripts/slo/); CI fails if `docs/SLO.md` and those files drift apart.
 
 **Breach automation.** A failed run or SLO breach files a `daily-run-breach` GitHub issue with the measured numbers and run URL; a persisting breach comments on the open issue instead of duplicating it ([daily-run.yml](.github/workflows/daily-run.yml)). An issue beats an email: it is a tracked, assignable work item with history that a postmortem can link to.
 
-**A real incident.** On 2026-08-18 the city's publish process left Aug 17 ~96% incomplete, then published nothing for 21+ hours. Every pipeline stage ran green; only the source-facing check saw it, on the tier's first scheduled day. SLO-2 detected it and auto-filed [issue #7](https://github.com/mcarter100k/nyc311-data-platform/issues/7). The control that followed: SLO-2 was **redefined as a source reconciliation** — it now asks whether we loaded everything the city published, so an upstream outage no longer reddens our reliability signal, while a separate non-gating [upstream-stall check](scripts/check_upstream_stall.py) keeps the outage visible. [Full postmortem](docs/postmortems/2026-08-18-upstream-publish-stall.md).
+**A real incident.** On 2026-08-18 the city's publish process left Aug 17 ~96% incomplete, then published nothing for 21+ hours. Every pipeline stage ran green; only the source-facing check saw it, on the tier's first scheduled day. SLO-2 detected it and auto-filed [issue #7](https://github.com/mcarter100k/nyc311-data-platform/issues/7). The control that followed: SLO-2 was **redefined as a source reconciliation** — it now asks whether we loaded everything the city published, so an upstream outage no longer reddens our reliability signal, while a separate non-gating [upstream-stall check](scripts/check_upstream_stall.py) keeps the outage visible. That redesign then had to be corrected: it reconciled *yesterday*, which the publish lag makes a ~2-hour stub, so the "100% reconciliation" it reported on 2026-08-20 had certified 3.5% of the day and a zero denominator passed outright. Both signals now key on the newest day the load shows as complete ([ADR 015](docs/adr/015-slo2-population-is-complete-days.md)). [Full postmortem](docs/postmortems/2026-08-18-upstream-publish-stall.md).
 
 **A self-audit finding, and the fix is not the obvious one.** The ingestion watermark keyed on `created_date`, fetching each record exactly once — on the day it was filed. But 311 requests mutate after creation (status flips to Closed days later), so every downstream update path was unreachable and resolution metrics would only ever have counted same-day closures. Found by systematic self-audit, not by a failure.
 
@@ -164,13 +166,13 @@ Gold is a Kimball star: <!--claim:fct_models-->4<!--/claim--> fact tables, <!--c
 
 ## Test Suite
 
-Two populations, deliberately not summed: **<!--claim:test_count-->184<!--/claim--> pytest tests** that need no cloud account, and **<!--claim:dbt_test_count-->128<!--/claim--> dbt data tests (<!--claim:dbt_generic_tests-->119<!--/claim--> generic + <!--claim:dbt_singular_tests-->9<!--/claim--> singular)** that run against the warehouse during `dbt build`. Both counts are recomputed in CI — the pytest one from collection, the dbt one from the parsed manifest. The dbt figure was a bare literal until 2026-08-26 and had rotted twice through merges, silently, while every marker-guarded number beside it stayed correct.
+Two populations, deliberately not summed: **<!--claim:test_count-->206<!--/claim--> pytest tests** that need no cloud account, and **<!--claim:dbt_test_count-->128<!--/claim--> dbt data tests (<!--claim:dbt_generic_tests-->119<!--/claim--> generic + <!--claim:dbt_singular_tests-->9<!--/claim--> singular)** that run against the warehouse during `dbt build`. Both counts are recomputed in CI — the pytest one from collection, the dbt one from the parsed manifest. The dbt figure was a bare literal until 2026-08-26 and had rotted twice through merges, silently, while every marker-guarded number beside it stayed correct.
 
 | Tier | Count | What it proves |
 |---|---|---|
 | **Structural** | <!--claim:structural_test_count-->135<!--/claim--> | Configuration correctness — schema resolution, incremental strategy, DAG lineage, freshness target, Terraform validity, the LOADER-has-no-TRUNCATE contract, a relationships test on every fact foreign key. Also the documentation guards' own failure modes ([tests/test_doc_guards.py](tests/test_doc_guards.py)): each check in `scripts/check_claims.py` is exercised against a synthetic tree with the thing it guards broken, because a check that cannot fail reports green and is read as evidence — this repo has shipped three of those by accident |
 | **Unit** | <!--claim:unit_test_count-->8<!--/claim--> | Silver transformation *logic* ([local/silver_transformations.py](local/silver_transformations.py)) against hand-built fixtures |
-| **Behavioral** | <!--claim:behavioral_test_count-->41<!--/claim--> | Gold *semantics* — builds the dbt project twice on seeded DuckDB and asserts on output rows: watermark lookback, SCD2 point-in-time join, update propagation, and dimension retention when Silver's rolling window moves past a member the fact still references. Also import health for every module in [local/](local/), which needs the real runtime dependencies this tier installs |
+| **Behavioral** | <!--claim:behavioral_test_count-->63<!--/claim--> | Gold *semantics* — builds the dbt project twice on seeded DuckDB and asserts on output rows: watermark lookback, SCD2 point-in-time join, update propagation, and dimension retention when Silver's rolling window moves past a member the fact still references. Also import health for every module in [local/](local/), which needs the real runtime dependencies this tier installs |
 
 The structural tier is the largest and the weakest, and it is worth saying so: it catches config drift and silent contract violations in seconds, but **a model can be perfectly configured and still compute the wrong number.** That is what the other two tiers are for.
 
@@ -200,6 +202,7 @@ ADRs document the reasoning behind major technology choices: the alternatives we
 | [012](docs/adr/012-github-repo-as-code.md) | The repository's own infrastructure is Terraform, and it is applied | Labels, branch protection and Pages declared and applied; "required checks" became true rather than aspirational |
 | [013](docs/adr/013-no-source-freshness-slo.md) | No source-freshness SLO — gate on what we control, warn on what we don't | A proposed third SLO was measured and rejected; source staleness stays a warning |
 | [014](docs/adr/014-transform-before-load.md) | Transform before load — Bronze is the raw file, not a warehouse table | The raw round-trip through DuckDB is gone; Bronze is a view, and the Bronze→Silver hop is honestly ETL |
+| [015](docs/adr/015-slo2-population-is-complete-days.md) | SLO-2's population is complete days, chosen by the data — not an offset from the clock | The publish lag is not a constant, so no fixed window works; the gate reads `int_load_completeness` and zero is never a pass |
 
 ---
 
@@ -238,8 +241,8 @@ terraform/      Snowflake foundation — 5 schemas, 4 roles, grant matrix (valid
 terraform/github/  this repo's own infrastructure — labels, branch protection, Pages (applied)
 config/         borough_variants.csv — one mapping, read by Python and dbt alike
 scripts/        SLO checks, claim checker, model-drift guard
-docs/           ARCHITECTURE · SLO · CLAIMS · BACKLOG · adr/ (<!--claim:adr_count-->14<!--/claim-->) · postmortems/
-tests/          <!--claim:test_count-->184<!--/claim--> pytest tests across three tiers
+docs/           ARCHITECTURE · SLO · CLAIMS · BACKLOG · adr/ (<!--claim:adr_count-->15<!--/claim-->) · postmortems/
+tests/          <!--claim:test_count-->206<!--/claim--> pytest tests across three tiers
 ```
 
 ---
