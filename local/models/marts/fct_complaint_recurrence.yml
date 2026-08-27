@@ -15,10 +15,13 @@ models:
       READ WITH CARE. Two columns exist to stop this being misused:
       observation_days guards right-censoring (a ticket closed on the last day
       of loaded history has had no chance to recur, and counting it as "did not
-      recur" biases every rate downward), and is_chronic_location marks
-      addresses that recur by nature rather than by failed resolution. Measured
-      on one week of live data, excluding chronic locations roughly halved the
-      spread between closure types — an unfiltered rate is not a finding.
+      recur" biases every rate downward) — measured against the last day the
+      source published IN FULL, not the newest loaded day, which is always a
+      couple of hours long and inflated the column by up to 1 across the board.
+      And is_chronic_location marks addresses that recur by nature rather than
+      by failed resolution. Measured on one week of live data, excluding chronic
+      locations roughly halved the spread between closure types — an unfiltered
+      rate is not a finding.
 
       Recurrence is evidence, not proof. A repeat complaint may mean the fix
       failed, or that the condition is legal and residents keep reporting it.
@@ -53,15 +56,48 @@ models:
 
       - name: observation_days
         description: >
-          Days of loaded history following this closure. A recurrence rate over
-          window N is only honest across rows where this is >= N. Floored at
-          zero — a request closed after the horizon (the newest created row)
-          has no observed time, not negative time.
+          Days of COMPLETELY PUBLISHED history following this closure. A
+          recurrence rate over window N is only honest across rows where this
+          is >= N. Floored at zero — a request closed after the horizon has no
+          observed time, not negative time.
+
+          The horizon is MAX(load_day) WHERE is_complete_day from
+          int_load_completeness, NOT the newest created row: the source lags
+          ~23.5h, so its newest day is a couple of hours long and treating it
+          as a whole day inflated this column by up to 1 for every row.
+
+          NULL is possible and is a deliberate hard stop: it means the load
+          holds no complete day at all, so no honest horizon exists. The
+          not_null test below turns that into a red build rather than a table
+          of zeros.
         tests:
           - not_null
-          - dbt_utils.expression_is_true:
-              arguments:
-                expression: ">= 0"
+
+          # There is deliberately NO `expression_is_true: ">= 0"` here.
+          #
+          # It was here, and it was unfailable: the column is produced by
+          # GREATEST(0, ...), so no value it can hold is negative. Proven
+          # rather than argued — replacing the horizon with DATE '1999-01-01'
+          # drove every raw difference thousands of days negative, floored all
+          # of them to 0, and the test still reported PASS. A test that cannot
+          # fail is worse than no test, because it occupies the slot where a
+          # real one would go.
+          #
+          # What can actually go wrong now is the horizon, in two directions,
+          # and each has a singular test that FAILS on it (proven in
+          # tests/local/test_local_gold.py, which sabotages the built table and
+          # asserts the specific test fires):
+          #
+          #   too far forward — a partial day, a future date, any horizon that
+          #     over-credits observation time: the recurrence rate is computed
+          #     over rows that never had the window they claim.
+          #     → assert_recurrence_horizon_is_last_complete_day.sql
+          #
+          #   too far back, or frozen — a horizon that stops advancing, or one
+          #     that predates the data: rows floor to 0 en masse and quietly
+          #     drop out of every `observation_days >= N` filter, shrinking the
+          #     sample instead of erroring.
+          #     → assert_observation_days_floor_is_explained.sql
 
       - name: location_ticket_count
         description: "Tickets at this (address, complaint_type) in the loaded window."

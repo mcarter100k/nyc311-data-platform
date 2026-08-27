@@ -82,3 +82,15 @@ vars:
   # as a chronic location: it recurs by nature rather than by failed
   # resolution, and it dominates any unfiltered recurrence rate.
   chronic_location_min_tickets: 5
+
+  # int_load_completeness. A loaded day counts as COMPLETE when the newest
+  # request created on it lands within this many minutes of midnight.
+  #
+  # The value is deliberately not fine-tuned, because the quantity it cuts is
+  # bimodal by three orders of magnitude: on a 14-day live load every complete
+  # day ended 1 minute short of midnight and the trailing partial day ended
+  # 1,314 minutes short. Anything from ~5 to ~600 gives the same verdicts. 60
+  # is chosen as an hour — a value a reader can reason about — with the failure
+  # direction being conservative either way: too tight retires a complete day
+  # (understating observation time), never the reverse.
+  complete_day_tail_minutes: 60

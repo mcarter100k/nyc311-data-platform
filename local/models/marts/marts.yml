@@ -322,6 +322,26 @@ models:
         tests:
           - not_null
 
+      - name: is_complete_day
+        description: >
+          Had the source published all of full_date at the time of this build?
+          Joined from int_load_completeness, the single definition of a
+          complete day — the recurrence horizon reads the same model.
+
+          THREE-VALUED. TRUE = the source's coverage of this day reached the
+          final complete_day_tail_minutes. FALSE = it did not; the day is
+          partial and its per-day figures are not comparable to a whole day's.
+          NULL = the day has aged out of the loaded source window, so this
+          build cannot assess it either way.
+
+          Any average or comparison taken ACROSS days must filter on this. The
+          newest day in any load is always FALSE, because the source publishes
+          on a ~23.5h lag: measured 2026-08-26 it held 358 requests against a
+          ~10,500 median, and letting a two-hour day into a daily mean is how
+          the weekday-vs-weekend volume figures were contaminated.
+
+          No not_null test, deliberately — NULL is a meaning this column has.
+
       - name: total_requests
         description: "Count of service requests opened on full_date in this borough and category."
         tests:

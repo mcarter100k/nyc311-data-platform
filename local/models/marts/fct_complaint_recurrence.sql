@@ -60,12 +60,18 @@ closed as (
 
 ),
 
--- Latest created_date in the loaded data — the horizon against which
--- observation time is measured.
+-- The horizon: the newest day the source has published IN FULL. NOT
+-- max(created_date) — the source lags ~23.5h, so the newest loaded day is
+-- always the first ~2 hours of one (358/372/382/832 rows vs a ~10,500 median),
+-- and measuring against it credited every closure with up to a day it never
+-- had. The completeness rule lives in int_load_completeness, once, because
+-- fct_daily_volume needs it too. MAX over COMPLETE days also absorbs a
+-- multi-day publish gap. NULL when no day is complete — see below. See dbt/.
 horizon as (
 
-    select max(cast(created_date as date)) as max_created_date
-    from source
+    select max(load_day) as last_complete_date
+    from {{ ref('int_load_completeness') }}
+    where is_complete_day
 
 ),
 
@@ -126,15 +132,24 @@ final as (
         w.closed_date,
         w.days_to_next_same_complaint,
 
-        -- How many days of loaded history follow this closure. A rate computed
-        -- over window N is only honest across rows where this is >= N.
-        -- Floored at zero: a request closed after the horizon (created 23:40,
-        -- closed 00:20, horizon still on yesterday's date) has no observed
-        -- time, not negative time. See dbt/ for the full rationale.
-        greatest(
-            0,
-            datediff('day', cast(w.closed_date as date), h.max_created_date)
-        )                                                                       as observation_days,
+        -- How many days of COMPLETELY PUBLISHED history follow this closure. A
+        -- rate over window N is only honest where this is >= N — and under the
+        -- old horizon a row reading 3 had really had ~2.04 days.
+        -- Floored at zero: a request closed after the horizon has no observed
+        -- time, not negative time. The floor is not a licence to floor
+        -- everything, which is what a broken horizon does silently; the two
+        -- singular tests in tests/ hold it to that.
+        -- The NULL horizon is written out rather than left to GREATEST, whose
+        -- NULL handling differs by engine (Snowflake NULL, DuckDB 0) — so "no
+        -- complete day" reddens the build instead of yielding silent zeros.
+        -- See dbt/ for the full rationale.
+        case
+            when h.last_complete_date is null then null
+            else greatest(
+                0,
+                datediff('day', cast(w.closed_date as date), h.last_complete_date)
+            )
+        end                                                                     as observation_days,
 
         v.location_ticket_count,
 

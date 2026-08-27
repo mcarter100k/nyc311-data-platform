@@ -27,6 +27,25 @@ dim_location as (
 
 ),
 
+-- Per-day completeness of the source publish, from the one model that defines
+-- it (int_load_completeness). Joined, not re-derived: the recurrence horizon
+-- needs the same concept and the two must not be allowed to drift apart.
+--
+-- This matters here because every figure on this table is a per-day figure, and
+-- the newest loaded day is always a partial one — the source publishes on a
+-- ~23.5h lag, so it holds the first couple of hours and stops (358 rows against
+-- a ~10,500 median, measured 2026-08-26). Averaging days without filtering on
+-- this flag pulls a ~2-hour day into the mean as though it were a day, which is
+-- how the weekday-vs-weekend volume comparison got contaminated.
+--
+-- This is a metadata join on the date, one row per day; it does not re-read
+-- facts from the intermediate layer and cannot change this model's grain.
+load_completeness as (
+
+    select * from {{ ref('int_load_completeness') }}
+
+),
+
 aggregated as (
 
     select
@@ -37,6 +56,14 @@ aggregated as (
         d.quarter,
         d.is_weekend,
         d.is_federal_holiday,
+        -- Three-valued on purpose: TRUE / FALSE / NULL, where NULL means "this
+        -- day is outside the currently loaded source window, so this build
+        -- cannot assess it" — not "incomplete". The fact accumulates history
+        -- past the window int_load_completeness is computed over, so days
+        -- eventually age into NULL. Deliberately not coalesced: guessing TRUE
+        -- would re-admit exactly the partial days the column exists to exclude,
+        -- and guessing FALSE would retire good history.
+        c.is_complete_day,
         -- The dim_location join is LEFT, so l.borough is NULL whenever a fact
         -- row carries no location_id. Fold those into the UNSPECIFIED bucket so
         -- the grain key stays non-null and no volume is silently dropped.
@@ -77,6 +104,9 @@ aggregated as (
     left join dim_location l
         on f.location_id = l.location_id
 
+    left join load_completeness c
+        on d.full_date = c.load_day
+
     -- Exclude rows where the date join failed (created_date outside spine range).
     where d.full_date is not null
 
@@ -87,6 +117,7 @@ aggregated as (
         d.quarter,
         d.is_weekend,
         d.is_federal_holiday,
+        c.is_complete_day,
         coalesce(l.borough, 'UNSPECIFIED'),
         f.complaint_category
 

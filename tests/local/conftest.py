@@ -146,10 +146,20 @@ def gold_db(tmp_path_factory):
              "HPD", "Housing Preservation And Development", "Closed", T1),
         # Recurrence pair: r7 closes on Jan 2; r8 reports the SAME complaint at
         # the SAME address on Jan 4. fct_complaint_recurrence must measure 2 days.
+        #
+        # r8's time of day is load-bearing, not decoration. int_load_completeness
+        # judges a day COMPLETE by whether the source's coverage of it reaches
+        # the last complete_day_tail_minutes (60) of that day, and the recurrence
+        # horizon is the newest complete day. 23:50 makes Jan 4 the only complete
+        # day in this fixture, which is what gives the timeline a horizon at all
+        # — and it deliberately leaves Jan 1-3 and the TODAY row incomplete, so
+        # the tests below are asserting against a horizon that is NOT simply the
+        # newest loaded day. Under the old max(created_date) horizon every
+        # observation_days here would be ~950 (TODAY minus Jan 2), not 1 and 2.
         _row("r7", "2024-01-01 09:00:00", "2024-01-02 09:00:00",
              "DSNY", "Department of Sanitation", "Closed", T1,
              address="9 RECURRING WAY", complaint="Dirty Condition"),
-        _row("r8", "2024-01-04 09:00:00", None,
+        _row("r8", "2024-01-04 23:50:00", None,
              "DSNY", "Department of Sanitation", "Open", T1,
              address="9 RECURRING WAY", complaint="Dirty Condition"),
         # r9 is valid now. In phase 2 SILVER rejects it, so it vanishes from
@@ -244,6 +254,15 @@ def gold_db(tmp_path_factory):
                     FROM gold.fct_complaint_recurrence
                 """).fetchall()
             ],
+            "completeness": [
+                {"load_day": str(r[0]), "requests_created": r[1],
+                 "minutes_short_of_midnight": r[2], "is_complete_day": r[3]}
+                for r in con.execute("""
+                    SELECT load_day, requests_created,
+                           minutes_short_of_midnight, is_complete_day
+                    FROM gold.int_load_completeness ORDER BY load_day
+                """).fetchall()
+            ],
             "silver_count": con.execute(
                 "SELECT COUNT(*) FROM silver.service_requests").fetchone()[0],
         }
@@ -258,10 +277,52 @@ def gold_db(tmp_path_factory):
     full_refresh = capture(con)
     con.close()
 
+    # ── Non-vacuity guards for the two horizon tests ─────────────────────────
+    # The tests they replace could not fail. `observation_days >= 0` sat on a
+    # column produced by GREATEST(0, ...), so sabotaging the horizon to
+    # DATE '1999-01-01' drove every raw value thousands of days negative and the
+    # test still reported PASS. Anything written to replace that has to be shown
+    # failing on the thing it guards, in both directions, and then recovering.
+    #
+    # The sabotage is applied to the BUILT TABLE rather than to the model file:
+    # it isolates what the tests can detect from how the model happens to be
+    # written today, and it leaves the repo untouched if the run dies midway.
+    horizon_tests = ["assert_recurrence_horizon_is_last_complete_day",
+                     "assert_observation_days_floor_is_explained"]
+
+    def run_horizon_tests():
+        return _dbt(["test", "--select", *horizon_tests], workdir, check=False)
+
+    guards = {"clean": run_horizon_tests()}
+
+    # Horizon one day too far forward — literally the defect: the newest loaded
+    # day is partial, and treating it as the horizon over-credits every row.
+    # Chosen because it floors NOTHING, so only the horizon test can catch it.
+    con = duckdb.connect(str(db_path))
+    con.execute("UPDATE gold.fct_complaint_recurrence "
+                "SET observation_days = observation_days + 1")
+    con.close()
+    guards["horizon_advanced"] = run_horizon_tests()
+
+    # Horizon frozen or backdated: every row floors, the sample silently
+    # shrinks out of every `observation_days >= N` filter, nothing errors.
+    con = duckdb.connect(str(db_path))
+    con.execute("UPDATE gold.fct_complaint_recurrence SET observation_days = 0")
+    con.close()
+    guards["all_floored"] = run_horizon_tests()
+
+    # And back: rebuilding the model from source must restore both to green,
+    # so the failures above are attributable to the sabotage and not to drift
+    # accumulated by this fixture.
+    _dbt(["build", "--select", "fct_complaint_recurrence"], workdir)
+    guards["reverted"] = run_horizon_tests()
+
     return {
         "phase1_fct_keys": phase1_fct_keys,
         "incremental": incremental,
         "full_refresh": full_refresh,
+        "guards": {k: {"returncode": v.returncode, "output": v.stdout}
+                   for k, v in guards.items()},
     }
 
 
@@ -338,7 +399,12 @@ def location_retention_db(tmp_path_factory):
     con.execute("INSERT INTO silver.service_requests VALUES " + ",".join([
         _row("k1", "2024-01-02 10:00:00", "2024-01-03 01:00:00",
              "HPD", "Housing Preservation And Development", "Closed", T1),
-        _row("k2", "2024-01-03 09:00:00", None,
+        # 23:50 makes Jan 3 a COMPLETE day for int_load_completeness, which is
+        # what gives fct_complaint_recurrence a horizon here. k2 is the row that
+        # carries it because k2 survives phase 2 — the Queens rows do not, and a
+        # fixture whose only complete day is deleted mid-run has no horizon in
+        # its second half and fails on a null observation_days.
+        _row("k2", "2024-01-03 23:50:00", None,
              "NYPD", "New York City Police Dept", "Open", T1),
         _row("q1", "2024-01-02 11:00:00", "2024-01-03 02:00:00",
              "DSNY", "Department of Sanitation", "Closed", T1,
