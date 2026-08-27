@@ -3,7 +3,8 @@ Pipeline Component Tests — NYC 311 Data Platform
 
 Tests the non-dbt pieces of the pipeline without needing live cloud credentials:
 
-  1. Airflow DAG           — syntax validity, task count, dependency chain
+  1. Airflow DAG           — syntax validity, task count, and the dependency
+                             GRAPH reconstructed from the file's AST (§1b)
   2. Terraform             — HCL syntax validity via terraform validate
   3. GitHub Actions        — workflow YAML structure
   4. profiles.yml.example  — connection config correctness
@@ -19,6 +20,7 @@ direction.
 import ast
 import importlib
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -58,6 +60,98 @@ def file_contains(path, *strings):
         code_lines = [line.split("#", 1)[0] for line in f]
     content = "\n".join(code_lines)
     return all(s in content for s in strings)
+
+
+def hcl_top_level_blocks(text):
+    """Yield (header, body) for every TOP-LEVEL block in an HCL document.
+
+    This is a brace-DEPTH-AWARE SCAN, NOT A FULL HCL PARSER. It tracks nesting
+    depth so a block ends at its OWN closing brace, and steps over double-quoted
+    strings (with backslash escapes) and `#` / `//` line comments so braces
+    inside them do not move the depth. It does not understand heredocs
+    (`<<EOT`), `/* */` block comments, or object-literal values — none of which
+    appear in this repo's .tf files. If one is introduced, this scanner must be
+    revisited; python-hcl2 is not a declared dependency of this repo, so a real
+    parser was not available.
+
+    Why depth matters: the naive line scan this replaced ended a resource at
+    the first line equal to `}`, which is the closing brace of the first NESTED
+    block (`on_schema_object { future { ... } }`). Everything after it — in HCL,
+    argument order is free — escaped the scan entirely.
+
+    `header` is the last non-blank line before the opening `{`, e.g.
+    `resource "snowflake_grant_privileges_to_account_role" "loader_db_usage" {`.
+    `body` is the raw text between the braces.
+    """
+    blocks = []
+    depth = 0
+    i = 0
+    n = len(text)
+    start = 0
+    header = None
+    body_start = None
+    in_string = False
+    in_comment = False
+
+    while i < n:
+        ch = text[i]
+
+        if in_comment:
+            if ch == "\n":
+                in_comment = False
+            i += 1
+            continue
+
+        if in_string:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            i += 1
+            continue
+
+        if ch == '"':
+            in_string = True
+            i += 1
+            continue
+
+        if ch == "#" or text[i:i + 2] == "//":
+            in_comment = True
+            i += 1
+            continue
+
+        if ch == "{":
+            depth += 1
+            if depth == 1:
+                preamble = text[start:i].strip()
+                header = preamble.splitlines()[-1].strip() if preamble else ""
+                body_start = i + 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                blocks.append((header, text[body_start:i]))
+                start = i + 1
+        i += 1
+
+    return blocks
+
+
+def hcl_string_list(body, attr):
+    """Return the string elements of `attr = ["A", "B"]` inside an HCL body.
+
+    Only the block's OWN attribute is matched (the search is anchored to a line
+    start and stops at the first `]`), and only quoted elements are returned —
+    a computed value such as `privileges = var.something` yields None so the
+    caller can distinguish "no such attribute" from "not a literal list".
+    """
+    match = re.search(
+        r"^[ \t]*" + re.escape(attr) + r"\s*=\s*\[([^\]]*)\]",
+        body, re.MULTILINE,
+    )
+    if match is None:
+        return None
+    return re.findall(r'"([^"]*)"', match.group(1))
 
 
 # ── 1. Airflow DAG (the one that runs) ────────────────────────────────────────
@@ -106,6 +200,287 @@ def test_local_dag_invokes_the_pipeline_venv_explicitly():
     interpreter rather than whatever python is on PATH."""
     assert file_contains(DAG_PATH, "PIPELINE_PY"), (
         "Tasks must invoke the pipeline venv explicitly, not ambient python."
+    )
+
+
+# ── 1b. The DAG's dependency GRAPH, not just its task names ───────────────────
+#
+# The tests above assert that seven task_id STRINGS appear in the file. That is
+# satisfied by a DAG whose tasks are wired in any order, or in no order at all.
+# Three mutations were run against the suite as it stood on 2026-08-26 and all
+# three passed green:
+#
+#   1. `dbt_build` moved ahead of `load_silver` — transform before the data it
+#      transforms has been loaded.
+#   2. the `dbt_build >> check_slos` edge deleted — `check_slos` and
+#      `upstream_stall_check` become roots and fire at DAG start, evaluating
+#      SLOs against yesterday's warehouse.
+#   3. the entire dependency block deleted — seven tasks, no edges, everything
+#      fires at once.
+#
+# Each of those is a catastrophic orchestration bug that ships silently. The
+# checks below read the actual edge list.
+#
+# WHY THE SOURCE AND NOT THE BUILT DAG
+# ------------------------------------
+# The honest test would import the DAG and read `task.upstream_task_ids`,
+# because that is what Airflow itself will do. It is not available here: this
+# suite runs in `.venv`, which has no Airflow (Airflow lives in `.venv-airflow`,
+# kept separate on purpose — see the DAG docstring). And the usual guard,
+# `pytest.importorskip("airflow")`, is actively DANGEROUS in this repo: `import
+# airflow` SUCCEEDS from the repo root because `airflow/` is a directory and
+# Python treats it as a namespace package, so importorskip would neither skip
+# nor import anything real:
+#
+#     >>> import airflow; airflow.__file__ is None      # True — namespace pkg
+#     >>> from airflow.sdk import DAG                   # ModuleNotFoundError
+#
+# So these tests parse the file's AST and reconstruct the `>>` / `<<` chains
+# into an edge list. That is weaker than the built DAG — it cannot see edges
+# created by anything the extractor does not model, which is why
+# `dag_dependency_edges` RAISES on constructs it does not understand rather
+# than returning a quietly incomplete graph.
+#
+# REACHABILITY, NOT EXACT SEQUENCE
+# --------------------------------
+# `REQUIRED_ORDERING` is asserted as "b is reachable from a", not as adjacency
+# and not as an exact task sequence. The distinction is the whole point: the
+# constraints below are the SEMANTIC ones (you cannot transform data you have
+# not loaded), so inserting a task between two of them, or running `check_slos`
+# and `upstream_stall_check` in parallel off `dbt_build`, is a harmless change
+# and must stay green. Reversing two of them is a data-corruption bug and must
+# go red. An exact-sequence equality would conflate the two and get itself
+# deleted the first time someone parallelised anything.
+
+# Ordering relationships that must hold for the pipeline to be correct.
+REQUIRED_ORDERING = [
+    # Don't spend a fetch on a source that isn't answering.
+    ("check_source", "fetch_live"),
+    # Medallion order: raw lands before bronze, bronze before silver.
+    ("fetch_live", "load_bronze"),
+    ("load_bronze", "load_silver"),
+    # dbt reads silver. Building first would transform stale or absent data.
+    ("load_silver", "dbt_build"),
+    # SLO-1 freshness is measured on what dbt just built, not what was there
+    # before the run.
+    ("dbt_build", "check_slos"),
+    # Same for the stall warning: it reads the DuckDB the build populates.
+    # Deliberately NOT pinned to `check_slos` — the two are independent readers
+    # and parallelising them is a legitimate change.
+    ("dbt_build", "upstream_stall_check"),
+]
+
+# The only task that may have no upstream. Anything else without an upstream is
+# an orphan that fires at DAG start — mutation 2 above.
+DAG_ROOT_TASKS = {"check_source"}
+
+# Dependency helpers that create edges this AST reader cannot see. Their
+# presence makes the reconstructed graph a lie, so it refuses to return one.
+UNMODELLED_DEPENDENCY_HELPERS = {"chain", "chain_linear", "cross_downstream"}
+
+
+def _task_ids_by_variable(tree):
+    """Map `x` -> "the_task_id" for every `x = SomeOperator(task_id="...")`.
+
+    The `>>` chains reference python variables, not task_ids. Resolving through
+    this map means a variable renamed without its task_id (or vice versa) is
+    caught rather than silently producing edges between names that don't exist.
+    """
+    mapping = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+            continue
+        task_id = next(
+            (
+                kw.value.value
+                for kw in node.value.keywords
+                if kw.arg == "task_id"
+                and isinstance(kw.value, ast.Constant)
+                and isinstance(kw.value.value, str)
+            ),
+            None,
+        )
+        if task_id is None:
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                mapping[target.id] = task_id
+    return mapping
+
+
+def _endpoints(node, task_ids, edges):
+    """Reduce a dependency expression to (entry tasks, exit tasks), collecting
+    edges into `edges` on the way.
+
+    `a >> b >> c` parses as `BinOp(BinOp(a, >>, b), >>, c)`, so the edge b->c
+    needs the EXIT of the left subtree, not its root. Lists fan out: for
+    `[a, b] >> c` the entry and exit sets are both {a, b}, producing a->c and
+    b->c. Raises on any node shape it does not model, so an unreadable
+    expression fails loudly instead of contributing zero edges.
+    """
+    if isinstance(node, ast.Name):
+        if node.id not in task_ids:
+            raise AssertionError(
+                f"Dependency chain references '{node.id}', which is not a "
+                f"variable assigned an operator with a task_id. Known tasks: "
+                f"{sorted(task_ids)}"
+            )
+        return {task_ids[node.id]}, {task_ids[node.id]}
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        members = set()
+        for element in node.elts:
+            entry, exit_ = _endpoints(element, task_ids, edges)
+            members |= entry | exit_
+        return members, members
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.RShift, ast.LShift)):
+        left_entry, left_exit = _endpoints(node.left, task_ids, edges)
+        right_entry, right_exit = _endpoints(node.right, task_ids, edges)
+        if isinstance(node.op, ast.RShift):
+            edges.update((u, d) for u in left_exit for d in right_entry)
+            return left_entry, right_exit
+        # `a << b` means b is upstream of a.
+        edges.update((u, d) for u in right_exit for d in left_entry)
+        return right_entry, left_exit
+    raise AssertionError(
+        f"Unreadable dependency expression at line {getattr(node, 'lineno', '?')}: "
+        f"{ast.dump(node)[:200]}. Extend _endpoints() rather than leaving the "
+        f"reconstructed graph incomplete."
+    )
+
+
+def dag_dependency_edges(path=DAG_PATH):
+    """Return (task_ids_by_variable, {(upstream_task_id, downstream_task_id)}).
+
+    Reads the SOURCE, not a DAG object built by Airflow — see the section
+    comment above for why. Raises rather than returning an empty or partial
+    graph, so a missing file, a deleted dependency block, or a dependency
+    helper this reader cannot model is a test FAILURE and never a silent pass.
+    """
+    assert os.path.exists(path), (
+        f"{path} does not exist. If the DAG was renamed, update DAG_PATH — "
+        f"do not let this guard find nothing to check."
+    )
+    tree = parse_python(path)
+    task_ids = _task_ids_by_variable(tree)
+    assert task_ids, (
+        f"No `variable = Operator(task_id=...)` assignments found in {path}. "
+        f"Either the DAG defines no tasks or it builds them in a way this "
+        f"reader cannot follow; in both cases the graph below would be empty."
+    )
+
+    edges = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id in UNMODELLED_DEPENDENCY_HELPERS:
+                raise AssertionError(
+                    f"{path} line {node.lineno} uses {func.id}(), which creates "
+                    f"dependencies this AST reader does not model. The "
+                    f"reconstructed graph would be missing edges and the "
+                    f"ordering assertions would be vacuous. Extend "
+                    f"dag_dependency_edges() to handle it."
+                )
+            if isinstance(func, ast.Attribute) and func.attr in (
+                "set_downstream",
+                "set_upstream",
+            ):
+                base_entry, base_exit = _endpoints(func.value, task_ids, edges)
+                for arg in node.args:
+                    arg_entry, arg_exit = _endpoints(arg, task_ids, edges)
+                    if func.attr == "set_downstream":
+                        edges.update((u, d) for u in base_exit for d in arg_entry)
+                    else:
+                        edges.update((u, d) for u in arg_exit for d in base_entry)
+        elif isinstance(node, ast.Expr) and isinstance(node.value, ast.BinOp):
+            if isinstance(node.value.op, (ast.RShift, ast.LShift)):
+                _endpoints(node.value, task_ids, edges)
+
+    assert edges, (
+        f"{path} declares tasks but NO dependencies between them. Every task "
+        f"would fire at DAG start. If the `>>` chain moved or was deleted, this "
+        f"is the bug; if it moved to a construct this reader cannot see, extend "
+        f"dag_dependency_edges()."
+    )
+    return task_ids, edges
+
+
+def _reachable_from(edges, start):
+    """Task ids reachable downstream of `start`. Cycle-safe (visited set)."""
+    downstream = {}
+    for upstream, downstream_task in edges:
+        downstream.setdefault(upstream, set()).add(downstream_task)
+    seen, stack = set(), [start]
+    while stack:
+        for nxt in downstream.get(stack.pop(), ()):
+            if nxt not in seen:
+                seen.add(nxt)
+                stack.append(nxt)
+    return seen
+
+
+def test_local_dag_dependency_graph_is_readable_and_complete():
+    """Anti-vacuity guard for every ordering assertion below.
+
+    Those assertions are all of the form "b is reachable from a". On an empty
+    graph that form fails, but only because reachability is empty — which is
+    the right answer for the wrong reason and would not survive someone
+    "fixing" a test by relaxing it. This states the precondition directly: the
+    file exists, all seven tasks resolve, and every one of them appears in the
+    edge list.
+    """
+    task_ids, edges = dag_dependency_edges()
+
+    missing = [t for t in EXPECTED_TASKS if t not in set(task_ids.values())]
+    assert not missing, f"DAG does not define task(s): {missing}"
+
+    wired = {t for edge in edges for t in edge}
+    unwired = [t for t in EXPECTED_TASKS if t not in wired]
+    assert not unwired, (
+        f"Task(s) {unwired} are defined but appear in no dependency edge — "
+        f"they would run immediately at DAG start."
+    )
+
+
+@pytest.mark.parametrize("upstream,downstream", REQUIRED_ORDERING)
+def test_local_dag_orders_tasks_correctly(upstream, downstream):
+    """`downstream` must be reachable from `upstream` in the real edge list.
+
+    Reachability, not adjacency: inserting a task between the two is fine,
+    reversing them is not. See the section comment for the distinction.
+    """
+    _, edges = dag_dependency_edges()
+    reachable = _reachable_from(edges, upstream)
+    assert downstream in reachable, (
+        f"'{downstream}' does not run after '{upstream}' in nyc311_local. "
+        f"Reachable from '{upstream}': {sorted(reachable) or 'nothing'}. "
+        f"Edges: {sorted(edges)}"
+    )
+
+
+def test_local_dag_has_no_orphaned_tasks():
+    """Only `check_source` may start with no upstream.
+
+    A task with no upstream is not "unordered", it is scheduled at DAG start.
+    Deleting one `>>` is enough to make `check_slos` evaluate SLOs against the
+    previous run's warehouse, on a green DAG.
+    """
+    _, edges = dag_dependency_edges()
+    has_upstream = {downstream for _, downstream in edges}
+    roots = {t for t in EXPECTED_TASKS if t not in has_upstream}
+    assert roots == DAG_ROOT_TASKS, (
+        f"Tasks with no upstream should be exactly {sorted(DAG_ROOT_TASKS)}, "
+        f"but are {sorted(roots)}. Extra roots fire at DAG start."
+    )
+
+
+def test_local_dag_is_acyclic():
+    """Airflow rejects a cyclic DAG at parse time — but nothing here parses it
+    with Airflow, so the cycle would only surface on the scheduler."""
+    _, edges = dag_dependency_edges()
+    cyclic = [t for t in EXPECTED_TASKS if t in _reachable_from(edges, t)]
+    assert not cyclic, (
+        f"Task(s) {cyclic} are reachable from themselves — the DAG has a cycle "
+        f"and Airflow will refuse to import it. Edges: {sorted(edges)}"
     )
 
 
@@ -178,27 +553,122 @@ def test_terraform_snowflake_foundation_outputs_role_names_map():
     )
 
 
-def test_terraform_loader_bronze_grants_no_truncate():
-    """
-    The LOADER role must not have TRUNCATE on Bronze tables. Bronze is an
-    append-only audit layer — giving LOADER the ability to TRUNCATE would
-    allow a service account to wipe the entire raw data history.
-    """
+# Privileges that let the holder empty a Bronze table, either directly or by
+# containing the one that does.
+#
+#   TRUNCATE        — the privilege itself.
+#   ALL PRIVILEGES  — Snowflake's docs: "Grants all privileges, except
+#     OWNERSHIP, on a table." TRUNCATE is an ordinary table privilege in that
+#     list, so ALL CONTAINS IT. `ALL` is the documented synonym.
+#     https://docs.snowflake.com/en/user-guide/security-access-control-privileges
+#   OWNERSHIP       — the same page says OWNERSHIP "Grants full control over
+#     the table". It does NOT enumerate TRUNCATE under OWNERSHIP, so this is
+#     the one entry below that is an inference rather than a quoted guarantee:
+#     an owner holds the object with grant option and can therefore grant
+#     itself TRUNCATE at will. Treated as equivalent, and flagged here as an
+#     inference so the next reader does not mistake it for a citation.
+#
+# Terraform's snowflake_grant_privileges_to_account_role also exposes a boolean
+# `all_privileges = true` that grants the same set without naming a privilege;
+# it is checked separately below because it is not a list element.
+BRONZE_DESTRUCTIVE_PRIVILEGES = {"TRUNCATE", "ALL PRIVILEGES", "ALL", "OWNERSHIP"}
+
+
+def loader_bronze_grant_blocks():
+    """Every top-level grant resource that gives the LOADER role something on
+    BRONZE. Selected by CONTENT (role reference + Bronze reference), never by
+    resource name, so renaming or adding a resource cannot drop it from the
+    guard's coverage."""
     main_path = os.path.join(TERRAFORM_DIR, "modules", "snowflake-foundation", "main.tf")
     with open(main_path) as f:
         content = f.read()
 
-    in_loader_bronze_block = False
-    for line in content.splitlines():
-        if "loader_bronze_future_tables" in line:
-            in_loader_bronze_block = True
-        if in_loader_bronze_block and "TRUNCATE" in line and not line.strip().startswith("#"):
-            pytest.fail(
-                "LOADER role has TRUNCATE on Bronze future tables. "
-                "Remove TRUNCATE — Bronze is append-only."
-            )
-        if in_loader_bronze_block and line.strip() == "}":
-            in_loader_bronze_block = False
+    found = []
+    for header, body in hcl_top_level_blocks(content):
+        if not header.startswith('resource "snowflake_grant'):
+            continue
+        # Strip comments before matching: the prose above these resources talks
+        # about TRUNCATE and Bronze at length, and must not be evidence.
+        code = "\n".join(line.split("#", 1)[0] for line in body.splitlines())
+        # Match BOTH provider spellings of the role resource. The Snowflake
+        # provider renamed `snowflake_role` to `snowflake_account_role`, so a
+        # file part-migrated to the new name would still satisfy the vacuity
+        # assert below (the un-migrated grants keep matching) while a newly
+        # added grant written the new way became invisible. Verified: an
+        # `ALL PRIVILEGES` grant on Bronze written as `snowflake_account_role`
+        # PASSED the content selector before this line covered both spellings.
+        if not re.search(r"\bsnowflake_(?:account_)?role\.loader\b", code):
+            continue
+        if "fq_bronze" not in code and "BRONZE" not in code:
+            continue
+        found.append((header, code))
+    return found
+
+
+def test_terraform_loader_bronze_grants_no_truncate():
+    """
+    The LOADER role must not be able to TRUNCATE Bronze. Bronze is an
+    append-only audit layer — a service account that can empty it can erase the
+    entire raw data history, and nothing downstream would report a gap.
+
+    Scope: EVERY LOADER grant touching Bronze, current tables and future,
+    matched on the role and schema the block references rather than on one
+    hand-written resource name. The predecessor scanned a single named resource
+    line by line and had three holes, each proven inert before this replaced it:
+
+      1. It ended the block at the first line equal to `}` — the closing brace
+         of the NESTED `future { ... }` block — so a `privileges` list written
+         after `on_schema_object` (legal HCL; argument order is free) was never
+         read. Verified: a LOADER TRUNCATE grant written that way PASSED.
+      2. Renaming the resource made the scan match nothing and pass having
+         examined no lines at all. Verified: renamed + TRUNCATE granted PASSED.
+      3. It matched the literal word TRUNCATE, so `ALL PRIVILEGES` on Bronze's
+         CURRENT tables — a grant the old guard did not look at in any case —
+         went straight through. Verified: PASSED.
+
+    Vacuity is now fatal: if no LOADER-on-Bronze table grant is found at all,
+    this fails rather than passes, because "found nothing to check" and "checked
+    and found it clean" must never produce the same colour.
+
+    KNOWN LIMIT, recorded rather than quietly fixed. loader_bronze_schema grants
+    LOADER `CREATE TABLE` on BRONZE, so LOADER OWNS every Bronze table it
+    creates — and an owner holds the object with grant option and can grant
+    itself TRUNCATE. The append-only property is therefore weaker than "no
+    TRUNCATE grant exists" makes it sound. Closing that means moving table
+    creation to another role, which is an infrastructure decision, not a test
+    change; this guard states the gap instead of implying it is covered.
+    """
+    blocks = loader_bronze_grant_blocks()
+
+    assert blocks, (
+        "No LOADER grant on BRONZE found in modules/snowflake-foundation/main.tf. "
+        "Either the grants moved to another file (point this guard at it) or "
+        "they were deleted. Failing rather than passing: a guard that finds "
+        "nothing to inspect has verified nothing."
+    )
+
+    assert any("TABLES" in code for _, code in blocks), (
+        "LOADER has grants on BRONZE but none on TABLES — the object type this "
+        "guard exists to constrain. If the table grant genuinely moved, update "
+        "this guard; do not let it pass by having nothing to check."
+    )
+
+    violations = []
+    for header, code in blocks:
+        privileges = hcl_string_list(code, "privileges") or []
+        for privilege in privileges:
+            if privilege.strip().upper() in BRONZE_DESTRUCTIVE_PRIVILEGES:
+                violations.append(f"{header.strip()}\n      privileges include {privilege!r}")
+        if re.search(r"^\s*all_privileges\s*=\s*true", code, re.MULTILINE):
+            violations.append(f"{header.strip()}\n      sets all_privileges = true")
+
+    assert not violations, (
+        "LOADER can empty BRONZE. Bronze is append-only — the privilege layer "
+        "is what enforces that, not convention:\n    "
+        + "\n    ".join(violations)
+        + "\n  TRUNCATE, ALL PRIVILEGES/ALL, OWNERSHIP and all_privileges = true "
+        "all confer the ability to empty a table."
+    )
 
 
 # ── 3. GitHub Actions Workflow ────────────────────────────────────────────────

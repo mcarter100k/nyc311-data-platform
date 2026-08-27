@@ -143,6 +143,14 @@ DAGs had seven tasks, so the count matched, and the count was the only thing che
 check_source → fetch_live → load_bronze → load_silver → dbt_build → check_slos → upstream_stall_check
 ```
 
+The ORDER of that chain — not just the names in it — is guarded by
+[tests/test_pipeline_components.py](../tests/test_pipeline_components.py)`::test_local_dag_orders_tasks_correctly`,
+which reconstructs the real edge list from the DAG's AST and asserts the relationships that
+matter semantically (silver loads before dbt builds, dbt builds before the SLOs are read).
+Until 2026-08-26 nothing checked this: the tests asserted only that seven task_id strings
+appeared somewhere in the file, so moving `dbt_build` ahead of `load_silver`, or deleting the
+dependency block outright, left the suite green.
+
 The `check_source` task at the front runs a plain `curl` and validates the HTTP status only — it discards the body (`-o /dev/null`), so a source returning `200` with an empty array passes it; the zero-row check in `fetch_live_records` catches that one task later. There is no sensor and no waiting behaviour (an earlier version of this file described an `HttpSensor` that does not exist).
 
 `check_slos` evaluates SLO-1 freshness and SLO-2 source reconciliation and exits 1 on breach, so a breach is a red run. `upstream_stall_check` is the opposite by design: it exits 0 either way, because a stall in the city's publishing must stay visible without reddening a run whose own work was correct ([ADR 013](adr/013-no-source-freshness-slo.md)).
