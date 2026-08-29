@@ -11,7 +11,7 @@
 | **Stack** | Python · pandas · DuckDB · dbt · Airflow · Terraform · GitHub Actions |
 | **Warehouse model** | Kimball star — <!--claim:fct_models-->4<!--/claim--> facts, <!--claim:dim_models-->3<!--/claim--> dimensions, SCD Type 2, write-audit-publish |
 | **Scale** | ~127k requests per 12-day window, pulled from the live Socrata API |
-| **Tested by** | <!--claim:test_count-->245<!--/claim--> pytest tests + <!--claim:dbt_test_count-->132<!--/claim--> dbt data tests |
+| **Tested by** | <!--claim:test_count-->255<!--/claim--> pytest tests + <!--claim:dbt_test_count-->132<!--/claim--> dbt data tests |
 | **Runs** | Daily at 10:20 UTC, gated by 2 SLOs, with a heartbeat watching the scheduler |
 | **Documented by** | <!--claim:adr_count-->16<!--/claim--> ADRs and a postmortem — and a CI job that fails if any of it drifts from the code |
 
@@ -206,11 +206,11 @@ The obvious repair — keying on `:updated_at` — was measured and **rejected**
 
 ## Test suite
 
-Two populations, deliberately not summed: **<!--claim:test_count-->245<!--/claim--> pytest tests** needing no cloud account, and **<!--claim:dbt_test_count-->132<!--/claim--> dbt data tests (<!--claim:dbt_generic_tests-->121<!--/claim--> generic + <!--claim:dbt_singular_tests-->11<!--/claim--> singular)** running against the warehouse during `dbt build`. Both are recomputed in CI — pytest from collection, dbt from the parsed manifest.
+Two populations, deliberately not summed: **<!--claim:test_count-->255<!--/claim--> pytest tests** needing no cloud account, and **<!--claim:dbt_test_count-->132<!--/claim--> dbt data tests (<!--claim:dbt_generic_tests-->121<!--/claim--> generic + <!--claim:dbt_singular_tests-->11<!--/claim--> singular)** running against the warehouse during `dbt build`. Both are recomputed in CI — pytest from collection, dbt from the parsed manifest.
 
 | Tier | Count | What it proves |
 |---|---|---|
-| **Structural** | <!--claim:structural_test_count-->165<!--/claim--> | Configuration correctness — schema resolution, incremental strategy, DAG lineage and task *ordering*, Terraform validity, the LOADER-has-no-TRUNCATE contract. Also the documentation guards' own failure modes ([tests/test_doc_guards.py](tests/test_doc_guards.py)) |
+| **Structural** | <!--claim:structural_test_count-->175<!--/claim--> | Configuration correctness — schema resolution, incremental strategy, DAG lineage and task *ordering*, Terraform validity, the LOADER-has-no-TRUNCATE contract. Also the documentation guards' own failure modes ([tests/test_doc_guards.py](tests/test_doc_guards.py)) |
 | **Unit** | <!--claim:unit_test_count-->9<!--/claim--> | Silver transformation *logic* ([local/silver_transformations.py](local/silver_transformations.py)) against hand-built fixtures |
 | **Behavioral** | <!--claim:behavioral_test_count-->71<!--/claim--> | Gold *semantics* — builds the dbt project twice on seeded DuckDB and asserts on output rows: watermark lookback, SCD2 point-in-time join, update propagation, dimension retention when Silver's window moves past a member the fact still references |
 
@@ -275,7 +275,7 @@ terraform/github/  this repo's own infrastructure — labels, branch protection,
 config/         borough_variants.csv — one mapping, read by Python and dbt alike
 scripts/        SLO checks, claim checker, model-drift guard
 docs/           ARCHITECTURE · SLO · CLAIMS · BACKLOG · adr/ · postmortems/
-tests/          <!--claim:test_count-->245<!--/claim--> pytest tests across three tiers
+tests/          <!--claim:test_count-->255<!--/claim--> pytest tests across three tiers
 ```
 
 </details>

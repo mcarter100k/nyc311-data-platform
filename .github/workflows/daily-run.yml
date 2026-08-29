@@ -70,6 +70,27 @@ jobs:
           restore-keys: |
             nyc311-duckdb-
 
+      # Reconcile stored derivations with current model logic BEFORE dbt runs.
+      #
+      # The fact accumulates far beyond silver's rolling window (170,046 rows
+      # spanning 17 days against silver's 64,292 over 7, measured 2026-08-29),
+      # so rows outside that window are never revisited by an incremental
+      # build. When #55 corrected the is_overdue rule, the 3,241 rows already
+      # stored under the old rule became permanently wrong AND permanently
+      # unreachable: every run from 2026-08-27 failed the singular test that
+      # guards the rule, and because the cache saves only on success, each run
+      # restored the same poisoned database. The pipeline could not heal.
+      #
+      # This step breaks that loop and prevents the next one. It is idempotent
+      # and prints "nothing to backfill" on a healthy database, so it stays
+      # cheap once the debt is paid rather than needing to be removed.
+      #
+      # It is NOT `dbt build --full-refresh`: that rebuilds the fact from
+      # silver and would delete the 105,754 rows silver no longer carries to
+      # repair 3,241.
+      - name: Reconcile stored derivations (idempotent)
+        run: python scripts/backfill_is_overdue.py local/data/nyc311_local.duckdb
+
       # Trailing-7-day created_date window, hard 150k row cap. Transient HTTP
       # faults (429, 5xx) retry twice with exponential backoff; everything else
       # — a non-retryable status, a cap breach, a zero-row fetch, exhausted
