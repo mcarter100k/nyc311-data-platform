@@ -1,5 +1,5 @@
 # Dependencies for the unit tier (ci.yml). Kept in a requirements file, not an
 # inline workflow pin, so Dependabot's pip ecosystem tracks it.
 # The tier tests local/silver_transformations.py — pure pandas, no Spark.
-pandas==3.0.5
+pandas==3.0.6
 pytest==9.1.1
