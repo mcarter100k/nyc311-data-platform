@@ -1,6 +1,6 @@
 # ADR 010: Scheduled Daily Operation Against the Live Source
 
-**Status:** Accepted. Amended 2026-08-19 (SLO-2 redefined, inline under Decision 3), 2026-08-20 and 2026-09-29 (37-day window, 800k cap, 30-hour heartbeat; see the end).
+**Status:** Accepted. Amended 2026-08-19 (SLO-2 redefined, inline under Decision 3), 2026-08-20, 2026-09-29 (37-day window, 800k cap, 30-hour heartbeat) and 2026-09-30 (one query per day); see the end.
 **Date:** 2026-08-18
 **Amends:** [ADR 008](008-prototype-scope.md) — the prototype boundary moves.
 
@@ -174,3 +174,26 @@ have reached 26.98 hours.
 query. The `:updated_at` incremental mode and the full-load mode were removed
 with the rest of the Databricks path, so no `:updated_at` watermark exists in
 the repo.
+
+## Amendment 2026-09-30 — one query per day
+
+The first wide run after the 37-day change failed: Socrata did not answer the
+first page of a 50-day query within the 60-second read timeout, on all three
+attempts. Asking the source to sort a multi-week range by `:id` is slow. Measured
+on 2026-09-30:
+
+| Query | Time to answer |
+|---|---|
+| 7-day window, 50,000-row page | 8.7 s |
+| 37-day window, 50,000-row page | 139–209 s |
+| 37-day window, 10,000-row page | over 300 s |
+| one day | 1–4 s |
+
+So the fetch now asks for one day per query, the last day open-ended, which
+covers exactly the same rows as before. A 50-day live run then fetched 522,961
+rows in 14.6 minutes, mostly download time, and passed every dbt test. The read
+timeout counts time between bytes, not total time, so a slow download does not
+trip it; only a slow first answer did. On the same cohorts, that run's 30-day
+closure rate was 89.5%, and a live sample of 30 rows it still held as open found
+none closed at the source.
+
