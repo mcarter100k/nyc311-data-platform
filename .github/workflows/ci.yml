@@ -47,7 +47,8 @@ jobs:
         run: dbt deps --profiles-dir ci-profile --project-dir . --no-version-check
         working-directory: dbt
 
-      # parse, not compile: compile opens a Snowflake connection.
+      # parse, not compile: compile opens a Snowflake connection. parse checks
+      # refs, macros and YAML; it does not check the Snowflake SQL itself.
       - name: dbt parse (compile without connecting)
         run: dbt parse --profiles-dir ci-profile --project-dir . --target ci --no-version-check
         working-directory: dbt

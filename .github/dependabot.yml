@@ -13,11 +13,12 @@ updates:
           - minor
           - patch
 
-  # One entry for every requirements file, so a package pinned in two files
-  # (dbt-core in dbt/ and local/, pandas in local/ and tests/unit/, pytest in
-  # / and tests/unit/) moves in both within a single PR. Separate entries
-  # produce one PR per file, and each fails CI alone because front-door
-  # installs the files together.
+  # One entry for every requirements file, so a minor or patch bump to a
+  # package pinned in two files (dbt-core in dbt/ and local/, pandas in local/
+  # and tests/unit/, pytest in / and tests/unit/) lands in both in one grouped
+  # PR. With one entry per file, a dbt-core bump arrives as two PRs and each
+  # fails front-door, which installs dbt/ and local/ together. Major bumps are
+  # not grouped and can still arrive as one PR per file; merge those together.
   - package-ecosystem: pip
     directories:
       - /
