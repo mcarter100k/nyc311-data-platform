@@ -53,8 +53,8 @@ vars:
   chronic_location_min_tickets: 5
 
   # 30 = NYC's closure standard. fct_daily_volume counts "closed within this
-  # many days of creation" and fct_service_requests.is_overdue uses the same
-  # number. A day's rates publish only once this many complete days follow it.
+  # many days of creation" (fct_service_requests.is_overdue hard-codes the
+  # same 30; see its comment). A day's rates publish only once this many complete days follow it.
   # The daily fetch re-pulls 37 days so Gold sees every closure up to day 30
   # after the source settles (ADR 016); a shorter fetch window makes these
   # rates read low.

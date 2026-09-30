@@ -102,13 +102,15 @@ joined as (
             else false
         end                                                                     as is_actioned,
 
-        -- Took longer than closure_window_days (NYC's 30-day standard). NULL
+        -- Took longer than NYC's 30-day closure standard. Fixed at 30, not the
+        -- closure_window_days var: this incremental table keeps history the
+        -- daily window never revisits, so a changed threshold would split it. NULL
         -- until status is Closed: the source sometimes sends a closed_date
         -- while the request is still open.
         case
             when r.status <> 'Closed'      then null
             when r.resolution_days is null then null
-            when r.resolution_days > {{ var('closure_window_days') }} then true
+            when r.resolution_days > 30    then true
             else false
         end                                                                     as is_overdue,
 

@@ -166,7 +166,9 @@ def main() -> int:
     # post_hook.
     check("gold within the fetch window = silver",
           n_gold_window == n_silver,
-          f"{n_gold_window:,} vs {n_silver:,}")
+          f"{n_gold_window:,} vs {n_silver:,}"
+          + (" — Gold has extra rows: usually requests the source deleted, "
+             "which Gold keeps" if n_gold_window > n_silver else ""))
 
     n_gold_history = n_fct - n_gold_window
     print(f"  · gold retains {n_gold_history:,} rows older than the window "
@@ -272,8 +274,9 @@ def main() -> int:
                   "" if same else f"gold={ours} api={a.get('complaint_type'), a.get('borough'), a.get('created_date')}")
         # Mutable fields (status, closed_date) are excluded: the source may
         # legitimately be newer than our snapshot.
-    except requests.RequestException as exc:
-        # Only a network or HTTP error is a skip; anything else is a real failure.
+    except (requests.ConnectionError, requests.Timeout) as exc:
+        # Only an unreachable source (or exhausted retries) is a skip. A 4xx or
+        # an unreadable response is a real failure.
         print(f"  ~ skipped (network unavailable: {type(exc).__name__}) — rungs 1–2 stand alone")
     except Exception as exc:
         check("rung 3 completed", False,

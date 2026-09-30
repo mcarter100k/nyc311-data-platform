@@ -46,8 +46,8 @@ days; older cohorts never re-enter it.
 
 **Proposed fix.** Run `daily-run.yml` once by hand with the `window_days`
 input wide enough to reach 2026-08-12 (48 days on 2026-09-29; roughly 500k
-rows, under the 800k cap). The run upserts every re-fetched row and deletes
-none. After that, the daily 37-day window keeps new cohorts current.
+rows, under the 800k cap). The run upserts every re-fetched row; the
+only rows it removes from Gold are ones Silver quarantines. After that, the daily 37-day window keeps new cohorts current.
 
 ---
 
