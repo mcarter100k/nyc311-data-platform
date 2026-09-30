@@ -1,8 +1,4 @@
-# modules/snowflake-foundation/variables.tf
-#
-# Input variables for the Snowflake foundation module.
-# All sensitive credentials (password, private key) are passed via environment
-# variables consumed directly by the provider — they must never appear here.
+# Non-secret inputs only; credentials come from the provider's environment.
 
 variable "environment" {
   description = "Deployment environment. Controls object name suffixes and data-retention windows."

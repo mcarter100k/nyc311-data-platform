@@ -5,7 +5,7 @@ output "repository_url" {
 
 output "pages_url" {
   description = "Published dbt documentation site, once the docs workflow has run."
-  value       = try(github_repository.this.pages[0].html_url, null)
+  value       = github_repository_pages.docs.html_url
 }
 
 output "required_checks" {
