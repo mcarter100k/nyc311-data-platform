@@ -1,6 +1,6 @@
 # ADR 010: Scheduled Daily Operation Against the Live Source
 
-**Status:** Accepted
+**Status:** Accepted. Amended 2026-08-20 and 2026-09-29 (37-day window, 800k cap, 30-hour heartbeat; see the end).
 **Date:** 2026-08-18
 **Amends:** [ADR 008](008-prototype-scope.md) — the prototype boundary moves.
 
@@ -43,9 +43,9 @@ contract) keeps `:updated_at` — at warehouse scale that volume is trivial and
 catching every update is the point. A row-capped daily fetch on a public
 runner cannot absorb it.
 
-The daily run therefore uses an explicit `created_window` mode added to the
-shared param builder (`databricks/notebooks/ingest_config.py`): fetch every
-row *created* in the trailing 7 days, re-pulling the whole window each run.
+The daily run therefore fetches by creation date (`local/ingest_config.py`):
+every row *created* in the trailing 7 days, re-pulling the whole window each
+run.
 Status updates to rows inside the window are captured by that re-pull; updates
 to rows older than 7 days are outside this deployment's scope, by design and
 documented. Nothing about the cloud spec changed.
@@ -92,10 +92,8 @@ warning) shelling out to `local_runner.py`. Verified end to end with
 `airflow dags test` — DagRun state=success, all seven tasks green, the dbt
 build inside the DAG reporting PASS=113 / ERROR=0.
 
-`nyc311_pipeline.py` is unchanged and remains the cloud specification. It is
-excluded from local parsing via `airflow/dags/.airflowignore` because it
-imports the Databricks provider, which is deliberately not installed — there is
-no workspace for it to call and its job IDs default to 0.
+`nyc311_pipeline.py`, the cloud DAG, was deleted with the Databricks path
+([ADR 005](005-orchestration-strategy.md)).
 
 **This does not change what operates the pipeline.** The Airflow scheduler only
 fires while its process is alive, so a laptop misses any run scheduled while the
@@ -124,3 +122,55 @@ cloud deployment.
   reality provides material, never speculatively.
 - No new dependencies: the workflow uses `local/requirements.txt` and the
   runner-provided `gh` with the default `github.token`.
+
+## Amendment 2026-09-29 — a 37-day window, an 800k cap, a 30-hour heartbeat
+
+**The fetch window is 37 days (was 7).** A request's status in Gold changes
+only while the request is inside the fetch window, because the daily run
+re-pulls that window and nothing else. With 7 days, Gold never saw a closure
+after day 7, so its published 30-day closure rates (`fct_daily_volume`) were
+really 7-day rates. Measured:
+
+- On the same cohorts (requests created 2026-08-24 to 08-28), the 30-day
+  closure rate read **68.4%** with the 7-day window and **89.5%** with 37 days.
+- Three independent samples of rows Gold held as open found 22 of 40, 30 of 40
+  and 25 of 30 already closed at the source.
+
+37 is the 30-day closure window (`closure_window_days` in `dbt_project.yml`)
+plus the 7-day settling horizon ([ADR 016](016-source-settling-horizon.md)), so
+a request stays in the window until its 30-day outcome is final at the source.
+
+Rows older than 37 days keep their last-seen status. That is enough for every
+30-day metric Gold publishes, but a request still open at day 37 stays open in
+Gold even after the city closes it. Rows loaded while the window was 7 days are
+stale in the same way until one wide run re-fetches them. Both are in
+[BACKLOG](../BACKLOG.md).
+
+**The row cap is 800,000 (was 150,000).** A 37-day live run fetched 385,285
+rows in 8.2 minutes, and all 148 dbt nodes and both SLOs passed. The cap is
+about twice the measured volume. Hitting it still fails the run, for the reason
+in Decision 2.
+
+**The job timeout is 30 minutes (was 15)**, room for the larger fetch while a
+hung run still stops long before the next day's trigger.
+
+**SLO-2 no longer checks one day.** Decision 3's reconciliation now covers
+every complete day in the window ([ADR 015](015-slo2-population-is-complete-days.md)).
+
+**Retries.** "Exactly one retry" in Decision 2 was replaced by
+[ADR 015](015-slo2-population-is-complete-days.md): three attempts with 1s and
+2s backoff on connection errors, 429 and 5xx; any other error status fails at
+once.
+
+**The heartbeat threshold is 30 hours (was 26).** `heartbeat.yml` checks from
+outside the daily run that `daily-run.yml` is still enabled and has succeeded
+on `main` within the threshold, and files a `daily-run-breach` issue if not. It
+is scheduled every 4 hours, and GitHub may delay or skip it. The threshold is
+not SLO-1's 26 hours because GitHub starts the 10:00 UTC cron late (runs
+typically start 13:00–18:00 UTC), and gaps between healthy successful runs
+have reached 26.98 hours.
+
+**One fetch mode.** `local/ingest_config.py` builds only the created-window
+query. The `:updated_at` incremental mode and the full-load mode were removed
+with the rest of the Databricks path, so no `:updated_at` watermark exists in
+the repo.

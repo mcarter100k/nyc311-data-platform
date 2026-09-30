@@ -1,6 +1,6 @@
 # ADR 016: NYC 311 data settles after 7 days — the replica spread is a recency lag, not noise
 
-**Status:** Accepted
+**Status:** Accepted. Amended 2026-09-29: the horizon now sets the fetch window, and `source_counts` is created with its probe columns (see the end).
 **Date:** 2026-08-27
 **Relates to:** [ADR 013](013-no-source-freshness-slo.md) (gate on what we control),
 [ADR 015](015-slo2-population-is-complete-days.md) (SLO-2's population is complete days),
@@ -253,3 +253,20 @@ The 7-day horizon is **an observation, not a guarantee**. If the city changes
 its backfill practice the horizon moves, and the first thing to move with it is
 SLO-2's 0.80 points of margin. Nothing gates on the number today, which is what
 makes it safe to write down; re-measure before anything starts to.
+
+---
+
+## Amendment 2026-09-29 — the horizon now sizes the window
+
+- **Decision 5 no longer holds as written.** The fetch window is 37 days: the
+  30-day closure window plus this 7-day settling horizon, so a request's 30-day
+  outcome is final at the source before the request leaves the window
+  ([ADR 010](010-scheduled-operation.md), amendment 2026-09-29). The horizon is
+  now an input to `LIVE_DAYS`, so if a re-measurement moves it, move
+  `LIVE_DAYS` too. Nothing gates on it directly.
+- **"A day now has a deadline"** is relaxed. A day settles at 7 days and stays
+  in the window for 37, so it can be reconciled for 30 days after it settles.
+- **Decision 3's migration is gone.** Stage 3 creates `silver.source_counts`
+  with the probe columns (`source_count_min`, `probe_count`,
+  `probes_disagreed`) in its `CREATE TABLE IF NOT EXISTS`. There is no
+  `ADD COLUMN` step, because every persisted database already has the columns.

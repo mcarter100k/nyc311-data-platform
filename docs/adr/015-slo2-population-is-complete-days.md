@@ -1,6 +1,6 @@
 # ADR 015: SLO-2's population is complete days, chosen by the data — not an offset from the clock
 
-**Status:** Accepted
+**Status:** Accepted. The consequence figures are superseded by [ADR 016](016-source-settling-horizon.md); the fetch window is now 37 days (see the end).
 **Date:** 2026-08-27
 **Relates to:** [ADR 010](010-scheduled-operation.md) (scheduled operation and the SLO gates),
 [ADR 013](013-no-source-freshness-slo.md) (gate on what we control, warn on what we don't),
@@ -54,13 +54,13 @@ against the live dataset:
 
 | When | Newest row at source | Lag | Last publish |
 |---|---|---|---|
-| 2026-08-25 | — | 23.3 h | — |
-| 2026-08-26 | — | 23.5 h | — |
+| 2026-08-20 08:26 UTC | 2026-08-19 02:26 | 23.3 h | 2026-08-20 01:46 |
+| 2026-08-22 06:27 UTC | 2026-08-21 02:05 | 23.5 h | 2026-08-22 01:37 |
 | 2026-08-27 03:03 UTC | 2026-08-25 02:06 | **49.0 h** | 2026-08-27 01:36 (1.4 h earlier) |
 
 On 2026-08-27 the source published 1.4 hours before the measurement and carried
 nothing new — the same shape as the 2026-08-18 stall. T-2 would have been a
-whole day on the 25th and 26th and a 358-row stub on the 27th. Any fixed offset
+whole day on the 20th and 22nd and a 358-row stub on the 27th. Any fixed offset
 is a stub on some days; T-2 merely relocates the defect and buys a review pass.
 
 ## Decision
@@ -181,3 +181,14 @@ stub could not. That is the point — but it means a thin fetch (Socrata served
 previously could not notice. Not observed on the 14-day load measured here,
 where every day reconciled above 99.7%; recorded so the next person meets it as
 a known exposure rather than a surprise.
+
+---
+
+## Amendment 2026-09-29 — a wider window
+
+The fetch window is now 37 days, not 7
+([ADR 010](010-scheduled-operation.md), amendment 2026-09-29). A day the city
+publishes late stays reconcilable for 37 days instead of 7, which narrows the
+gap described above; a day never published in full within 37 days is still
+never reconciled. The capture now probes each count 11 times and keeps the
+per-day maximum ([ADR 016](016-source-settling-horizon.md)).

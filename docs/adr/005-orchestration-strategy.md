@@ -1,6 +1,6 @@
 # ADR 005: Orchestration Strategy
 
-**Status:** Accepted
+**Status:** Accepted. Amended 2026-08-20 and 2026-09-29: the Databricks DAG was deleted; a local DAG runs (see the end).
 **Date:** 2026-05-27
 
 ## Context
@@ -97,7 +97,7 @@ Rejected because split orchestration is architecturally worse than a single unif
 
 ## Decision
 
-**Apache Airflow** with a single DAG (`nyc311_pipeline`) in `airflow/dags/nyc311_pipeline.py`.
+**Apache Airflow** with a single DAG (`nyc311_pipeline`) in `airflow/dags/nyc311_pipeline.py` (deleted 2026-08-20; see the amendments).
 
 The DAG implements the `check_api_availability >> ingest_raw >> load_bronze >> load_silver
 >> dbt_build >> dbt_publish >> notify_success` dependency chain using:
@@ -160,6 +160,23 @@ The single-DAG, write-audit-publish design recorded here was written for a
 Databricks + Snowflake deployment. That DAG (`nyc311_pipeline.py`) has been
 deleted along with the Databricks path. `airflow/dags/nyc311_local.py` remains
 and actually executes: the same gate-then-build-then-verify shape, seven tasks,
-smoke-tested end to end. The HttpSensor reasoning, the sequencing, and the
-write-audit-publish argument are unchanged and still describe the intent; only
-the operators changed from Databricks jobs to the local runner's stages.
+smoke-tested end to end. The sequencing argument is unchanged; the operators
+changed from Databricks jobs to the local runner's stages.
+
+## Amendment 2026-09-29 — no sensor, and no write-audit-publish on DuckDB
+
+Two parts of the design above do not exist in what runs.
+
+- **There is no HttpSensor.** The local DAG's `check_source` task is a
+  `BashOperator` running `curl`. It checks the HTTP status only: no body
+  inspection, no poke interval, no waiting. It passes whenever the API answers,
+  so it could not have caught the August 2026 publish stall: the API was up,
+  but the newest days were missing.
+- **Write-audit-publish exists only in the Snowflake spec**
+  (`dbt/macros/publish_gold.sql`, [ADR 009](009-publish-grants-under-schema-swap.md)).
+  Nothing in the repo sets `audit_suffix`, and the DuckDB path builds straight
+  into `gold`, so a failing dbt test leaves the tables already built in place.
+  The daily run limits the damage: it saves its database for the next run only
+  when the fetch and build succeed.
+
+The daily schedule is GitHub Actions, not Airflow ([ADR 010](010-scheduled-operation.md)).
