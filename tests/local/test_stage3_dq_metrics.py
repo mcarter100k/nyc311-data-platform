@@ -1,28 +1,12 @@
 """
-What silver.data_quality_log actually CONTAINS after a real stage3_silver run.
+What silver.data_quality_log and silver.service_requests contain after a real
+stage3_silver run.
 
-Why this file exists, stated plainly, because it is the whole point:
-tests/unit/test_silver_transformations.py::test_data_quality_metrics calls
-compute_dq_metrics directly, hands it correctly-separated frames, and passes.
-It passed on the day this bug shipped and every day after. The function was
-never wrong — the CALLER was. local_runner.stage3_silver passed the
-POST-quarantine frame into the slot the duplicate count is derived from, so:
-
-    duplicate_rate.records_failed = |bronze| - |post-quarantine|
-                                  = duplicates + quarantined rows
-
-and on live data, which contains no duplicate unique_keys at all, that number
-was purely the quarantine count. `duplicate_rate` had never once measured a
-duplicate. Alongside it, invalid_resolution_days and unrecognized_borough were
-given the post-quarantine population as their denominator — a denominator that
-excludes, by construction, the very rows their numerators count.
-
-A unit test on the function is structurally incapable of seeing any of that.
-So these tests run the real stage3_silver against a fixture raw file, with a
-raw file whose duplicate count (2), quarantine count (3) and survivor count (4)
-are all DIFFERENT numbers, and read the answers back out of DuckDB. If the
-argument bug is reintroduced, duplicate_rate reports 5 instead of 2 and the
-two deduped-population checks report a denominator of 4 instead of 7.
+The unit tests call compute_dq_metrics with the right frames by construction;
+these check that stage3_silver passes the right ones. The fixture's duplicate
+(2), quarantine (3) and survivor (4) counts all differ, so passing the
+post-quarantine frame shows up as duplicate_rate = 5 instead of 2 and a
+denominator of 4 instead of 7.
 """
 
 import json
@@ -52,12 +36,6 @@ def _rec(unique_key, created, closed, status, borough):
     }
 
 
-# The fixture is built so that the three counts a correct run must distinguish
-# are three DIFFERENT numbers. That is not decoration: with the shipped live
-# data (0 duplicates, N quarantined) the buggy and correct duplicate counts
-# happen to differ only by N, and with a fixture where duplicates == quarantine
-# the buggy denominator for the other two checks would still look plausible.
-#
 #   9 raw rows  ->  7 after dedup (2 duplicate rows removed)
 #               ->  4 written to Silver (3 quarantined)
 #   2 of the 7 deduped rows carry an unrecognized borough
@@ -92,12 +70,10 @@ CHECK_NAMES = {
 
 @pytest.fixture(scope="module")
 def stage3_run(tmp_path_factory):
-    """Run the REAL stage3_silver against a fixture raw file in a temp DuckDB.
+    """Run the real stage3_silver against a fixture raw file in a temp DuckDB.
 
-    local_runner resolves its paths from module-level constants, so they are
-    rebound around the call and restored afterwards — the developer's own
-    local/data/ database is never touched. SOURCE_COUNT_FILE is pointed at a
-    path that does not exist, which is the same branch a non-live run takes.
+    local_runner's path constants are rebound around the call, so local/data/
+    is never touched. SOURCE_COUNT_FILE does not exist, as in a non-live run.
     """
     import local_runner
 
@@ -135,20 +111,31 @@ def stage3_run(tmp_path_factory):
             "quarantine": con.execute(
                 "SELECT count(*) FROM silver.quarantine").fetchone()[0],
         }
+        silver_columns = {r[0] for r in con.execute(
+            "DESCRIBE silver.service_requests").fetchall()}
+        quarantine_columns = {r[0] for r in con.execute(
+            "DESCRIBE silver.quarantine").fetchall()}
     finally:
         con.close()
 
-    return {"log": log, "tables": tables}
+    return {"log": log, "tables": tables,
+            "silver_columns": silver_columns, "quarantine_columns": quarantine_columns}
+
+
+def test_silver_does_not_store_resolution_days(stage3_run):
+    """Gold's calendar-day resolution_days is the one published definition.
+
+    Silver's 24-hour-period value only drives the quarantine, so it is kept in
+    silver.quarantine (stg_quarantine reads it) and nowhere else.
+    """
+    assert "resolution_days" in stage3_run["quarantine_columns"]
+    leaked = {"resolution_days", "is_resolved", "_borough_raw"} & stage3_run["silver_columns"]
+    assert not leaked, f"silver.service_requests stores {sorted(leaked)}"
 
 
 def test_duplicate_rate_counts_duplicates_and_not_quarantined_rows(stage3_run):
-    """The headline defect: duplicate_rate reported the quarantine count.
-
-    2 duplicate rows and 3 quarantined rows, deliberately different numbers.
-    The shipped bug computes |bronze| - |post-quarantine| = 9 - 4 = 5, which is
-    duplicates + quarantined; on live data (0 duplicates) that is the quarantine
-    count exactly, which is what silver.data_quality_log has always logged.
-    """
+    """2 duplicate rows, 3 quarantined rows. Passing the post-quarantine frame
+    would report 9 - 4 = 5."""
     log = stage3_run["log"]
     assert stage3_run["tables"] == {"silver": N_SILVER, "quarantine": N_QUARANTINED}, (
         "Fixture drift — the rest of these assertions are calibrated to "
@@ -169,9 +156,6 @@ def test_duplicate_rate_counts_duplicates_and_not_quarantined_rows(stage3_run):
         "actually saw."
     )
 
-    # The other check that moves on quarantined rows must not agree with it.
-    # Identical numerators across these two checks is the exact signature the
-    # bug left in the shipped database.
     assert dup["records_failed"] != log["invalid_resolution_days"]["records_failed"], (
         "duplicate_rate and invalid_resolution_days report the same failure "
         "count on a fixture built to make them differ — duplicate_rate is "
@@ -180,14 +164,8 @@ def test_duplicate_rate_counts_duplicates_and_not_quarantined_rows(stage3_run):
 
 
 def test_deduped_checks_are_measured_against_the_frame_they_checked(stage3_run):
-    """A denominator must contain its own numerator.
-
-    invalid_resolution_days and unrecognized_borough are evaluated on the
-    deduped, PRE-quarantine frame. Handing them the post-quarantine population
-    as records_checked gives 4 — a population from which all 3 invalid rows
-    have already been removed, so the check reports failures that are not in
-    the set it claims to have checked.
-    """
+    """A denominator must contain its own numerator: both checks run on the 7
+    deduped, pre-quarantine rows, not the 4 survivors."""
     log = stage3_run["log"]
 
     invalid = log["invalid_resolution_days"]

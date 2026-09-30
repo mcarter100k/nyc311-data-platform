@@ -1,24 +1,12 @@
 """
-Silver transformation logic for the local pipeline.
+Silver transformation logic for the local pipeline, with no database access.
 
-`local_runner.py` handles all I/O (reading Bronze from DuckDB, writing Silver
-and the DQ log). This module holds the transformation logic, and nothing here
-touches a database — which is the entire point: the code that decides what a
-row *means* is the code most worth unit-testing, and it cannot be tested while
-it is interleaved with connection handling.
+`local_runner.py` does the I/O (reading the raw file, writing Silver and the DQ
+log). Every function here takes a DataFrame and returns a DataFrame or a plain
+value, so unit tests can hand it a few rows and assert exact output.
 
-Every function takes a DataFrame and returns a DataFrame (or a plain value),
-so a test can hand it three hand-built rows and assert exact output.
-
-Provenance: these rules previously existed twice — here in pandas, inline in
-`local_runner.stage3_silver`, and again in a PySpark module for a Databricks
-deployment that was specified but never provisioned. The PySpark copy was
-unit-tested while this one, which actually runs every day, was not. The
-Databricks path was removed and its tests ported here, onto the code that runs.
-
-The borough mapping is NOT defined in this file. It is loaded from
-`config/borough_variants.csv`, the single source of truth shared with both dbt
-projects (which load it as a seed).
+The borough mapping is loaded from `config/borough_variants.csv`, which both
+dbt projects also load as a seed.
 """
 
 from __future__ import annotations
@@ -29,10 +17,6 @@ from pathlib import Path
 import pandas as pd
 
 BOROUGH_VARIANTS_CSV = Path(__file__).resolve().parent.parent / "config" / "borough_variants.csv"
-
-CANONICAL_BOROUGHS = {
-    "BROOKLYN", "MANHATTAN", "QUEENS", "BRONX", "STATEN ISLAND", "UNSPECIFIED",
-}
 
 
 def load_borough_map(path: Path | None = None) -> dict:
@@ -53,8 +37,8 @@ def standardize_borough_value(val) -> str:
 
     Null, empty, and unrecognized values all collapse to UNSPECIFIED rather
     than to null: a null borough would break the NOT NULL contract on
-    dim_location, and 'unrecognized' is information worth keeping distinct
-    from 'missing' only at the DQ-metric level, not in the dimension.
+    dim_location. unrecognized_borough_mask keeps the distinction for the DQ
+    metric.
     """
     if pd.isna(val) or str(val).strip() == "":
         return "UNSPECIFIED"
@@ -64,12 +48,10 @@ def standardize_borough_value(val) -> str:
 def standardize_borough(df: pd.DataFrame) -> pd.DataFrame:
     """Collapse every borough spelling variant to the five canonical names.
 
-    The raw value is preserved alongside, in `_borough_raw`. Not decoration:
-    standardization is lossy in exactly the way the docstring above admits —
-    'missing', 'unrecognized', and the source's own literal 'Unspecified' all
-    become the same string — and `unrecognized_borough_mask` needs the input to
-    tell them apart. The underscore marks it internal; local_runner drops it
-    before writing Silver, so the Silver schema is unchanged.
+    The raw value is kept in `_borough_raw`, because standardizing maps missing,
+    unrecognized and the source's literal 'Unspecified' to the same string, and
+    `unrecognized_borough_mask` must tell them apart. local_runner drops it
+    before writing Silver.
     """
     out = df.copy()
     raw = out["borough"] if "borough" in out.columns else pd.Series(dtype=str, index=out.index)
@@ -81,26 +63,11 @@ def standardize_borough(df: pd.DataFrame) -> pd.DataFrame:
 def unrecognized_borough_mask(df: pd.DataFrame) -> pd.Series:
     """True where a borough value WAS supplied and no variant matched it.
 
-    Deliberately NOT `borough == 'UNSPECIFIED'`, which is what the
-    unrecognized_borough DQ check used to count. That test conflates three
-    different facts, only one of which is a decoder failure:
+    Not `borough == 'UNSPECIFIED'`, which mixes three different cases:
 
         borough is null / blank      the source said nothing
-        borough is 'Unspecified'     the source said, explicitly, that it does
-                                     not know — a RECOGNIZED variant, present
-                                     in config/borough_variants.csv by name
+        borough is 'Unspecified'     a RECOGNIZED variant in the CSV
         borough is something else    no variant matched: the actual failure
-
-    Measured on the local load, all 160 rows the old check reported as
-    'unrecognized' were the second kind — the source's own literal
-    'Unspecified', which the seed maps deliberately. The true unrecognized count
-    was ZERO, and the DQ log published a 0.125% failure rate for a check that
-    had nothing to report. A metric that cannot read zero cannot raise an alarm
-    either: a genuinely new spelling would have moved that number from 160 to
-    161 and no one would have looked.
-
-    KNOWN_BOROUGH_VARIANTS is the denominator this was always meant to use —
-    the constant existed, with a comment saying so, and nothing referenced it.
     """
     if "_borough_raw" not in df.columns:
         return pd.Series(False, index=df.index)
@@ -115,28 +82,10 @@ def unrecognized_borough_mask(df: pd.DataFrame) -> pd.Series:
 def deduplicate_on_unique_key(df: pd.DataFrame) -> pd.DataFrame:
     """One row per unique_key: newest ingest wins, later fetch breaks the tie.
 
-    API pagination overlaps at page boundaries, so the same unique_key can
-    arrive twice in one run. The later copy is the fresher read of a row that
-    may have changed between page requests, so it is the one to keep.
-
-    Why the tiebreaker is load-bearing rather than defensive. The previous
-    version sorted on `_ingest_timestamp` alone and called that deterministic.
-    It is not, for two compounding reasons:
-
-      1. A run stamps ONE timestamp across the whole frame (stage 3 assigns
-         `df["_ingest_timestamp"] = <mtime>`), so in production every row ties
-         and the sort key carries no information at all.
-      2. `sort_values` defaults to quicksort, which is NOT stable, so tied rows
-         come out in an unspecified order.
-
-    Measured: 1,000 keys duplicated across two pages, run against five
-    shuffles of the same input, produced five different survivor sets — and
-    even at fixed order the survivors were a 997/3 mix of the two pages rather
-    than either one cleanly.
-
-    `_fetch_position` makes the ordering total, and `kind="mergesort"` makes it
-    stable, so the result depends only on the input rows and not on their
-    arrival order or on pandas' internals. Output is returned in fetch order.
+    Pages can overlap, so a key can arrive twice in one run; the later copy is
+    the fresher read. A run stamps one _ingest_timestamp on every row, so
+    _fetch_position breaks ties, and a stable mergesort makes the result
+    independent of input order. Output is in fetch order.
     """
     if "unique_key" not in df.columns:
         return df.reset_index(drop=True)
@@ -159,10 +108,9 @@ def deduplicate_on_unique_key(df: pd.DataFrame) -> pd.DataFrame:
 def parse_timestamps(df: pd.DataFrame) -> pd.DataFrame:
     """Coerce the three date columns, NAIVE — never utc=True.
 
-    Socrata sends naive NYC-local timestamps and the warehouse contract stores
-    them as TIMESTAMP_NTZ. Labelling them UTC here shifted every value by the
-    machine's offset, which surfaced downstream as wrong calendar dates for
-    after-midnight rows.
+    Socrata sends naive NYC-local timestamps and the warehouse stores them as
+    TIMESTAMP_NTZ; labelling them UTC would shift every value by the machine's
+    offset.
     """
     out = df.copy()
     for col in ("created_date", "closed_date", "resolution_action_updated_date"):
@@ -171,12 +119,11 @@ def parse_timestamps(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_resolution_days(df: pd.DataFrame) -> pd.DataFrame:
-    """Days from created to closed, plus is_resolved.
+    """Add resolution_days (whole 24-hour periods, created to closed) for the quarantine.
 
-    NULL for open requests, not 0 — a zero would be indistinguishable from a
-    same-day close and would drag every average toward zero. Negative values
-    are produced here rather than suppressed: they are a real data-entry
-    signal, and select_quarantine decides what happens to them.
+    Not stored in Silver: Gold's calendar-day resolution_days is the one
+    published definition. NULL for open requests; negative values are kept,
+    because they are what quarantine_mask looks for.
     """
     out = df.copy()
     has_both = out["closed_date"].notna() & out["created_date"].notna()
@@ -186,7 +133,6 @@ def compute_resolution_days(df: pd.DataFrame) -> pd.DataFrame:
             (out.loc[has_both, "closed_date"] - out.loc[has_both, "created_date"])
             .dt.days.astype("Int64")
         )
-    out["is_resolved"] = out.get("status", pd.Series(dtype=str)) == "Closed"
     return out
 
 
@@ -222,67 +168,25 @@ def compute_dq_metrics(
     df_deduped: pd.DataFrame,
     run_date: str,
 ) -> list:
-    """The five data quality checks for one Silver run.
+    """The five data quality checks for one Silver run, as data_quality_log rows.
 
-    TWO populations, and each check states which one it is measured against.
-    Getting this wrong is not a rounding error — it changes what the metric
-    MEANS, and it did: see the note at the end of this docstring.
+      df_bronze   every row as fetched, before dedup and quarantine.
+      df_deduped  one row per unique_key with derived columns, BEFORE
+                  quarantine: the population every quality rule runs over.
 
-      df_bronze   every row as fetched, before deduplication and before the
-                  quality filter. |df_bronze| is the run's input size.
-      df_deduped  one row per unique_key, with the derived columns already
-                  computed (borough standardized, resolution_days present),
-                  and BEFORE quarantining. This is the population every
-                  quality RULE is evaluated over.
+    The post-quarantine frame is not a parameter: as a denominator it would
+    exclude the very rows a check counts as failures.
 
-    The post-quarantine frame — the rows that survive and get written to
-    silver.service_requests — is deliberately NOT a parameter. No check may be
-    measured against it, because it is defined as "the rows that passed", so
-    using it as a denominator produces a rate whose denominator excludes its
-    own numerator.
-
-    Check by check:
-
-      null_rate_unique_key    / df_bronze. Must be pre-dedup: dedup collapses
-                                null unique_keys, so a null measured afterwards
-                                would be invisible.
-      null_rate_created_date  / df_bronze. Same population as the check above
-                                so the two null rates are comparable.
-      duplicate_rate          / df_bronze. Numerator is |bronze| - |deduped| —
-                                the rows deduplication actually removed —
-                                over the rows deduplication actually saw.
-      invalid_resolution_days / df_deduped. The quarantine rule is applied to
-                                the deduped frame, so the deduped frame is what
-                                it was checked against. Its failures are a
-                                SUBSET of this denominator, which is the point.
-      unrecognized_borough    / df_deduped. Borough standardization runs on the
-                                same frame; a row quarantined for a bad date
-                                still had a borough that was or was not
-                                recognized, so it belongs in this denominator.
-                                The NUMERATOR is unrecognized_borough_mask,
-                                evaluated on the RAW value — see that function
-                                for why `borough == 'UNSPECIFIED'` was counting
-                                160 rows the seed maps on purpose.
-
-    Why one deduped frame and not two. This function used to take `df_deduped`
-    and `df_derived` separately, taking counts from the first and masks from
-    the second. At the only call site they are the same population, so the
-    split bought nothing and cost a great deal: local_runner passed the
-    POST-quarantine frame as `df_deduped`, which made `duplicate_rate` report
-    duplicates + quarantined rows (in practice: quarantined rows, since the
-    fetch contains no duplicate unique_keys) and gave the other two checks a
-    denominator that excluded their own numerator. One parameter makes that
-    class of mistake unrepresentable — the count and the mask now provably
-    come from the same rows.
-
-    Returns rows shaped for SILVER.data_quality_log; the caller writes them.
+      null_rate_unique_key    / df_bronze   (dedup would hide null keys)
+      null_rate_created_date  / df_bronze
+      duplicate_rate          / df_bronze   (failed = |bronze| - |deduped|)
+      invalid_resolution_days / df_deduped
+      unrecognized_borough    / df_deduped  (numerator: unrecognized_borough_mask)
     """
     n_bronze = len(df_bronze)
     n_deduped = len(df_deduped)
     n_null_uk = int(df_bronze["unique_key"].isna().sum()) if "unique_key" in df_bronze else n_bronze
     n_null_cd = int(df_bronze["created_date"].isna().sum()) if "created_date" in df_bronze else 0
-    # Rows removed by deduplication. Equivalently |bronze| - |distinct
-    # unique_key|, since that is precisely what deduplicate_on_unique_key does.
     n_dupes = n_bronze - n_deduped
     n_invalid = int(quarantine_mask(df_deduped).sum())
     n_unrecognized = int(unrecognized_borough_mask(df_deduped).sum())
@@ -301,8 +205,6 @@ def compute_dq_metrics(
         row("null_rate_unique_key", n_null_uk, n_bronze),
         row("null_rate_created_date", n_null_cd, n_bronze),
         row("duplicate_rate", n_dupes, n_bronze),
-        # Both of these are checked-against df_deduped, the frame their masks
-        # were computed on — never the post-quarantine frame.
         row("invalid_resolution_days", n_invalid, n_deduped),
         row("unrecognized_borough", n_unrecognized, n_deduped),
     ]

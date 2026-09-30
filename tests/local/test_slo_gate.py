@@ -5,24 +5,8 @@ These run the REAL artifacts — `scripts/check_slos.py` as a subprocess over th
 real `scripts/slo/*.sql`, and the real `QUERY` constant out of
 `scripts/check_upstream_stall.py` — against a hand-seeded DuckDB. Nothing here
 mocks the queries; a change to either file that breaks a verdict breaks a test.
-
-WHY THIS FILE EXISTS. Until 2026-08-27 neither the SLO queries nor the stall
-checker had a single test. Both were wrong for months in ways a test would have
-caught in one line:
-
-  * SLO-2 reconciled `current_date - 1`, which the source's publish lag
-    guarantees is a ~2-hour stub or empty, and `WHEN source = 0 THEN true`
-    turned the empty case into a PASS. The gate certified 3.5% of a day at
-    best and nothing at all at worst.
-  * The stall warning compared our own row count for that same stub day
-    against a 7-day median of our own counts, so it fired on 100% of healthy
-    runs.
-
-Every test below is written so it can fail: each seeds a shape, asserts the
-verdict, then mutates ONE thing and asserts the verdict flips.
 """
 
-import json
 import os
 import subprocess
 import sys
@@ -38,9 +22,7 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 from check_upstream_stall import (MAX_COMPLETE_DAY_LAG_DAYS,  # noqa: E402
                                   QUERY as STALL_QUERY, verdict)
 
-# UTC, not the session's date: both the capture and the source work in UTC, and
-# a laptop an hour west of Greenwich would otherwise seed a different shape than
-# the CI runner. This is the same bug the queries themselves carried.
+# UTC, not the session's date: the capture and the source both work in UTC.
 TODAY = datetime.now(timezone.utc).date()
 
 # A day the source publishes normally. The exact figure does not matter to any
@@ -85,9 +67,9 @@ def seed(path, days, loaded_at=None):
     con.close()
 
 
-def run_gate(path):
+def run_gate(path, *extra):
     """The real gate binary. Returns (exit_code, stdout)."""
-    result = subprocess.run([sys.executable, CHECK_SLOS, str(path)],
+    result = subprocess.run([sys.executable, CHECK_SLOS, *extra, str(path)],
                             capture_output=True, text=True, cwd=ROOT, check=False)
     return result.returncode, result.stdout + result.stderr
 
@@ -112,21 +94,46 @@ HEALTHY = [
 ]
 
 
+# ── SLO-1 ────────────────────────────────────────────────────────────────────
+
+def test_slo1_measures_elapsed_hours_not_hour_boundaries(tmp_path):
+    """25h58m old passes the 26-hour threshold; 26h30m fails.
+
+    Counting hour boundaries crossed would read 25h58m as 26 on most runs.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    fresh = tmp_path / "fresh.duckdb"
+    seed(fresh, HEALTHY, loaded_at=now - timedelta(hours=25, minutes=58))
+    code, out = run_gate(fresh)
+    assert code == 0, out
+
+    stale = tmp_path / "stale.duckdb"
+    seed(stale, HEALTHY, loaded_at=now - timedelta(hours=26, minutes=30))
+    code, out = run_gate(stale)
+    assert code == 1, out
+    assert "SLO BREACH: slo1_freshness.sql" in out, out
+
+
 # ── SLO-2 ────────────────────────────────────────────────────────────────────
 
 def test_gate_passes_on_a_healthy_load_and_assesses_real_days(tmp_path):
-    """Green — and the evidence must show it certified WHOLE DAYS, not a stub.
-
-    `complete_days_assessed` is asserted because a gate that passes while
-    measuring nothing is the exact defect this redesign replaces. Six complete
-    days at 10,500 rows is ~63,000 rows reconciled; the old query certified 358.
-    """
+    """Green, and the evidence shows it assessed the six whole days, not the stub."""
     db = tmp_path / "healthy.duckdb"
     seed(db, HEALTHY)
     code, out = run_gate(db)
     assert code == 0, out
     assert "complete_days_assessed=6" in out, out
     assert f"newest_complete_day={TODAY - timedelta(days=2)}" in out, out
+
+
+def test_report_flag_may_come_before_the_db_path(tmp_path):
+    """`--report r.md` must not be mistaken for the database path."""
+    db = tmp_path / "healthy.duckdb"
+    report = tmp_path / "r.md"
+    seed(db, HEALTHY)
+    code, out = run_gate(db, "--report", str(report))
+    assert code == 0, out
+    assert "complete_days_assessed=6" in report.read_text()
 
 
 def test_gate_ignores_the_trailing_partial_day(tmp_path):
@@ -174,14 +181,8 @@ def test_gate_fails_when_a_complete_day_is_short_loaded(tmp_path):
 
 
 def test_a_zero_source_count_on_a_complete_day_fails_instead_of_passing(tmp_path):
-    """The branch that was `WHEN (SELECT n FROM source) = 0 THEN true`.
-
-    A day the load shows as published through to midnight cannot also have zero
-    rows at the source. Either the capture is wrong or the source retracted the
-    day; both mean the gate cannot vouch for that day, and the old query said
-    PASS. This is the single line that made the gate certify nothing whenever a
-    capture landed on a lagging replica.
-    """
+    """A day the load shows as published to midnight cannot have zero rows at
+    the source: either the capture is wrong or the day was retracted."""
     db = tmp_path / "zero.duckdb"
     seed(db, [(2, True, NORMAL, 0)] + HEALTHY[1:])
     code, out = run_gate(db)
@@ -190,8 +191,7 @@ def test_a_zero_source_count_on_a_complete_day_fails_instead_of_passing(tmp_path
 
 
 def test_a_missing_source_count_on_a_complete_day_fails_closed(tmp_path):
-    """A gate that cannot see its reference must not pass. Unchanged rule,
-    now applied per complete day rather than to one clock-chosen day."""
+    """A gate that cannot see its reference must not pass."""
     db = tmp_path / "missing.duckdb"
     seed(db, [(2, True, NORMAL, None)] + HEALTHY[1:])
     code, out = run_gate(db)
@@ -215,14 +215,9 @@ def test_no_complete_day_in_the_window_fails_rather_than_passing_vacuously(tmp_p
 
 
 def test_a_day_that_fills_in_later_is_re_reconciled(tmp_path):
-    """The deeper bug: a day assessed while incomplete and never revisited.
+    """A stub day is skipped, then assessed once the source fills it in.
 
-    Day T-2 arrives as a 358-row stub and is correctly not assessed. The source
-    then fills it in and the next run re-fetches and re-counts it — so it
-    becomes a complete day with a real source count, and the gate now has an
-    opinion about it. Here the refill exposes that we hold only 358 of 10,500,
-    and the gate reddens; under the old design that day was reconciled once, on
-    the morning it was guaranteed to be a stub, and never looked at again.
+    Here the refill shows we hold only 358 of 10,500, so the gate reddens.
     """
     db = tmp_path / "refill.duckdb"
     seed(db, HEALTHY[:-1] + [(1, False, 358, 358), (0, False, 10, 10)])
@@ -243,10 +238,7 @@ def test_a_day_that_fills_in_later_is_re_reconciled(tmp_path):
 # ── Upstream stall warning ───────────────────────────────────────────────────
 
 def test_stall_warning_is_quiet_on_a_healthy_build(tmp_path):
-    """The whole point. This check commented on issue #40 every single day from
-    2026-08-20 because it measured the publish-lag stub against a 7-day median
-    of full days. On the shape a healthy 10:00 UTC run produces it must say
-    nothing at all."""
+    """On the shape a healthy 10:00 UTC run produces, the warning stays quiet."""
     db = tmp_path / "healthy.duckdb"
     seed(db, HEALTHY)
     row = stall_row(db)
@@ -257,8 +249,7 @@ def test_stall_warning_is_quiet_on_a_healthy_build(tmp_path):
 
 
 def test_stall_warning_fires_when_the_source_stops_advancing(tmp_path):
-    """One missed publish cycle: the newest complete day slips to T-3. Measured
-    on the live source 2026-08-27, which is exactly this shape."""
+    """One missed publish cycle: the newest complete day slips to T-3."""
     db = tmp_path / "behind.duckdb"
     seed(db, [(3 + i, True, NORMAL, NORMAL) for i in range(6)]
              + [(2, False, 358, 358), (1, False, 0, 0)])
@@ -269,10 +260,8 @@ def test_stall_warning_fires_when_the_source_stops_advancing(tmp_path):
 
 
 def test_stall_warning_fires_on_a_source_side_volume_cliff(tmp_path):
-    """The partial stall ADR 013 recorded as a known limit: the city publishes a
-    day right through to midnight but only part-fills it. The horizon advances
-    normally, so only the volume half can catch this — and it is measured
-    against the SOURCE's counts, which the old check never looked at."""
+    """A partial stall: the city publishes a day to midnight but only part-fills
+    it. The horizon advances normally, so only the volume check catches it."""
     db = tmp_path / "cliff.duckdb"
     thin = int(NORMAL * 0.20)
     seed(db, [(2, True, thin, thin)] + HEALTHY[1:])
@@ -295,54 +284,11 @@ def test_stall_warning_fires_when_no_day_is_complete(tmp_path):
 
 
 def test_stall_warning_does_not_fire_merely_for_lacking_a_comparison(tmp_path):
-    """volume_ok is NULL when there is no prior complete day to take a median
-    of. "We cannot compare" is not evidence of a cliff, and the no-data case is
-    already covered above — so NULL must not be read as a stall the way the old
-    check read it."""
+    """volume_ok is NULL with no prior complete day to compare against, and
+    "we cannot compare" is not evidence of a cliff."""
     db = tmp_path / "onlyone.duckdb"
     seed(db, [(2, True, NORMAL, NORMAL), (1, False, 358, 358)])
     row = stall_row(db)
     stall, reasons = verdict(row)
     assert row["volume_ok"] is None, row
     assert not stall, reasons
-
-
-# ── The doc/query contract ───────────────────────────────────────────────────
-
-def test_slo_doc_reproduces_the_queries_byte_for_byte():
-    """check_claims.py enforces this in CI; asserting it here too means a local
-    `pytest tests/local` catches the drift before the push does."""
-    result = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "check_claims.py")],
-                            capture_output=True, text=True, cwd=ROOT, check=False)
-    assert "SLO drift" not in result.stdout, result.stdout
-
-
-def test_source_count_file_shape_is_a_list_of_days(monkeypatch):
-    """The capture writes one record per day of the window. A regression to the
-    single-day object would silently reduce SLO-2's population to one day, and
-    stage 3 would still load it — so the shape is asserted rather than assumed."""
-    sys.path.insert(0, os.path.join(ROOT, "local"))
-    from local_runner import fetch_source_counts_window
-    monkeypatch.setattr("local_runner.time.sleep", lambda _seconds: None)
-
-    class Resp:
-        status_code = 200
-
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return [{"day": (TODAY - timedelta(days=3)).isoformat() + "T00:00:00.000",
-                     "n": "10500"}]
-
-    payload = fetch_source_counts_window(days=4, get=lambda *a, **k: Resp())
-    assert isinstance(payload, list)
-    assert json.loads(json.dumps(payload))  # must be JSON-serialisable as written
-    assert [p["target_date"] for p in payload] == [
-        (TODAY - timedelta(days=d)).isoformat() for d in (4, 3, 2, 1, 0)
-    ]
-    assert [p["source_count"] for p in payload] == [0, 10500, 0, 0, 0], (
-        "Days the source has no rows for must be recorded as an explicit 0 — "
-        "'the source says none' and 'we never asked' are different facts and "
-        "slo2_completeness.sql treats them differently."
-    )

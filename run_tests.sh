@@ -31,30 +31,16 @@ echo "════════════════════════�
 echo ""
 
 # Step 1: Rebuild the manifest so tests run against current code.
-#
-# dbt is located by EXECUTING local/dbt_exec.py, which holds the single
-# definition of this resolution (shared with local/local_runner.py and
-# tests/local/conftest.py). Read that file for the full explanation; the short
-# version is that `python -m dbt` DOES NOT WORK — dbt-core ships no __main__ —
-# while `import dbt.cli.main` succeeds. This script used to guard with that
-# import and then invoke `python -m dbt`, so with dbt correctly installed it
-# died under `set -e` before running a single test, and the two fallback
-# branches below were unreachable in exactly the case they were written for.
-#
-# Failure policy (deliberate, unchanged): if dbt is unavailable and no manifest
-# exists, FAIL LOUDLY with the reason — there is no committed manifest to fall
-# back to (dbt/target/ is gitignored). If a previously built manifest exists,
-# reuse it with a staleness warning rather than blocking the run.
+# Find dbt via local/dbt_exec.py (`python -m dbt` does not work). Without dbt,
+# reuse an existing manifest with a warning, or fail: dbt/target/ is gitignored.
 echo "► Step 1/2: Rebuilding dbt manifest..."
 cd "$REPO_ROOT/dbt"
 
 # `|| true` so a missing dbt does not trip `set -e` before the branches below.
 DBT_BIN="$("$PYTHON" "$REPO_ROOT/local/dbt_exec.py" 2>/dev/null || true)"
 
-# The mock CI profile is committed and credential-free. It is passed as
-# --profiles-dir rather than copied to dbt/profiles.yml so this script can never
-# overwrite a developer's real (gitignored) credentials. Same file is used by
-# both GitHub workflows — see dbt/ci-profile/profiles.yml.
+# The committed, credential-free CI profile, passed as --profiles-dir so a
+# developer's real (gitignored) dbt/profiles.yml is never touched.
 PROFILES_DIR="$REPO_ROOT/dbt/ci-profile"
 
 if [ -n "$DBT_BIN" ]; then
