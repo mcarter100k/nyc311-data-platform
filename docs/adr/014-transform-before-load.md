@@ -1,6 +1,6 @@
 # ADR 014: Transform before load — Bronze is the raw file, not a warehouse table
 
-**Status:** Accepted
+**Status:** Accepted. Amended 2026-08-22 (the exported artifact, inline under Consequences) and 2026-09-29 (a 37-day Bronze; see the end).
 **Date:** 2026-08-21
 **Amends:** [ADR 004](004-medallion-vs-elt.md) (medallion vs ELT — its Bronze/Silver tooling is superseded here)
 **Relates to:** [ADR 008](008-prototype-scope.md) (what is spec vs what runs)
@@ -104,6 +104,8 @@ a view (`IF EXISTS` suppresses "not found", not "wrong type"), so stage 2 looks
 up the object's type before dropping it. Only a second run of the stage shows
 this bug.
 
-**Amendment, 2026-09-29.** The fetch window is now 37 days
+## Amendment 2026-09-29 — a 37-day Bronze
+
+The fetch window is now 37 days
 ([ADR 010](010-scheduled-operation.md)), so the raw file, and Bronze with it,
 is a rolling 37-day window.

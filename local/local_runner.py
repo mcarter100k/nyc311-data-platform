@@ -267,7 +267,8 @@ def stage1_live(days: int = LIVE_DAYS) -> None:
     """Fetch the trailing `days` window and the source's per-day counts.
 
     A wider window replays a range, which re-seats dimension members the
-    accumulating fact table still references (docs/BACKLOG.md).
+    accumulating fact table still references (see the window_days input in
+    .github/workflows/daily-run.yml).
     """
     _banner(f"Stage 1 — Live ingest  (trailing {days} days, cap {LIVE_ROW_CAP:,})")
     if days != LIVE_DAYS:

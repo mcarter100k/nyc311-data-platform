@@ -2,7 +2,7 @@
 
 **Date of incident:** 2026-08-18
 **Date written:** 2026-08-18
-**Date finalized:** 2026-08-20 (corrected 2026-08-27)
+**Date finalized:** 2026-08-20 (corrected 2026-08-27; body revised 2026-09-29 to fold the correction in)
 **Status:** reviewed — the source backfilled on its own; the control redesigned in response was itself corrected later (see *Did the control work*)
 **Breach issue:** [#7](https://github.com/mcarter100k/nyc311-data-platform/issues/7)
 **Severity:** SLO breach (upstream data incident — no pipeline defect)
@@ -10,6 +10,13 @@
 Blameless: this document names causes and defenses, never people. If a step
 was error-prone enough for a careful person to get wrong, the step is the
 finding.
+
+Terms: SLO-1 checks that our newest load is under 26 hours old; SLO-2 then
+checked that yesterday's row count was at least 40% of the median of the
+previous 7 days ([docs/SLO.md](../SLO.md) has both as they are now). Gold is
+the published, analysis-ready layer ([ARCHITECTURE](../ARCHITECTURE.md)). T-1
+is yesterday (UTC) and T-2 the day before. `:updated_at` is the source's
+per-row last-modified stamp; erm2-nwe9 is the dataset's ID on NYC Open Data.
 
 ## Timeline (UTC, all 2026-08-18)
 
@@ -66,8 +73,8 @@ recurring daily, trains the operator to ignore red builds.
 SLO-2 (then: yesterday's count ≥ 40% of the trailing-7-day median), evaluated by
 the daily workflow. It fired on both runs that day: the manual run at 05:28 and
 the first scheduled run at 10:22. Every pipeline stage was green both times;
-only the source-facing check saw the problem. Without it, the run would have published
-a Gold layer missing ~96% of the day and reported success.
+only this check on the loaded volume saw the problem. Without it, the run
+would have published a Gold layer missing ~96% of the day and reported success.
 
 ## Root cause
 
@@ -81,7 +88,10 @@ observations fit a wholesale nightly rebuild that regressed recent days, the
 same publish style implied by the mass `:updated_at` re-stamping measured in
 ADR 010 (~540k rows re-touched nightly). One inconsistency: content changed
 between 04:33 and 05:28 while `rowsUpdatedAt` stayed 01:44, which suggests a
-multi-step rebuild or replicas lagging the metadata.
+multi-step rebuild or replicas lagging the metadata. It is also unexplained
+why Aug 17 already held 9,119 rows at 04:33, when a ~23.5 h publish lag
+predicts about 400; the reading's provenance was not retained. The current
+SLO-2 does not depend on the lag's value.
 
 **Context, possibly related:** in Dec 2025 the city split this dataset
 (2010–2019 moved out; erm2-nwe9 became "2020 to Present"; corrected in the
@@ -118,5 +128,5 @@ complete day against the source's own counts (ADR 015).
 |---|---|---|
 | Close #7 when the source backfills and a scheduled run passes; finalize this postmortem | #7 | ✓ finalized 2026-08-20. #7 was closed at 08:25Z, about two hours before the qualifying run finished at 10:25Z. Both conditions held by 10:25, but not when it was closed. Recorded because marking a criterion met before it is met is the failure this column exists to prevent |
 | Decide on SLO-3 (source freshness: max `created_date` in Gold within N hours) | [ADR 013](../adr/013-no-source-freshness-slo.md) | ✓ rejected after measurement: the blind spot is covered by a warning, not a gate |
-| Revisit SLO-2's window (T-1 vs T-2) if normal days show T-1 chronically incomplete at run time | [ADR 015](../adr/015-slo2-population-is-complete-days.md) | ✓ resolved 2026-08-27, and the framing was wrong: the publish lag measured 23.3 h, 23.5 h, then 49.0 h, so no fixed offset works. SLO-2's population is now every day `int_load_completeness` marks complete |
+| Revisit SLO-2's window (T-1 vs T-2) if normal days show T-1 chronically incomplete at run time | [ADR 015](../adr/015-slo2-population-is-complete-days.md) | ✓ resolved 2026-08-27, and the framing was wrong: the publish lag measured 23.3 h, 23.5 h, then 49.0 h at probe time (47.5 h after the last publish), so no fixed offset works. SLO-2's population is now every day `int_load_completeness` marks complete |
 | Dataset-split claims correction (README, sources.yml, ADR notes) | shipped with this postmortem | ✓ |

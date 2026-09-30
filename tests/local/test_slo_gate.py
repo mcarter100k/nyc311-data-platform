@@ -204,7 +204,7 @@ def test_no_complete_day_in_the_window_fails_rather_than_passing_vacuously(tmp_p
 
     Nothing in the load is a whole day, so there is nothing to reconcile. That
     is a breach of the gate itself — the same rule check_slos.py applies when
-    the SLO directory is empty. The remedy is ours (widen the fetch window),
+    the SLO directory is empty. A gate that measured nothing must not pass,
     which is why this gates rather than merely warns; see ADR 015.
     """
     db = tmp_path / "nocomplete.duckdb"

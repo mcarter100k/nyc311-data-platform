@@ -10,7 +10,7 @@ A data pipeline over New York City's 311 service requests (the city's non-emerge
 |---|---|
 | **Stack** | Python · pandas · DuckDB · dbt · Airflow · Terraform · GitHub Actions |
 | **Model** | Star schema: <!--claim:fct_models-->4<!--/claim--> fact tables, <!--claim:dim_models-->3<!--/claim--> dimensions |
-| **Scale** | ~385k requests re-fetched daily (the last 37 days); ~500k accumulated since Aug 2026 |
+| **Scale** | ~385k requests re-fetched daily (the last 37 days); accumulating since 12 Aug 2026 |
 | **Tests** | <!--claim:test_count-->223<!--/claim--> pytest tests + <!--claim:dbt_test_count-->131<!--/claim--> dbt data tests |
 | **Runs** | Daily (cron 10:00 UTC; GitHub usually starts it 3–8 hours late), gated by 2 SLOs |
 | **Decisions** | <!--claim:adr_count-->16<!--/claim--> decision records and a postmortem |
@@ -37,6 +37,14 @@ Socrata API ─► raw JSON (Bronze) ─► pandas (Silver) ─► dbt (Gold) �
 
 Layer detail, the model list and the design trade-offs: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+**Where things live**
+- [`local/`](local/): the pipeline (`local_runner.py`) and the DuckDB dbt project, which is what runs
+- [`dbt/`](dbt/): the Snowflake dbt project (spec, never run against a warehouse)
+- [`airflow/dags/`](airflow/dags/): the Airflow demo DAG
+- [`terraform/`](terraform/): the Snowflake spec (never applied); [`terraform/github/`](terraform/github/): this repo's GitHub settings (applied)
+- [`scripts/`](scripts/): the SLO queries, the heartbeat and stall checks, the docs and model-drift checks
+- [`config/`](config/): the borough-name mapping · [`tests/`](tests/): pytest · [`docs/`](docs/): architecture, SLOs, ADRs, postmortem
+
 ## How it is operated and checked
 
 An **SLO** (service level objective) is a written, measured promise. [`daily-run.yml`](.github/workflows/daily-run.yml) runs the pipeline daily, then checks two:
@@ -48,7 +56,7 @@ An **SLO** (service level objective) is a written, measured promise. [`daily-run
 
 A failed run or broken SLO opens a `daily-run-breach` issue with the measured numbers. [docs/SLO.md](docs/SLO.md) explains the thresholds. Two more checks cover what the SLOs cannot see:
 
-- **Upstream stall warning.** If the city stops publishing, the run stays green (the loss is not ours) but an `upstream-stall` issue opens. When the city's publishing stalled on 2026-08-18, every pipeline stage ran green and only a source-facing check noticed ([postmortem](docs/postmortems/2026-08-18-upstream-publish-stall.md)).
+- **Upstream stall warning.** If the city stops publishing, the run stays green (the loss is not ours) but an `upstream-stall` issue opens. When the city's publishing stalled on 2026-08-18, every pipeline stage ran green and only a check on the loaded volume noticed ([postmortem](docs/postmortems/2026-08-18-upstream-publish-stall.md)).
 - **Heartbeat.** A check inside the daily run cannot report a run that never starts. A separate [heartbeat](.github/workflows/heartbeat.yml), scheduled every 4 hours (GitHub may delay or skip it), alerts if the daily run is disabled or has not succeeded in 30 hours. Not 24: GitHub starts the daily run late, and gaps between healthy runs reach 27 hours.
 
 **Tests.** <!--claim:test_count-->223<!--/claim--> pytest tests run in CI as three required jobs, split by what each needs installed: <!--claim:structural_test_count-->143<!--/claim--> structural (dbt config, the Airflow DAG's task order, Terraform grants, workflows, the docs checker), <!--claim:unit_test_count-->9<!--/claim--> unit (the pandas cleaning), and <!--claim:behavioral_test_count-->71<!--/claim--> behavioral (real dbt builds on seeded data, the SLO queries, the fetcher against a fake API). A model can be configured perfectly and still compute the wrong number, which is why the behavioral tier checks output rows. Any skipped test fails its job, because a skip shows green. Separately, <!--claim:dbt_test_count-->131<!--/claim--> dbt tests (<!--claim:dbt_generic_tests-->121<!--/claim--> generic, <!--claim:dbt_singular_tests-->10<!--/claim--> hand-written) check the data inside every build.
@@ -95,11 +103,11 @@ Volume: weekdays average 10,955 requests a day and weekends 9,903, while noise c
 
 </details>
 
-**What was corrected.** A claim that "nothing there" closures recur least was withdrawn: it came from 7 days of data and reversed on 12. A weekday/weekend volume comparison was reported backwards (both totals had been divided by the same number of days). Both are registered in the claim checker so they cannot return. And the daily run first fetched only 7 days, so Gold never saw a request close after day 7: for requests created 24–28 Aug, the 30-day closure rate read 68.4% instead of 89.5%. The window is now 37 days; rows stored before the change keep their old status until one wide run (`--live --days N`, N larger than their age) refreshes them.
+**What was corrected.** A claim that "nothing there" closures recur least was withdrawn: it came from 7 days of data and reversed on 12. A weekday/weekend volume comparison was reported backwards (both totals had been divided by the same number of days). Both are registered in the claim checker so they cannot return. And the daily run first fetched only 7 days, so Gold never saw a request close after day 7: for requests created 24–28 Aug, the 30-day closure rate read 68.4% instead of 89.5%. The window is now 37 days; rows stored before the change keep their old status until one wide run (`--live --days N`, N larger than their age) refreshes them. The 800,000-row cap limits one run to roughly 75 days.
 
 ## Run it
 
-Needs Python 3.11+ and internet access; no credentials. Run from the repo root.
+Needs Python 3.11+ and internet access; no credentials. Run from the repo root. CI runs this exact install from a clean checkout on every push to `main` and every pull request (the `front-door` job).
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate

@@ -716,8 +716,8 @@ SUPERSEDED_CLAIMS = [
     (
         "published for yesterday",
         "SLO-2 no longer measures T-1, or any fixed offset from the clock. The "
-        "publish lag is not a constant (23.3h, 23.5h, then 49.0h measured in "
-        "one week), so every offset is a ~2-hour stub on some days. The "
+        "publish lag is not a constant (23.3h, 23.5h, then 49.0h at probe time, "
+        "47.5h after the last publish, measured in one week), so every offset is a ~2-hour stub on some days. The "
         "population is every day int_load_completeness marks complete — ADR 015.",
     ),
     (

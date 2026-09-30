@@ -208,7 +208,7 @@ holds, through simpler means:
 | Layer  | How new columns are handled today |
 |--------|-----------------------------------|
 | Bronze | a DuckDB view over the raw JSON (`read_json_auto`), so every field the API sends is visible |
-| Silver | pandas keeps every field of the fetched JSON, and stage 3 rewrites `silver.service_requests` with `CREATE OR REPLACE TABLE ... AS SELECT *`, so a new field arrives with no code change |
+| Silver | pandas keeps every field of the fetched JSON, and stage 3 of `local/local_runner.py` (the Silver step) rewrites `silver.service_requests` with `CREATE OR REPLACE TABLE ... AS SELECT *`, so a new field arrives with no code change |
 | Gold   | unchanged: `stg_service_requests` lists its columns explicitly, and `schema_version` works as described above |
 
 One consequence above changed: the quarantine table (`silver.quarantine`) is now

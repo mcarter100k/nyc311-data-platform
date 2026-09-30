@@ -1,6 +1,6 @@
 # ADR 010: Scheduled Daily Operation Against the Live Source
 
-**Status:** Accepted. Amended 2026-08-20 and 2026-09-29 (37-day window, 800k cap, 30-hour heartbeat; see the end).
+**Status:** Accepted. Amended 2026-08-19 (SLO-2 redefined, inline under Decision 3), 2026-08-20 and 2026-09-29 (37-day window, 800k cap, 30-hour heartbeat; see the end).
 **Date:** 2026-08-18
 **Amends:** [ADR 008](008-prototype-scope.md) — the prototype boundary moves.
 
@@ -159,8 +159,8 @@ every complete day in the window ([ADR 015](015-slo2-population-is-complete-days
 
 **Retries.** "Exactly one retry" in Decision 2 was replaced by
 [ADR 015](015-slo2-population-is-complete-days.md): three attempts with 1s and
-2s backoff on connection errors, 429 and 5xx; any other error status fails at
-once.
+2s backoff on connection errors and HTTP 429, 500, 502, 503 and 504; any
+other error status fails at once.
 
 **The heartbeat threshold is 30 hours (was 26).** `heartbeat.yml` checks from
 outside the daily run that `daily-run.yml` is still enabled and has succeeded

@@ -1,7 +1,9 @@
 # GitHub repository infrastructure
 
-The Terraform root module that is **applied**. It manages this repository's own
-settings, which cost nothing. Its sibling (`../`) specifies Snowflake and has
+Terraform code for this repository's own GitHub settings. Terraform describes
+infrastructure in files, and `terraform apply` makes the live settings match
+them. This is the one Terraform module in the repo that is **applied**; the
+settings it manages cost nothing. Its sibling (`../`) specifies Snowflake and has
 never been applied, because applying it needs a paid account. The two are
 separate so this one can be planned with only a GitHub token
 ([ADR 012](../../docs/adr/012-github-repo-as-code.md)).
@@ -28,8 +30,8 @@ terraform apply
 ## First-time import
 
 The repository and the `daily-run-breach` label existed before this module, so
-they were **imported**, not recreated. Declaring a managed resource without
-matching its live state can break the thing it is meant to protect:
+they were **imported**, not recreated. Without an import, Terraform would try
+to create a second copy or overwrite the live settings:
 
 ```bash
 terraform import github_repository.this nyc311-data-platform

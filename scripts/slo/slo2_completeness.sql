@@ -86,9 +86,10 @@ select
     (select rows_loaded from worst)                                         as worst_day_rows_loaded,
     (select rows_published from worst)                                      as worst_day_rows_published,
     0.98                                                                    as tolerance_floor,
-    -- Zero assessable days FAILS: the gate measured nothing. The remedy is
-    -- ours (widen the fetch window with `--live --days N`), so gating on it
-    -- fits ADR 013's "gate on what we control".
+    -- Zero assessable days FAILS: the gate measured nothing. With 37 days
+    -- loaded, dozens of days should be complete, so this means the fetch is
+    -- wrong or the city has published nothing for about the whole window.
+    -- Investigate before re-running.
     case
         when (select count(*) from scored) = 0 then false
         else (select bool_and(day_pass) from scored)

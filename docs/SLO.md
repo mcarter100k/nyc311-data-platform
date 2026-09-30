@@ -59,9 +59,9 @@ warning](#upstream-stall-warning-not-an-slo) covers that.
 3. The query below compares our Gold row count with the source's count for each of those days.
 
 **Which days: chosen by the data, not the clock.** The source publishes on a lag that is not
-constant: 23.3h and 23.5h in one week, then 49.0h. So any fixed choice ("yesterday", "two days
-ago") is a whole day sometimes and a two-hour stub other times, and a check on a stub proves
-nothing. Instead, every complete day in the window with a captured count is checked. Because the
+constant: 23.3h and 23.5h in one week, then 49.0h at probe time (47.5h after the last publish).
+So any fixed choice ("yesterday", "two days ago") is a whole day sometimes and a two-hour stub
+other times, and a check on a stub proves nothing. Instead, every complete day in the window with a captured count is checked. Because the
 fetch re-pulls and re-counts the whole window every run, a day first loaded as a stub is checked
 again once the source fills it in. Full reasoning: [ADR 015](adr/015-slo2-population-is-complete-days.md).
 
@@ -102,7 +102,9 @@ worst_day_rows_published=11627`, a ratio of **0.9902**. What would justify movin
 [ADR 016](adr/016-source-settling-horizon.md).
 
 **How it fails.** The query's header lists the four failing cases. The last one, a window with no
-complete day at all, is ours to fix: widen the fetch window with `--live --days N`.
+complete day at all, means the fetch is wrong or the city has published nothing for about the
+whole window: with 37 days loaded, dozens of days should be complete. Investigate before
+re-running.
 
 <!--slo-sql:scripts/slo/slo2_completeness.sql-->
 ```sql
@@ -194,9 +196,10 @@ select
     (select rows_loaded from worst)                                         as worst_day_rows_loaded,
     (select rows_published from worst)                                      as worst_day_rows_published,
     0.98                                                                    as tolerance_floor,
-    -- Zero assessable days FAILS: the gate measured nothing. The remedy is
-    -- ours (widen the fetch window with `--live --days N`), so gating on it
-    -- fits ADR 013's "gate on what we control".
+    -- Zero assessable days FAILS: the gate measured nothing. With 37 days
+    -- loaded, dozens of days should be complete, so this means the fetch is
+    -- wrong or the city has published nothing for about the whole window.
+    -- Investigate before re-running.
     case
         when (select count(*) from scored) = 0 then false
         else (select bool_and(day_pass) from scored)

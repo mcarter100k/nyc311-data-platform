@@ -2,7 +2,10 @@
 
 Known open work. Each item gives the problem, the evidence and a proposed fix,
 so a future maintainer can act without re-deriving it. An item leaves this file
-when it is done; git history and the ADRs keep the record.
+when it is done; git history and the ADRs keep the record. Layers
+(Bronze/Silver/Gold) are defined in [ARCHITECTURE](ARCHITECTURE.md); settling
+(the source's copy of a day still changing) is
+[ADR 016](adr/016-source-settling-horizon.md).
 
 ---
 
@@ -11,7 +14,8 @@ when it is done; git history and the ADRs keep the record.
 **Problem.** The daily run re-pulls only requests created in the last 37 days
 ([ADR 010](adr/010-scheduled-operation.md)), and a row in Gold changes only
 when it is re-pulled. A request still open when it leaves the window keeps that
-status in Gold, even after the city closes it. Gold's 30-day metrics are not
+status in Gold, even after the city closes it. Once the rows stored under the
+old 7-day window are refreshed (next item), Gold's 30-day metrics are not
 affected: 37 days is the 30-day closure window plus the 7 days the source takes
 to settle, so every 30-day outcome is final before a request leaves. What is
 wrong is the current state of slow requests: `status`, `closed_date` and
@@ -54,7 +58,8 @@ new cohorts current.
 
 **Problem.** The model is a table rebuilt every run from Silver's window
 (`int_service_requests_cleaned`), not from the accumulated fact table. With the
-37-day window, `observation_days` is at most about 36, so a 30-day recurrence
+37-day window, `observation_days` (how many days after a closure the data
+can see) is at most about 36, so a 30-day recurrence
 rate covers only closures from the first few days of the window: a small sample
 that moves every day and does not grow as history accumulates.
 

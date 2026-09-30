@@ -43,7 +43,7 @@ flowchart TD
 
 **Reading it:** the boundary that matters is `source()`, where dbt reads Silver. Left of it is Python, which owns input/output and row-level cleaning. Right of it is SQL, which owns meaning. `silver_transformations.py` holds the stage-3 logic as plain functions, so it can be unit-tested without a database.
 
-The borough mapping is drawn dotted because it is configuration, not code: one CSV that the pandas transform reads directly and dbt loads as a seed, so the two cannot disagree.
+The borough mapping is drawn dotted because it is configuration, not code: one CSV that the pandas transform reads directly and dbt loads as a seed (a CSV turned into a table), so the two cannot disagree.
 
 ---
 
@@ -99,7 +99,7 @@ dbt builds the star schema from Silver. The list below is checked against the db
 <!--model-inventory-->
 **staging** — one view per source table, rename and cast only:
 
-- `stg_service_requests` — renames and casts columns, generates surrogate keys, maps `_silver_timestamp` as the incremental watermark
+- `stg_service_requests` — renames and casts columns, generates the surrogate key `service_request_id` (an ID made by hashing the city's `unique_key`), and exposes `_silver_timestamp` as `_loaded_at`, the watermark: each run takes rows loaded after the newest one already in Gold, minus a 1-hour safety margin
 - `stg_quarantine` — passthrough over the Silver quarantine table, so `fct_service_requests` can delete rejected rows without a mart referencing a source
 - `stg_data_quality_log` — passthrough over the per-run Silver check results
 
@@ -110,7 +110,7 @@ dbt builds the star schema from Silver. The list below is checked against the db
 
 **marts** — the star:
 
-- `fct_service_requests` — the core fact table, one row per request; incremental (merge on `service_request_id`) with a 1-hour lookback, so each run updates rows whose status changed; clustered on `cast(created_date as date)` on Snowflake
+- `fct_service_requests` — the core fact table, one row per request; incremental (merge on `service_request_id`) with the 1-hour lookback above, so each run updates rows whose status changed; clustered on `cast(created_date as date)` on Snowflake
 - `fct_daily_volume` — counts by day, borough and category for dashboards, with `is_complete_day` so a partial day can be left out. Every *rate* counts closures within `closure_window_days` (30) and is published only where `is_denominator_closed`, meaning 30 complete days have followed; a younger day's rate would read low, so it is NULL
 - `fct_complaint_recurrence` — one row per closed request with a usable address: did the same complaint come back to the same address? Emits `days_to_next_same_complaint` and `observation_days` rather than a fixed window, so a recent closure cannot be counted as "did not recur". Rebuilt each run from the Silver window, so it covers about the last 37 days
 - `fct_data_quality` — every Silver quality check, with a rolling 7-day failure rate and a threshold-breach flag for a dashboard; nothing fails or alerts on it
@@ -123,7 +123,7 @@ Design choices in the fact table:
 
 - **Every dimension join is a LEFT JOIN.** A request with an unknown agency or an address that cannot be matched keeps its fact row with a NULL key. An INNER JOIN would silently drop it, and `COUNT(*)` would stop matching Silver. Primary keys are tested unique and not null; foreign keys carry `relationships` tests.
 - **`is_overdue` is NULL while a request is open, not FALSE.** A FALSE would let `WHERE NOT is_overdue` count open requests as "on time". It keys on `status = 'Closed'`, not on whether `closed_date` is set, because the source sends a `closed_date` on some requests that are still open.
-- **Two post-hooks keep an incremental run equal to a full rebuild.** They delete rows the quality filter or the Silver quarantine rejected in this run.
+- **Two post-hooks (SQL that dbt runs right after building the table) keep an incremental run equal to a full rebuild.** They delete rows the quality filter or the Silver quarantine rejected in this run.
 
 **Outcome:** a dimensional model a BI analyst can connect to directly.
 
@@ -140,7 +140,7 @@ Design choices in the fact table:
 | `dateadd(...)` | `INTERVAL` arithmetic |
 | `dayofweekiso` / `weekiso` | `isodow` / `weekofyear` (same ISO values) |
 | `cluster_by` config | removed (DuckDB has no clustering) |
-| `merge` incremental strategy | `delete+insert` (same upsert on the unique key) |
+| `merge` incremental strategy | `delete+insert` (same upsert, update-or-insert, on the unique key) |
 | `initcap(name)` in the agency snapshot | split-and-capitalise on spaces. **Known difference:** Snowflake's `initcap` also capitalises after hyphens and brackets, so such agency names differ |
 | `publish_gold` macro (schema swap) | absent: the DuckDB path builds straight into Gold, with no write-audit-publish |
 | Snowflake database and schema in `sources.yml` | the local DuckDB file |

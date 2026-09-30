@@ -254,6 +254,9 @@ its backfill practice the horizon moves, and the first thing to move with it is
 SLO-2's 0.80 points of margin. Nothing gates on the number today, which is what
 makes it safe to write down; re-measure before anything starts to.
 
+*Correction 2026-09-29:* 49.0h is probe time minus newest row; measured from the
+last publish, like the other two, it is 47.5h ([ADR 015](015-slo2-population-is-complete-days.md)).
+
 ---
 
 ## Amendment 2026-09-29 — the horizon now sizes the window

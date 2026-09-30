@@ -1,6 +1,6 @@
 # ADR 015: SLO-2's population is complete days, chosen by the data — not an offset from the clock
 
-**Status:** Accepted. The consequence figures are superseded by [ADR 016](016-source-settling-horizon.md); the fetch window is now 37 days (see the end).
+**Status:** Accepted. Its consequence table (the worst-day SLO-2 margins) is superseded by [ADR 016](016-source-settling-horizon.md); the fetch window is now 37 days (see the end).
 **Date:** 2026-08-27
 **Relates to:** [ADR 010](010-scheduled-operation.md) (scheduled operation and the SLO gates),
 [ADR 013](013-no-source-freshness-slo.md) (gate on what we control, warn on what we don't),
@@ -57,6 +57,11 @@ against the live dataset:
 | 2026-08-20 08:26 UTC | 2026-08-19 02:26 | 23.3 h | 2026-08-20 01:46 |
 | 2026-08-22 06:27 UTC | 2026-08-21 02:05 | 23.5 h | 2026-08-22 01:37 |
 | 2026-08-27 03:03 UTC | 2026-08-25 02:06 | **49.0 h** | 2026-08-27 01:36 (1.4 h earlier) |
+
+*Correction 2026-09-29:* the Lag column mixes two measures. The first two rows
+are last publish minus newest row; the third is probe time minus newest row.
+Measured from the last publish, like the others, the third lag is 47.5 h. The
+conclusion stands: the lag is not a constant.
 
 On 2026-08-27 the source published 1.4 hours before the measurement and carried
 nothing new — the same shape as the 2026-08-18 stall. T-2 would have been a
