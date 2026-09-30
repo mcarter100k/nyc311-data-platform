@@ -54,13 +54,13 @@ against the live dataset:
 
 | When | Newest row at source | Lag | Last publish |
 |---|---|---|---|
-| 2026-08-25 | — | 23.3 h | — |
-| 2026-08-26 | — | 23.5 h | — |
+| 2026-08-20 08:26 UTC | 2026-08-19 02:26 | 23.3 h | 2026-08-20 01:46 |
+| 2026-08-22 06:27 UTC | 2026-08-21 02:05 | 23.5 h | 2026-08-22 01:37 |
 | 2026-08-27 03:03 UTC | 2026-08-25 02:06 | **49.0 h** | 2026-08-27 01:36 (1.4 h earlier) |
 
 On 2026-08-27 the source published 1.4 hours before the measurement and carried
 nothing new — the same shape as the 2026-08-18 stall. T-2 would have been a
-whole day on the 25th and 26th and a 358-row stub on the 27th. Any fixed offset
+whole day on the 20th and 22nd and a 358-row stub on the 27th. Any fixed offset
 is a stub on some days; T-2 merely relocates the defect and buys a review pass.
 
 ## Decision

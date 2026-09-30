@@ -27,7 +27,7 @@ finding.
 | Date | What happened |
 |---|---|
 | 2026-08-19 10:22 | Scheduled run **failed red**: SLO-2, still the old median-based check, measured `rows_yesterday=319` against a median of 10,449.5 |
-| 2026-08-19 (later) | Source resumed publishing. Aug 17 filled in **410 → 10,473** and Aug 18 **0 → 10,833**. Recovery was entirely upstream; the then 7-day fetch window picked up both days on the next run |
+| 2026-08-19 (later) | Source resumed publishing. Aug 17 filled in **410 → 10,473** and Aug 18 **0 → 10,833**. Recovery was entirely upstream; the fetch window (7 days at the time) picked up both days on the next run |
 | 2026-08-20 03:22 | Redesigned SLO-2 (source reconciliation) and the non-gating upstream-stall warning merged to `main` ([#24](https://github.com/mcarter100k/nyc311-data-platform/pull/24)) |
 | 2026-08-20 10:24 | First scheduled run under the redesign. **Green.** SLO-1 `age_hours=0` (threshold 26); SLO-2 reconciled 372 loaded against 372 published (a two-hour stub; see below); `dbt build` PASS=124 ERROR=0. The upstream-stall warning fired (`rows_yesterday=372`, `median_prior_7d=10494.5`, floor 0.40) and filed issue [#40](https://github.com/mcarter100k/nyc311-data-platform/issues/40) without reddening the run |
 
@@ -40,12 +40,13 @@ question to ask still stands.
 The run reconciled Aug 19 at **372 / 372** and passed. Aug 19 eventually held
 **10,701** rows: 372 was the roughly two-hour stub that the source's publish
 lag leaves in the previous day at run time, so the gate certified **3.5%** of
-the day. On a day the capture returned zero, the query's `WHEN source = 0 THEN
-true` branch would have passed against nothing. The upstream-stall warning
-fired on the same stub, not because Aug 19 was abnormal: the previous day
-always looks like that at run time, and the warning went on firing every day.
-SLO-2's population was rebuilt on 2026-08-27 as every day the load shows as
-complete ([ADR 015](../adr/015-slo2-population-is-complete-days.md)).
+the day. On a day the source's own count came back as zero, SLO-2's query
+(`WHEN source = 0 THEN true`) would have passed with nothing loaded at all. The
+upstream-stall warning fired on the same stub, not because Aug 19 was abnormal:
+the previous day always looks like that at run time, so the warning fired on
+every run until 2026-08-27. That day both checks were rebuilt to judge only
+days the load shows as complete
+([ADR 015](../adr/015-slo2-population-is-complete-days.md)).
 
 What the incident did teach is which question to ask. Volume against history
 asks **did the city publish normally**, which this pipeline cannot control or
@@ -63,9 +64,9 @@ recurring daily, trains the operator to ignore red builds.
 ## Detection
 
 SLO-2 (then: yesterday's count ≥ 40% of the trailing-7-day median), evaluated by
-the daily workflow. It fired on the first evaluation after the stall, on the
-tier's first scheduled day. Every pipeline stage was green both times; only the
-source-facing check saw the problem. Without it, the run would have published
+the daily workflow. It fired on both runs that day: the manual run at 05:28 and
+the first scheduled run at 10:22. Every pipeline stage was green both times;
+only the source-facing check saw the problem. Without it, the run would have published
 a Gold layer missing ~96% of the day and reported success.
 
 ## Root cause

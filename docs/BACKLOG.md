@@ -42,10 +42,11 @@ days; older cohorts never re-enter it.
 
 **Proposed fix.** Run `daily-run.yml` once by hand with the `window_days`
 input wide enough to reach 2026-08-12 (48 days on 2026-09-29; roughly 500k
-rows, under the 800k cap). The run upserts every re-fetched row, and because
-dimensions rebuild from the window, it also restores any dimension member the
-fact table still references. No fact row is deleted. After that, the daily
-37-day window keeps new cohorts current.
+rows, under the 800k cap). The run upserts every re-fetched row and deletes
+none. Dimensions take their members from the window, so the run also re-seats
+any member the fact table references but a dimension has lost (none were
+missing in the 2026-09-29 database). After that, the daily 37-day window keeps
+new cohorts current.
 
 ---
 
@@ -84,10 +85,12 @@ ingests, a real test of whether the ingest path assumes there is only one.
 ## The dbt/ and local/ projects are duplicated
 
 **Problem.** `dbt/` (Snowflake) and `local/` (DuckDB) are two copies of one dbt
-project. Every model change is two edits plus a baseline update.
+project. Every model change is two edits, plus a baseline update
+(`scripts/check_model_drift.py --update`) when the edit touches a line where
+the copies differ.
 
-**Evidence.** Of 37 mirrored files, 10 differ, all in dialect lines (80 diff
-lines recorded in `scripts/model_drift_baseline.json`). `scripts/check_model_drift.py`
+**Evidence.** Of 37 mirrored files, 10 differ, in dialect lines and the project
+names (80 diff lines recorded in `scripts/model_drift_baseline.json`). `scripts/check_model_drift.py`
 fails CI when the copies drift apart.
 
 **Proposed fix.** One of: (a) one project with two targets, using adapter

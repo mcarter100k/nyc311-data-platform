@@ -169,8 +169,9 @@ Two parts of the design above do not exist in what runs.
 
 - **There is no HttpSensor.** The local DAG's `check_source` task is a
   `BashOperator` running `curl`. It checks the HTTP status only: no body
-  inspection, no poke interval, no waiting. It cannot see an empty response,
-  which is what the city served during the August 2026 publish stall.
+  inspection, no poke interval, no waiting. It passes whenever the API answers,
+  so it could not have caught the August 2026 publish stall: the API was up,
+  but the newest days were missing.
 - **Write-audit-publish exists only in the Snowflake spec**
   (`dbt/macros/publish_gold.sql`, [ADR 009](009-publish-grants-under-schema-swap.md)).
   Nothing in the repo sets `audit_suffix`, and the DuckDB path builds straight
