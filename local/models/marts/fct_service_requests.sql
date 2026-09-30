@@ -21,8 +21,8 @@
 -- keys to dim_agency (point-in-time SCD2), dim_date and dim_location. Every
 -- dimension join is LEFT, so a request with an unknown agency or location is
 -- still counted, with a NULL key. Incremental: each run merges what Silver
--- wrote (merge on Snowflake; the DuckDB copy uses delete+insert, since
--- dbt-duckdb has no merge).
+-- wrote (merge on Snowflake, delete+insert in the DuckDB copy; both upsert
+-- on service_request_id).
 --
 -- Two post_hook deletes keep incremental runs equal to a full refresh:
 -- (1) rows present in staging but dropped by the int quality filter;
