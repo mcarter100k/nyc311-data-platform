@@ -71,7 +71,7 @@ Why 37 days: 30 days is NYC's closure standard, and the source's copies of a day
 
 The same stage asks the source for its own per-day counts across the window, which is what SLO-2 reconciles against. The source answers from two copies ("replicas"), one of which can lag, so the count query runs 11 times and keeps each day's highest answer ([docs/SLO.md](SLO.md#slo-2--completeness-source-reconciliation)).
 
-Failures are loud. A connection error, 429 or 5xx is retried twice with backoff; any other error fails the run. Zero rows, or more than 800,000, also fail: the run is either red or fully loaded, never partly loaded. An optional `SOCRATA_APP_TOKEN` raises the API's rate limit; no other credential is needed.
+Failures are loud. A connection error, 429 or 5xx is retried up to five times, waiting 2, 4, 8, 16 then 32 seconds; any other error fails the run. Zero rows, or more than 800,000, also fail: the run is either red or fully loaded, never partly loaded. An optional `SOCRATA_APP_TOKEN` raises the API's rate limit; no other credential is needed.
 
 **Outcome:** an exact copy of what the API returned, which Silver and Gold can be rebuilt from without calling the source again. The file is overwritten each run, so it holds the current window, not an archive.
 

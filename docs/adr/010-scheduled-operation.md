@@ -197,3 +197,12 @@ trip it; only a slow first answer did. On the same cohorts, that run's 30-day
 closure rate was 89.5%, and a live sample of 30 rows it still held as open found
 none closed at the source.
 
+**Retries now cover about a minute.** The next wide run fetched 21 days, then
+got HTTP 503 three times in a row and stopped: the old retry window, 1 s then
+2 s, gave up after about 3 seconds. Measured the same morning, 11 of 60 requests
+failed (10 with 503, 1 with 500) and the longest burst was 6 consecutive 503s
+over about 5 seconds. Requests now get 6 attempts with 2, 4, 8, 16 and 32 s
+between them, 62 seconds in all, and each retry is logged. A day whose first
+page is short no longer sends a second request to confirm it is empty, which
+halves the requests exposed to a burst.
+

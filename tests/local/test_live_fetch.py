@@ -23,7 +23,7 @@ if os.path.join(ROOT, "local") not in sys.path:
     sys.path.insert(0, os.path.join(ROOT, "local"))
 
 from ingest_config import PAGE_SIZE, build_page_params
-from local_runner import (HTTP_ATTEMPTS, HTTP_RETRYABLE_STATUS, LIVE_DAYS,
+from local_runner import (HTTP_ATTEMPTS, HTTP_BACKOFF_SECONDS, HTTP_RETRYABLE_STATUS, LIVE_DAYS,
                           LIVE_ROW_CAP, SOURCE_COUNT_PROBES, fetch_live_records)
 
 
@@ -94,13 +94,31 @@ def test_day_slices_tile_the_window_with_no_gap_or_overlap():
 
 
 def test_pagination_advances_offset_until_empty_page():
-    page = [{"unique_key": str(i)} for i in range(3)]
-    get = FakeGet([page, page])  # two pages, then the built-in empty page
+    full = [{"unique_key": str(i)} for i in range(PAGE_SIZE)]
+    get = FakeGet([full, full])  # two full pages, then the built-in empty page
     records = fetch_live_records(days=0, get=get)  # one slice
 
-    assert len(records) == 6
+    assert len(records) == 2 * PAGE_SIZE
     offsets = [c["params"]["$offset"] for c in get.calls]
     assert offsets == [0, PAGE_SIZE, 2 * PAGE_SIZE]
+
+
+def test_a_short_page_ends_the_day_without_another_request():
+    """A day with fewer rows than a page needs one request, not two. Every extra
+    request is another chance to hit a 503 burst (run 36689681838 failed on one)."""
+    short = [{"unique_key": str(i)} for i in range(3)]
+    get = FakeGet([short, short])
+    records = fetch_live_records(days=1, get=get)  # two slices
+
+    assert len(records) == 6
+    assert [c["params"]["$offset"] for c in get.calls] == [0, 0], get.calls
+
+
+def test_the_retry_window_outlasts_the_measured_503_burst():
+    """On 2026-09-30, 11 of 60 requests failed and the longest burst was 6
+    consecutive 503s over ~5 s. The total backoff must cover that many times over."""
+    total_wait = sum(HTTP_BACKOFF_SECONDS * 2 ** k for k in range(HTTP_ATTEMPTS - 1))
+    assert total_wait >= 60, f"retries give up after {total_wait:g}s of waiting"
 
 
 def test_row_cap_is_a_hard_failure():
