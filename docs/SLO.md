@@ -15,9 +15,11 @@ when measured. 26 = one daily cycle plus 2 hours of grace for a late or slow run
 **What it measures:** `_loaded_at` is stamped by our own pipeline when Silver writes a row. So
 SLO-1 says *a run recently succeeded in loading rows*: pipeline liveness. It cannot see whether
 the city's data is stale; after any successful run the newest `_loaded_at` is minutes old (see the
-[2026-08-18 postmortem](postmortems/2026-08-18-upstream-publish-stall.md)). Because it runs inside
-the daily run, it also cannot see a run that never starts; the
-[heartbeat](../.github/workflows/heartbeat.yml) covers that from outside.
+[2026-08-18 postmortem](postmortems/2026-08-18-upstream-publish-stall.md)). Inside the daily run it is
+measured minutes after a successful build, so it passes whenever the run gets that far; its
+threshold matters when the check runs against a database that was not just rebuilt. It also
+cannot see a run that never starts; the [heartbeat](../.github/workflows/heartbeat.yml) covers
+that from outside.
 
 <!--slo-sql:scripts/slo/slo1_freshness.sql-->
 ```sql

@@ -19,7 +19,7 @@ A data pipeline over New York City's 311 service requests (the city's non-emerge
 
 The pipeline uses the **medallion** pattern: data passes through three layers, each with one job. **Bronze** is the data exactly as the source sent it. **Silver** is the same data cleaned. **Gold** is the data shaped for analysis as a **star schema**: one central *fact* table (one row per request) joined to *dimension* tables that describe it (agency, date, location). When a Gold number looks wrong, check Silver, then Bronze; two queries find the layer that broke.
 
-The source is NYC Open Data's **Socrata** API. Python and pandas build Bronze and Silver. **dbt**, a tool that builds tables from version-controlled SQL and tests them, builds Gold. Everything lives in **DuckDB**, a database stored in one file. A Snowflake version of the warehouse is written and validated but has never been deployed.
+The source is NYC Open Data's **Socrata** API. Python and pandas build Bronze and Silver. **dbt**, a tool that builds tables from version-controlled SQL and tests them, builds Gold. Everything lives in **DuckDB**, a database stored in one file. A Snowflake version of the warehouse is written and validated but has never been deployed, so the dbt project exists twice: `local/` for DuckDB, which runs, and `dbt/` for Snowflake. CI fails if they differ in anything but SQL dialect.
 
 ## How data flows
 
@@ -44,7 +44,7 @@ An **SLO** (service level objective) is a written, measured promise. [`daily-run
 | SLO | Question | Threshold |
 |---|---|---|
 | **SLO-1 freshness** | Did a run recently load rows? | newest load < 26 hours old |
-| **SLO-2 completeness** | Did we load what the city published? | ≥ 98% of the city's own count, on every day the load shows as complete |
+| **SLO-2 completeness** | Did we load what the city published? | ≥ 98% of the city's own count, on every day the city has finished publishing (a *complete* day) |
 
 A failed run or broken SLO opens a `daily-run-breach` issue with the measured numbers. [docs/SLO.md](docs/SLO.md) explains the thresholds. Two more checks cover what the SLOs cannot see:
 
@@ -63,15 +63,15 @@ Measured on the 127,255 requests created in the twelve complete days **13–24 A
 
 **"Closed" usually does not mean "fixed."** Of 89,506 closures, between **35% and 44%** describe the city doing something. The rest closed as *no violation found*, *nothing there*, duplicate, or handed off. It is a range because 8.5% of closures carry text no rule can classify, and per category the width is itself the finding:
 
-| Category | Actioned | Uncertainty |
+| Category | Actioned | Uncertainty (points) |
 |---|---|---|
-| Illegal Parking | 42–43% | 0.7pp |
-| Noise | 40–41% | 1.5pp |
-| **Homeless Services** | **17–20%** | 3.6pp |
-| Street Condition | 28–46% | 17.9pp |
-| Water & Sewer | 17–40% | 22.3pp |
+| Illegal Parking | 42–43% | 0.7 |
+| Noise | 40–41% | 1.5 |
+| **Homeless Services** | **17–20%** | 3.6 |
+| Street Condition | 28–46% | 17.9 |
+| Water & Sewer | 17–40% | 22.3 |
 
-**A closure the city couldn't complete is the one that comes back.** After an *Access Failed* closure, the same complaint returns to the same address within 3 days 13.8% of the time. That ranks first in **all eight** specifications tried (windows of 2–5 days, with and without chronic locations), 1.1–5.8 points ahead of the runner-up.
+**A closure the city couldn't complete is the one that comes back.** After an *Access Failed* closure, the same complaint returns to the same address within 3 days 13.8% of the time. That ranks first in **all eight** specifications tried (windows of 2–5 days, with and without *chronic* locations: addresses that file the same complaint again and again), 1.1–5.8 points ahead of the runner-up.
 
 <details>
 <summary><b>Methodology, and what does not survive it</b></summary>
@@ -149,7 +149,7 @@ con.sql("""
 """).show()
 ```
 
-Expect different numbers: `--live` fetches the 37 days ending today, not 13–24 Aug. On a fresh `--live` database, closure rates publish only for the oldest five or so days of the window; the rest stay NULL. Only the Access Failed ranking has held across specifications.
+Expect different numbers: `--live` fetches the 37 days ending today, not 13–24 Aug. On a fresh `--live` database, closure rates publish only for the oldest five or so days of the window; the rest stay NULL. Only the Access Failed ranking has held across specifications. In the recurrence query, leave out `Unspecified` (no resolution text) and `Undecodable` (text no rule matches): they are an absence of information, not something the city did, and `Unspecified` can top the ranking.
 
 </details>
 
