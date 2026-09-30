@@ -4,14 +4,8 @@ check_claims.py — CI guard that keeps README.md AND docs/ true.
 
 Scope
 -----
-This script used to open exactly two files: README.md and docs/SLO.md. Everything
-else under docs/ drifted unchecked, and that is precisely where the August 2026
-audit found the worst defects — an ARCHITECTURE DAG diagram naming four tasks
-that do not exist, a model inventory missing three models, and a claims register
-whose line-number citations pointed at unrelated code.
-
-The guarded set is now README.md plus every markdown file under docs/, including
-docs/adr/ and docs/postmortems/.
+README.md plus every markdown file under docs/, including docs/adr/ and
+docs/postmortems/.
 
 The ADR carve-out, and its limits
 ---------------------------------
@@ -20,7 +14,7 @@ prose describe the code as it is TODAY" must exempt docs/adr/, or a truthful
 record of a removed subsystem becomes a build failure:
 
     exempt   check_superseded_claims   (a superseded claim inside an ADR is history)
-    exempt   check_path_spans          (ADR 010 cites databricks/, deleted 2026-08-20)
+    exempt   check_path_spans          (an ADR may cite code that was later deleted)
     exempt   check_citations           (same reason: the cited code may be gone)
 
 Checks that ask "is this document mechanically intact" apply everywhere,
@@ -37,11 +31,9 @@ A count is stated in the docs exactly once per site, wrapped in a marker:
 
     <!--claim:NAME-->VALUE<!--/claim-->
 
-Recomputed here; a mismatch fails the build. Repetition across sites is allowed
-(and across files) because every copy is provably equal to the computed value —
-the old "a number is stated once" rule was what kept ARCHITECTURE.md's mermaid
-diagram saying "3 facts" while the README's guarded marker said 4. Provable
-agreement beats enforced scarcity.
+Recomputed here; a mismatch fails the build. The same marker may appear in
+several places and files, because every copy is checked against the computed
+value.
 
     test_count        pytest structural collection + AST count of the tiers that
                       skip wholesale without dbt-duckdb
@@ -58,14 +50,10 @@ Citations
     `path/to/file.ext#"a unique string from that file"`
 
 The string must appear EXACTLY ONCE in the named file. Zero matches or several
-are both failures. This replaced `path:118-128`, where six of seven citations in
-docs/CLAIMS.md had rotted onto unrelated code and nothing could see it: the old
-check_links() did `target.split("#")[0]` and only asserted the FILE existed.
-Line numbers rot on every edit above them; a unique string moves with the code it
-names, so the register heals itself instead of decaying.
-
-A line-number fragment in a markdown link (`main.tf#L471-L481`) is rejected for
-the same reason, with a pointer to this form.
+are both failures. A unique string moves with the code it names; a line number
+goes stale on every edit above it. For the same reason a line-number fragment
+in a markdown link (`main.tf#L471-L481`) is rejected, with a pointer to this
+form.
 
 Other checks
 ------------
@@ -87,14 +75,10 @@ Three claims and the model inventory read dbt/target/manifest.json. When it is
 absent this script FAILS with exit code 2 and the exact command to produce it,
 rather than skipping with a warning.
 
-Why fail rather than skip: the number these claims guard ("N dbt data tests")
-rotted twice through merges as a bare literal while the marker-guarded counts
-caught every drift. A warning printed to stdout inside a green CI job reproduces
-exactly that failure mode — nobody reads it. Exit code 2 keeps "I could not
-check" distinguishable from exit 1, "the docs are wrong", so a red build still
-names its own cause. CI's fast-gate runs `dbt parse` before this script, and
-run_tests.sh rebuilds the manifest in step 1, so the only caller who can hit
-this is a developer on a cold checkout — who gets a one-line fix instruction.
+Why fail rather than skip: a warning printed inside a green CI job is not
+read. Exit code 2 keeps "I could not check" distinct from exit 1, "the docs are
+wrong". CI's fast-gate runs `dbt parse` before this script, so only a developer
+on a fresh checkout can hit this, and they get the command that fixes it.
 
 Run:  python scripts/check_claims.py
 """
@@ -139,10 +123,8 @@ HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*$", re.MULTILINE)
 def doc_files() -> list:
     """README.md plus every markdown file under docs/, as repo-relative paths.
 
-    Deliberately not local/README_LOCAL.md or terraform/github/README.md: those
-    are directory-local operating notes, not the claim surface the README points
-    a reader at. Widening the set is a one-line change here if that stops being
-    true.
+    Not terraform/github/README.md: it is an operating note for that module,
+    not part of the claim surface. Widening the set is a one-line change here.
     """
     docs = sorted(
         os.path.relpath(p, ROOT)
@@ -203,23 +185,15 @@ def structural_test_count() -> int:
 
 def ast_test_count(directory: str) -> int:
     # Counted via AST, not pytest collection: without dbt-duckdb installed these
-    # modules are reported as a single skip and their tests never appear in the
-    # collection count — which would also make the total depend on what happens
-    # to be installed.
+    # modules are reported as a single skip, so the total would depend on what
+    # happens to be installed.
     total = 0
     for path in sorted(glob.glob(os.path.join(ROOT, directory, "test_*.py"))):
         tree = ast.parse(open(path).read(), filename=path)
 
-        # Module-level list/tuple constants, so a parametrize over a NAMED list
-        # expands too. Only expanding inline literals silently undercounted:
-        # `@parametrize("m", LOCAL_MODULES)` scored 1 instead of len(LOCAL_MODULES),
-        # and the failure mode is a claim-checker that is quietly wrong about the
-        # number it exists to police.
-        # Sets count too: `@parametrize("s", sorted(HTTP_RETRYABLE_STATUS))` where
-        # the constant is a set literal. Ignoring Set undercounted the behavioral
-        # tier by 4 and the marker was set to the WRONG value to match — a
-        # claim-checker confidently wrong about the number it exists to police,
-        # which is the third time this counter has had that bug.
+        # Module-level list, tuple and set constants, so a parametrize over a
+        # named constant (`@parametrize("m", LOCAL_MODULES)`) expands to its
+        # length instead of counting as 1.
         constants = {}
         for node in tree.body:
             if isinstance(node, ast.Assign) and isinstance(node.value, (ast.List, ast.Tuple, ast.Set)):
@@ -238,9 +212,8 @@ def ast_test_count(directory: str) -> int:
                             and len(deco.args) >= 2):
                         continue
                     arg = deco.args[1]
-                    # Unwrap a builtin that merely reorders/retypes its argument.
-                    # `sorted(NAME)` is a Call, not a Name, so the plain lookup
-                    # below missed it entirely and scored 1.
+                    # Unwrap a builtin that only reorders or retypes its
+                    # argument, e.g. `sorted(NAME)`.
                     if (isinstance(arg, ast.Call)
                             and isinstance(arg.func, ast.Name)
                             and arg.func.id in {"sorted", "list", "tuple", "set", "reversed"}
@@ -251,20 +224,8 @@ def ast_test_count(directory: str) -> int:
                     elif isinstance(arg, ast.Name) and arg.id in constants:
                         n *= max(1, constants[arg.id])
                     else:
-                        # UNRESOLVABLE — refuse to guess.
-                        #
-                        # This counter has been silently wrong three times: over
-                        # a named list, over a set literal, and over a constant
-                        # IMPORTED from another module, which this file's AST
-                        # cannot see. Each time it scored 1, and each time the
-                        # README marker was set to match the wrong value — a
-                        # checker confidently wrong about the one number it
-                        # exists to police.
-                        #
-                        # Silently undercounting is the worst behaviour
-                        # available. Refuse, and name the remedy — the same
-                        # principle as exiting 2 on a missing manifest rather
-                        # than warning inside a green job.
+                        # Unresolvable (e.g. a constant imported from another
+                        # module): refuse rather than silently count 1.
                         raise SystemExit(
                             f"claim check CANNOT COUNT: "
                             f"{os.path.relpath(path, ROOT)}:{deco.lineno}\n"
@@ -302,8 +263,7 @@ def expected_values(manifest) -> dict:
 def check_markers(docs: list, expected: dict) -> list:
     """Every marker in every guarded document agrees with the computed value.
 
-    Repetition is legal — see the module docstring. What is not legal is a
-    marker whose name has no computed source here, because that reads as
+    A marker whose name has no computed source here is an error: it reads as
     guarded and is not.
     """
     errors = []
@@ -367,10 +327,7 @@ def anchors_in(text: str) -> set:
 def check_links(docs: list) -> list:
     """Relative targets resolve, and markdown fragments name something real.
 
-    Resolution is relative to the LINKING FILE, not the repo root. The old
-    version rooted every path at ROOT, which happened to work because it only
-    ever read README.md; docs/ARCHITECTURE.md's `adr/008-...md` would have been
-    reported broken the moment the set widened.
+    Paths resolve relative to the linking file, not the repo root.
     """
     errors = []
     anchor_cache = {}
@@ -410,12 +367,9 @@ def check_links(docs: list) -> list:
 
 
 def check_orphan_anchors(docs: list) -> list:
-    """An <a name="x"></a> nothing links to is dead weight, and usually the
-    residue of a deleted section.
-
-    docs/ARCHITECTURE.md carried `<a name="test-suite"></a>` with no section
-    under it and no link to it. check_links could never see that: it is not a
-    broken link, it is a broken destination.
+    """An <a name="x"></a> nothing links to is dead weight, usually left
+    behind by a deleted section. check_links cannot see it: it is a broken
+    destination, not a broken link.
     """
     referenced = set()
     for rel in docs:
@@ -475,12 +429,8 @@ def check_citations(docs: list) -> list:
 
 def check_path_spans(docs: list) -> list:
     """Every `dir/file.ext` code span resolves; `file.py::symbol` names a real
-    function or class.
-
-    This is the other half of docs/CLAIMS.md: the register's second column
-    names a verifying test, and nothing checked that the test existed. It
-    cited `tests/test_pipeline_components.py::test_airflow_dag_uses_write_audit_publish`,
-    which does not.
+    function or class. This is what keeps docs/CLAIMS.md's "verified by"
+    column pointing at tests that exist.
     """
     errors = []
     for rel in docs:
@@ -514,9 +464,8 @@ SLO_BLOCK_RE = re.compile(r"<!--slo-sql:([^\s>]+)-->\s*```sql\n(.*?)```", re.DOT
 
 
 def check_slo_doc_sync() -> list:
-    # docs/SLO.md reproduces the queries whose executable form lives in
-    # scripts/slo/. Two copies is the numbers-in-six-places bug for SQL —
-    # tolerated only because this check makes them provably identical.
+    # docs/SLO.md reproduces the queries in scripts/slo/. Two copies are
+    # tolerated only because this check keeps them identical.
     if not os.path.exists(SLO_DOC):
         return []
     errors = []
@@ -540,15 +489,11 @@ def check_slo_doc_sync() -> list:
 # ── README structure ──────────────────────────────────────────────────────────
 
 def check_adr_table(readme_text: str) -> list:
-    """Every ADR on disk must have a row in the README's ADR TABLE.
+    """Every ADR on disk must have a row in the README's ADR table.
 
-    The adr_count marker only checks the DIRECTORY count. That let the table
-    fall two ADRs behind while the count claim stayed green: 11 files on disk,
-    9 rows in the table. Counting a directory is not the same as documenting it.
-
-    Scoped to the table block on purpose: an earlier version searched the whole
-    README and was vacuous, because ADRs are also linked from prose elsewhere —
-    deleting a table row left those references and the check still passed.
+    The adr_count marker only counts the directory. Scoped to the table
+    section, because ADRs are also linked from prose, and a whole-README search
+    would still pass with a table row deleted.
     """
     errors = []
     start = readme_text.find("## Architecture Decision Records")
@@ -574,13 +519,8 @@ DAG_DOC_RE = re.compile(
 
 def check_dag_tasks(readme_text: str, arch_text: str) -> list:
     """DAG operators == EXPECTED_TASKS == the NAMES documented in ARCHITECTURE.md
-    == the count stated in the README.
-
-    The count half of this check was the whole check, and it passed while
-    docs/ARCHITECTURE.md named `check_api_availability → ingest_raw → ... →
-    dbt_publish → notify_success`: four names wrong, two of them tasks that have
-    never existed, and the total right. Counting seven of anything is not
-    evidence that the seven are these seven.
+    == the count stated in the README. Names, not just the count: seven wrong
+    names still count to seven.
     """
     errors = []
     dag = open(DAG_PATH).read()
@@ -651,10 +591,8 @@ INVENTORY_ITEM_RE = re.compile(r"^-\s+`([a-z0-9_]+)`", re.MULTILINE)
 def check_model_inventory(arch_text: str, manifest) -> list:
     """Every model in the manifest is listed in ARCHITECTURE.md, and nothing else.
 
-    Scoped to a marked block for the same reason check_adr_table is: searching
-    the whole document would pass on a model merely mentioned in passing prose,
-    which is how `fct_data_quality`, `fct_complaint_recurrence` and
-    `int_load_completeness` went unlisted while the page still read as complete.
+    Scoped to a marked block, so a model mentioned only in passing prose does
+    not count as listed.
     """
     block = INVENTORY_RE.search(arch_text)
     if not block:
@@ -696,19 +634,11 @@ def check_star_counts(arch_text: str, expected: dict) -> list:
 
 # ── Superseded claims ─────────────────────────────────────────────────────────
 
-# Claims that were true once, were superseded by a later decision, and must not
-# come back. Every entry here was found in MERGED documentation by a review that
-# read the prose against the code — seven of them in one pass, none of which any
-# automated check could see.
-#
-# This is a tripwire, not a contradiction detector. It cannot tell that two
-# pages disagree; it only knows that these specific sentences describe a system
-# that no longer exists. That is a narrow guarantee, and it is the one that
-# would have caught every finding in that review.
-#
-# Adding an entry is part of superseding a claim: when a redesign makes a
-# sentence false, register the sentence so it cannot quietly return — the same
-# principle as model_drift_baseline.json, applied to prose.
+# Claims that were once made in these docs, are now false, and must not come
+# back. A tripwire, not a contradiction detector: it knows only these exact
+# phrases. When a change makes a sentence false, register it here. Register
+# the ASSERTION, not the topic, so a document explaining the correction stays
+# legal.
 SUPERSEDED_CLAIMS = [
     (
         "Source-side staleness is SLO-2",
@@ -730,13 +660,11 @@ SUPERSEDED_CLAIMS = [
     (
         "The watermark now keys on `:updated_at`",
         "Never adopted. :updated_at is mass re-stamped nightly (~540k rows/day vs "
-        "~53k created per week, ADR 010); the only caller passes created_window. "
-        "The daily run re-pulls a trailing 7-day created_date window instead.",
+        "~53k created per week, ADR 010). The daily run re-pulls a trailing "
+        "37-day created_date window instead.",
     ),
-    # Registered as the ASSERTION, not the word. A document explaining that no
-    # HttpSensor exists must stay legal — the first version of this entry banned
-    # the bare token and immediately flagged the correction that removed the
-    # claim. A tripwire that blocks the fix is worse than no tripwire.
+    # The assertion, not the word: a document saying no HttpSensor exists
+    # must stay legal.
     (
         "HttpSensor is a cost gate",
         "No HttpSensor exists. check_source is a BashOperator running curl with "
@@ -752,11 +680,7 @@ SUPERSEDED_CLAIMS = [
         "Databricks was removed on 2026-08-20. Any ADR rationale resting on "
         "showcasing it needs a superseding note, not a silent survival.",
     ),
-    # ── The three README findings withdrawn in the Phase 7 rewrite ──────────
-    # Each was measured, published, and then failed to reproduce. They are
-    # registered as the ASSERTION rather than the topic, so a document that
-    # EXPLAINS the withdrawal stays legal — the failure mode the HttpSensor
-    # entry above records.
+    # README findings that were published and then failed to reproduce.
     (
         "the problem had resolved itself before anyone arrived",
         "Withdrawn. The claim was that No Condition Found recurs LEAST, below "
@@ -803,13 +727,8 @@ SUPERSEDED_CLAIMS = [
         "through to midnight — and fails. It was the branch that let the gate "
         "certify a comparison against nothing. See ADR 015.",
     ),
-    # Registered as the specific retired NUMBER, not as the word "noise". The
-    # 17%-spread-is-noise framing this corrects lives in int_load_completeness's
-    # comments and in ADR 015 — neither of which this check scans (models are
-    # not docs; ADRs are history). What IS scanned is docs/SLO.md, which
-    # reproduces scripts/slo/slo2_completeness.sql verbatim, so reverting that
-    # comment reintroduces the false budget into a guarded doc. That is the
-    # reachable regression, and this is the phrase that carries it.
+    # The retired number. docs/SLO.md reproduces slo2_completeness.sql
+    # verbatim, so reverting that file's budget comment would bring it back.
     (
         "0.9976 to 0.9998",
         "The 0.98 floor's justification named only quarantine and dedup (up to "
@@ -820,22 +739,16 @@ SUPERSEDED_CLAIMS = [
         "11,513 / 11,627 = 0.9902 on 2026-08-27. See ADR 016.",
     ),
 ]
-# Deliberately NOT registered here: the phantom DAG task names
-# (check_api_availability, ingest_raw, dbt_publish, notify_success) that
-# docs/ARCHITECTURE.md carried until 2026-08-26. They are bare tokens, not
-# assertions, so banning them would also ban a sentence explaining that they
-# never existed — the failure the HttpSensor entry above records. check_dag_tasks
-# compares the documented names against the DAG directly, which is the stronger
-# guarantee anyway: it catches a WRONG name, not just a known-bad one.
+# Wrong DAG task names are not registered here: check_dag_tasks compares the
+# documented names against the DAG itself, which catches any wrong name.
 
 
 def check_superseded_claims(docs: list) -> list:
     """Fail if a claim a later decision invalidated has reappeared in the docs."""
     errors = []
     for rel in docs:
-        # ADRs are immutable records of a decision AT A TIME. A superseded claim
-        # inside one is history, not drift, and is corrected by a superseding
-        # ADR rather than by editing the original.
+        # An ADR records a decision at a point in time; a superseded claim
+        # inside one is history, corrected by an amendment or a later ADR.
         if is_adr(rel):
             continue
         text = read(rel)
@@ -855,7 +768,7 @@ def main() -> int:
         print("  and the ARCHITECTURE model inventory are derived from it.")
         print("  Build it with:")
         print(f"      {MANIFEST_HINT}")
-        print("  (CI's fast-gate and run_tests.sh both do this before calling this script.)")
+        print("  (CI's fast-gate builds it before calling this script; run_tests.sh builds it in step 1.)")
         return 2
 
     docs = doc_files()
