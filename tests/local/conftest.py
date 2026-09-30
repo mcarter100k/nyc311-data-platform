@@ -8,7 +8,7 @@ Skips wholesale when duckdb or the dbt-duckdb adapter is not installed.
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 
 import pytest
 
@@ -42,7 +42,7 @@ T0 = "2024-01-01 00:00:00"
 T1 = "2024-01-03 06:00:00"
 T2 = "2024-01-04 05:30:00"
 
-TODAY_UTC = datetime.now(timezone.utc).date().isoformat()
+TODAY_UTC = datetime.now(UTC).date().isoformat()
 
 
 def _row(unique_key, created, closed, agency, agency_name, status, ts,

@@ -10,7 +10,7 @@ mocks the queries; a change to either file that breaks a verdict breaks a test.
 import os
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 
 import pytest
 
@@ -23,7 +23,7 @@ from check_upstream_stall import (MAX_COMPLETE_DAY_LAG_DAYS,  # noqa: E402
                                   QUERY as STALL_QUERY, verdict)
 
 # UTC, not the session's date: the capture and the source both work in UTC.
-TODAY = datetime.now(timezone.utc).date()
+TODAY = datetime.now(UTC).date()
 
 # A day the source publishes normally. The exact figure does not matter to any
 # assertion; it is realistic (measured median ~10,500) so failures read clearly.
@@ -49,7 +49,7 @@ def seed(path, days, loaded_at=None):
 
     # SLO-1 reads max(_loaded_at); stamp it fresh so SLO-1 never confounds an
     # SLO-2 assertion below.
-    stamp = loaded_at or datetime.now(timezone.utc).replace(tzinfo=None)
+    stamp = loaded_at or datetime.now(UTC).replace(tzinfo=None)
 
     for offset, complete, ours, source in days:
         day = TODAY - timedelta(days=offset)
@@ -101,7 +101,7 @@ def test_slo1_measures_elapsed_hours_not_hour_boundaries(tmp_path):
 
     Counting hour boundaries crossed would read 25h58m as 26 on most runs.
     """
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     fresh = tmp_path / "fresh.duckdb"
     seed(fresh, HEALTHY, loaded_at=now - timedelta(hours=25, minutes=58))
     code, out = run_gate(fresh)
@@ -173,7 +173,7 @@ def test_gate_fails_when_a_complete_day_is_short_loaded(tmp_path):
         "INSERT INTO gold.fct_service_requests "
         "SELECT ?::TIMESTAMP + INTERVAL (i) SECOND, ?::TIMESTAMP FROM range(?) t(i)",
         [datetime.combine(TODAY - timedelta(days=2), datetime.min.time()),
-         datetime.now(timezone.utc).replace(tzinfo=None), NORMAL - int(NORMAL * 0.90)],
+         datetime.now(UTC).replace(tzinfo=None), NORMAL - int(NORMAL * 0.90)],
     )
     con.close()
     code, out = run_gate(db)

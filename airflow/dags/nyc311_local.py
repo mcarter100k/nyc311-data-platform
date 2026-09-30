@@ -38,7 +38,7 @@ interpreter explicitly.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 
 from airflow.sdk import DAG
 from airflow.providers.standard.operators.bash import BashOperator
@@ -66,7 +66,7 @@ with DAG(
     default_args=default_args,
     # 06:00 UTC. Arbitrary; the daily run is GitHub Actions at 10:00 UTC.
     schedule="0 6 * * *",
-    start_date=datetime(2026, 8, 1, tzinfo=timezone.utc),
+    start_date=datetime(2026, 8, 1, tzinfo=UTC),
     catchup=False,
     max_active_runs=1,
     tags=["nyc311", "local", "duckdb", "demo"],

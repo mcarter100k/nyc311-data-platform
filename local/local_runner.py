@@ -18,7 +18,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 from pathlib import Path
 
 import duckdb
@@ -170,7 +170,7 @@ def fetch_live_records(days: int = LIVE_DAYS, cap: int = LIVE_ROW_CAP, get=None)
         get = requests.get
     headers = _socrata_headers()
 
-    run_date = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    run_date = (datetime.now(UTC) - timedelta(days=days)).date().isoformat()
     records: list = []
     page = 0
     while True:
@@ -209,7 +209,7 @@ def fetch_source_counts_window(days: int = LIVE_DAYS, get=None) -> list[dict]:
         get = requests.get
     headers = _socrata_headers()
 
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     start = today - timedelta(days=days)
     # One grouped request returns every day of the window.
     params = {
@@ -236,7 +236,7 @@ def fetch_source_counts_window(days: int = LIVE_DAYS, get=None) -> list[dict]:
         if probe < SOURCE_COUNT_PROBES - 1:
             time.sleep(SOURCE_COUNT_PAUSE_SECONDS)
 
-    captured_at = datetime.now(timezone.utc).isoformat()
+    captured_at = datetime.now(UTC).isoformat()
     counts: list[dict] = []
     day = start
     while day <= today:
@@ -276,7 +276,7 @@ def stage1_live(days: int = LIVE_DAYS) -> None:
     records = fetch_live_records(days=days)
     RAW_FILE.write_text(json.dumps(records))   # compact: this file is large
     print(f"  fetched {len(records):,} rows created since "
-          f"{(datetime.now(timezone.utc) - timedelta(days=days)).date()}")
+          f"{(datetime.now(UTC) - timedelta(days=days)).date()}")
     print(f"  written: {RAW_FILE.relative_to(LOCAL_DIR)}")
 
     # SLO-2's reference counts, loaded by stage 3.
@@ -297,7 +297,7 @@ def _sql_str(value: str) -> str:
 
 def raw_ingest_timestamp() -> str:
     """The raw file's mtime (UTC), so the stamp describes the data, not the run."""
-    return datetime.fromtimestamp(RAW_FILE.stat().st_mtime, timezone.utc).isoformat()
+    return datetime.fromtimestamp(RAW_FILE.stat().st_mtime, UTC).isoformat()
 
 
 def stage2_bronze() -> None:
@@ -366,7 +366,7 @@ def stage3_silver() -> None:
     # _borough_raw and resolution_days are inputs to the DQ checks and the
     # quarantine, not Silver columns. Gold defines resolution_days itself.
     df = df.drop(columns=["_borough_raw", "resolution_days"], errors="ignore")
-    df["_silver_timestamp"] = datetime.now(timezone.utc).isoformat()
+    df["_silver_timestamp"] = datetime.now(UTC).isoformat()
 
     con.execute("CREATE SCHEMA IF NOT EXISTS silver")
     con.execute("CREATE OR REPLACE TABLE silver.service_requests AS SELECT * FROM df")
@@ -383,12 +383,12 @@ def stage3_silver() -> None:
                'negative_resolution_days' AS quarantine_reason,
                ? AS _silver_timestamp
         FROM df_quarantined
-    """, [df["_silver_timestamp"].iloc[0] if len(df) else datetime.now(timezone.utc).isoformat()])
+    """, [df["_silver_timestamp"].iloc[0] if len(df) else datetime.now(UTC).isoformat()])
     n_q = con.execute("SELECT COUNT(*) FROM silver.quarantine").fetchone()[0]
     print(f"  silver.quarantine: {n_q:,} rows retained for inspection")
 
     # Measure DQ on df_derived (pre-quarantine), the rows the rules were applied to.
-    run_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    run_date = datetime.now(UTC).strftime("%Y-%m-%d")
     dq_rows = compute_dq_metrics(df_bronze, df_derived, run_date)
     dq_df = pd.DataFrame(dq_rows)  # noqa: F841 — read by name in the INSERT below
     # Append so fct_data_quality has 7 days of history; re-running a day

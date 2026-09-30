@@ -14,7 +14,7 @@ import importlib
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 
 import yaml
 import pytest
@@ -648,7 +648,11 @@ def test_daily_run_uploads_evidence_even_when_the_pipeline_fails():
 
 def test_daily_run_scheduled_and_manual_windows_agree():
     """Scheduled runs have no inputs and use the WINDOW_DAYS fallback; manual
-    runs use the input default. The two must be the same window."""
+    runs use the input default. Both must equal local_runner.LIVE_DAYS (read as
+    text: fast-gate has no pandas to import local_runner)."""
+    with open(os.path.join(ROOT, "local", "local_runner.py")) as f:
+        runner = f.read()
+    live_days = re.search(r"^LIVE_DAYS\s*=\s*(\d+)", runner, re.MULTILINE).group(1)
     wf = load_workflow("daily-run.yml")
     triggers = wf.get("on", wf.get(True))
     manual_default = triggers["workflow_dispatch"]["inputs"]["window_days"]["default"]
@@ -665,6 +669,9 @@ def test_daily_run_scheduled_and_manual_windows_agree():
         f"{manual_default}"
     )
     assert '--days "$WINDOW_DAYS"' in run_step["run"]
+    assert manual_default == live_days, (
+        f"daily-run.yml fetches {manual_default} days but LIVE_DAYS is {live_days}"
+    )
 
 
 def test_heartbeat_watches_the_daily_run_on_its_own_schedule():
@@ -710,7 +717,7 @@ def test_heartbeat_dedups_issues_instead_of_filing_a_new_one_each_run():
 
 heartbeat = importlib.import_module("check_daily_run_heartbeat")
 
-NOW = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 27, 12, 0, 0, tzinfo=UTC)
 THRESHOLD = 30
 
 

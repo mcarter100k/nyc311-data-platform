@@ -5,7 +5,7 @@
 # Formatting is not enforced; `ruff format` would undo the hand-aligned
 # comment tables and SQL blocks.
 
-target-version = "py310"
+target-version = "py311"  # matches python-version in every workflow
 line-length = 100        # advisory; E501 is deliberately not selected
 
 extend-exclude = [

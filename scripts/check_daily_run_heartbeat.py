@@ -37,7 +37,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 
 DEFAULT_WORKFLOW = "daily-run.yml"
 DEFAULT_THRESHOLD_HOURS = 30.0
@@ -55,7 +55,7 @@ class Verdict:
 
 def parse_ts(value: str) -> datetime:
     """Parse a GitHub API timestamp ('2026-08-26T10:30:55Z') as aware UTC."""
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    return datetime.fromisoformat(value).astimezone(UTC)
 
 
 def evaluate(
@@ -167,7 +167,7 @@ def main() -> int:
     ap.add_argument("--fixture", default=None, help="JSON file of facts; skips the API")
     args = ap.parse_args()
 
-    now = parse_ts(args.now) if args.now else datetime.now(timezone.utc)
+    now = parse_ts(args.now) if args.now else datetime.now(UTC)
 
     if args.fixture:
         with open(args.fixture) as fh:

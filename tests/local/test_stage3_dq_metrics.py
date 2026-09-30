@@ -69,31 +69,14 @@ CHECK_NAMES = {
 
 
 @pytest.fixture(scope="module")
-def stage3_run(tmp_path_factory):
+def stage3_run(tmp_path_factory, run_stage3):
     """Run the real stage3_silver against a fixture raw file in a temp DuckDB.
-
-    local_runner's path constants are rebound around the call, so local/data/
-    is never touched. SOURCE_COUNT_FILE does not exist, as in a non-live run.
-    """
-    import local_runner
-
+    SOURCE_COUNT_FILE does not exist, as in a non-live run."""
     workdir = tmp_path_factory.mktemp("stage3_dq")
     raw_file = workdir / "nyc311_raw.json"
     raw_file.write_text(json.dumps(RAW_RECORDS))
     db_path = workdir / "nyc311_local.duckdb"
-
-    names = ("RAW_FILE", "DUCKDB_PATH", "DATA_DIR", "RAW_DIR", "SOURCE_COUNT_FILE")
-    saved = {n: getattr(local_runner, n) for n in names}
-    local_runner.RAW_FILE = raw_file
-    local_runner.DUCKDB_PATH = db_path
-    local_runner.DATA_DIR = workdir
-    local_runner.RAW_DIR = workdir
-    local_runner.SOURCE_COUNT_FILE = workdir / "source_count.json"
-    try:
-        local_runner.stage3_silver()
-    finally:
-        for n, v in saved.items():
-            setattr(local_runner, n, v)
+    run_stage3(workdir, raw_file, db_path, workdir / "source_count.json")
 
     con = duckdb.connect(str(db_path), read_only=True)
     try:

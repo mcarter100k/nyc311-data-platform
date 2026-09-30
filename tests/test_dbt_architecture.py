@@ -404,7 +404,6 @@ def test_no_model_references_source_except_staging(models):
 
 
 # ── 5. Test Coverage ──────────────────────────────────────────────────────────
-#
 # The declared grain of every model. Every model must appear here or in
 # PRIMARY_KEY_EXEMPTIONS (enforced below), so a new model cannot skip the key
 # checks.

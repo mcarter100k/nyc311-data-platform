@@ -12,7 +12,7 @@ fetch_source_counts_window. The API is mocked; nothing touches the network.
 
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 
 import pytest
 
@@ -69,7 +69,7 @@ def test_window_and_params_come_from_the_shared_builder():
     get = FakeGet([[{"unique_key": "1"}]])
     fetch_live_records(get=get)
 
-    expected_date = (datetime.now(timezone.utc) - timedelta(days=LIVE_DAYS)).date().isoformat()
+    expected_date = (datetime.now(UTC) - timedelta(days=LIVE_DAYS)).date().isoformat()
     assert get.calls[0]["params"] == build_page_params(expected_date, 0), (
         "Live fetch must build its query through ingest_config.build_page_params "
         f"for the trailing-{LIVE_DAYS}-day window — not through a private param dict."
@@ -174,7 +174,7 @@ from local_runner import fetch_source_counts_window  # noqa: E402
 
 
 def _day(offset):
-    return (datetime.now(timezone.utc) - timedelta(days=offset)).date().isoformat()
+    return (datetime.now(UTC) - timedelta(days=offset)).date().isoformat()
 
 
 def _grouped(**by_day):
