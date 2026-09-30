@@ -1,9 +1,8 @@
-{{
-    config(
-        materialized = 'table',
-        schema       = 'gold'
-    )
-}}
+-- One row per (run_date, check_name) from SILVER.data_quality_log, with a
+-- 7-day rolling failure rate, first/last failure dates, and a threshold-breach
+-- flag for a dashboard to alert on. A full rebuild each run: the log is small,
+-- the window functions need all history, and re-running Silver for a past date
+-- can rewrite old rows.
 
 with dq_log as (
 
@@ -11,7 +10,11 @@ with dq_log as (
 
 ),
 
--- 7-calendar-day window via self-join, not a row-based frame (mirrors dbt/).
+-- 7-calendar-day rolling average per check, as a self-join on dates rather
+-- than a `rows between 6 preceding` frame, so a skipped run day shortens the
+-- sample instead of stretching the window over older days.
+-- rolling_7d_day_count says how many days had data. Grouping is safe because
+-- (run_date, check_name) is unique-tested in staging.
 
 with_rolling as (
 
@@ -43,6 +46,9 @@ with_rolling as (
 
 ),
 
+-- First and last run_date with at least one failure; checks that never
+-- failed are absent and come out NULL through the left join.
+
 failure_bounds as (
 
     select
@@ -71,6 +77,8 @@ final as (
         f.last_seen,
         coalesce(f.total_days_with_failures, 0)                     as total_days_with_failures,
 
+        -- Alert thresholds. These live only here: Silver records each rate
+        -- but does not judge it.
         case
             when r.check_name = 'null_rate_unique_key'
              and r.rolling_7d_avg_failure_rate > 0.05  then true

@@ -9,19 +9,12 @@
     )
 }}
 
--- One row per agency_abbreviation, carrying the initcap-normalized name.
--- The check strategy opens a new version whenever agency_name changes for a
--- given abbreviation. Abbreviation changes are not tracked here — a changed
--- abbreviation is treated as a new agency (see ADR 007).
+-- One row per agency_abbreviation with its title-cased name. The check
+-- strategy opens a new version when agency_name changes; a new abbreviation
+-- is a new agency (ADR 007).
 --
--- QUALIFY deduplicates within the source in case multiple service requests
--- for the same agency_abbreviation carry slightly different agency_name strings
--- in the same snapshot run (e.g., casing variants that survived Silver).
--- We pick the name on the MOST RECENT request (order by created_date desc):
--- when an agency is renamed, the new name wins the dedup as soon as it appears,
--- so the check strategy can actually detect the rename. Ordering by name would
--- pin whichever variant sorts first and suppress renames that sort later.
--- agency_name is the deterministic tiebreak for requests created at the same time.
+-- The dedup keeps the name on the most recent request, so a rename wins as
+-- soon as it appears and the snapshot can detect it. agency_name breaks ties.
 
 select
     agency_abbreviation,

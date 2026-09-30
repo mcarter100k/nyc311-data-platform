@@ -1,13 +1,14 @@
--- The horizon fct_complaint_recurrence was actually built against must be the
--- last COMPLETE load day — not the newest loaded day, not a frozen date, not
--- NULL. This is the test that would have caught the defect it exists for.
+-- The horizon fct_complaint_recurrence was built against must be the last
+-- COMPLETE load day: not the newest (partial) loaded day, not a frozen date,
+-- not NULL.
 --
--- The horizon is not stored but IS recoverable: for any row that was not
--- floored, closed_date + observation_days is the horizon exactly. It is
--- compared against int_load_completeness, computed independently of whatever
--- the model did. The `recoverable` guard keeps a legitimately all-floored load
--- (less than a full day past the last complete day, e.g. a small --rows
--- sample) from reddening the build. See dbt/ for the full rationale.
+-- The horizon is not stored but can be recovered: for any row that was not
+-- floored, closed_date + observation_days is the horizon. That is compared
+-- with int_load_completeness, computed independently of the model.
+--
+-- A small `--rows N` sample can legitimately floor every row, so "no row
+-- escaped the floor" only fails when some row closed before the last complete
+-- day.
 
 with expected as (
 
@@ -17,6 +18,7 @@ with expected as (
 
 ),
 
+-- Rows that must carry a positive observation window if the horizon is sane.
 recoverable as (
 
     select count(*) as n
@@ -26,6 +28,7 @@ recoverable as (
 
 ),
 
+-- The horizon read back out of the model; there should be exactly one.
 recovered as (
 
     select distinct
@@ -48,17 +51,14 @@ verdict as (
 select *
 from verdict
 where
-    -- No complete day in the load: no honest horizon exists, and the model
-    -- must not have invented one.
+    -- No complete day in the load, so no horizon exists.
     expected_horizon is null
 
-    -- Everything floored while rows existed that should not have been: the
-    -- horizon has stopped advancing, or predates the data.
+    -- Every row floored although some closed before the horizon.
     or (rows_that_should_not_be_floored > 0 and distinct_horizons = 0)
 
     -- More than one horizon in a single build.
     or distinct_horizons > 1
 
-    -- The original defect: recovered = newest loaded (partial) day, expected =
-    -- last complete one.
+    -- One horizon, but the wrong day (e.g. the newest, partial loaded day).
     or (distinct_horizons = 1 and recovered_horizon is distinct from expected_horizon)

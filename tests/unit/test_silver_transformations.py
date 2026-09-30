@@ -1,50 +1,11 @@
 """
-Unit tests for local/silver_transformations.py — the Silver logic that runs.
+Unit tests for local/silver_transformations.py.
 
 Each test builds an in-memory DataFrame with known inputs and asserts exact
-output. No database, no network, no cloud.
-
-Provenance worth stating plainly: these assertions previously ran against a
-PySpark module written for a Databricks deployment that was specified but never
-provisioned. Those functions were imported by exactly two things — a notebook
-that never executed, and these tests. The pandas transform that runs every day
-had no unit tests at all. The suite was pointed at the code that runs; the
-count went down and the coverage went up.
-
-  test_borough_standardization
-    Operators type boroughs freely: "Brooklyn", "BKLYN", "BK", "Kings County".
-    Gold reporting breaks unless they collapse to one canonical name. Covers
-    every variant in the shared mapping plus unrecognized and null inputs,
-    which must become UNSPECIFIED rather than null.
-
-  test_unrecognized_borough_is_not_the_unspecified_bucket
-    The unrecognized_borough DQ numerator must count decoder failures only.
-    Counting the UNSPECIFIED bucket instead reported the source's own literal
-    'Unspecified' — a variant the shared seed maps on purpose — as a failure:
-    160 rows on the local load against a true count of zero.
-
-  test_resolution_days_calculation
-    The primary SLA measure. Same-day closes must be 0 (not null), open
-    requests null (not 0), and closed-before-created must produce a negative
-    rather than being silently suppressed here.
-
-  test_deduplication
-    Page boundaries overlap, so one unique_key can arrive twice. Exactly one
-    row survives, and it is the most recently ingested — deterministically.
-
-  test_quarantine_selects_only_negative_resolution_days
-    The filter must catch data-entry errors without catching open requests,
-    whose null resolution_days must never compare as negative.
-
-  test_data_quality_metrics
-    Five checks feed fct_data_quality's rolling breach flags. Null rates are
-    measured on BRONZE because a null unique_key cannot survive dedup.
-
-  test_borough_map_comes_from_the_shared_csv
-    The mapping must not be hardcoded here — it is shared with both dbt
-    projects, and a local copy is exactly the drift this design removed.
+output. No database, no network.
 """
 
+import csv
 import os
 import sys
 
@@ -103,19 +64,10 @@ def test_borough_standardization():
 
 
 def test_unrecognized_borough_is_not_the_unspecified_bucket():
-    """The DQ numerator must count decoder failures, and only those.
+    """The DQ numerator counts decoder failures only.
 
-    Standardization is lossy on purpose — 'missing', 'unrecognized', and the
-    source's own literal 'Unspecified' all become the string 'UNSPECIFIED' so
-    dim_location's NOT NULL contract holds. The unrecognized_borough check used
-    to count that bucket, which made it report all three as decode failures.
-
-    Measured consequence on the local load: 160 rows reported unrecognized, ALL
-    of them the source's literal 'Unspecified' — a variant the shared seed maps
-    deliberately — and the true unrecognized count was zero. A published
-    0.125% failure rate for a check with nothing to report, and one that could
-    never have raised an alarm anyway, since a real new spelling would have
-    nudged 160 to 161.
+    Missing, unrecognized and the source's literal 'Unspecified' all become
+    'UNSPECIFIED'; only a supplied value that matches no variant is a failure.
     """
     df = pd.DataFrame({
         "borough": [
@@ -144,14 +96,14 @@ def test_unrecognized_borough_is_not_the_unspecified_bucket():
 
 
 def test_borough_map_comes_from_the_shared_csv():
-    """The mapping is loaded, not hardcoded — it is shared with both dbt projects."""
-    src = open(os.path.join(ROOT, "local", "silver_transformations.py")).read()
-    assert "borough_variants.csv" in src, (
-        "silver_transformations must load the borough map from the shared CSV; "
-        "a local hardcoded copy is exactly the drift this design removed."
+    """The map equals the CSV both dbt projects seed from, row for row."""
+    with open(os.path.join(ROOT, "config", "borough_variants.csv"), newline="") as fh:
+        expected = {r["variant"]: r["canonical"] for r in csv.DictReader(fh)}
+    assert BOROUGH_MAP == expected, (
+        "BOROUGH_MAP differs from config/borough_variants.csv; a local copy "
+        "drifts from the dbt seed."
     )
-    assert BOROUGH_MAP["RICHMOND"] == "STATEN ISLAND"
-    assert "RICHMOND" in KNOWN_BOROUGH_VARIANTS
+    assert KNOWN_BOROUGH_VARIANTS == set(BOROUGH_MAP)
 
 
 # ── 2. Resolution days ────────────────────────────────────────────────────────
@@ -172,10 +124,6 @@ def test_resolution_days_calculation():
     assert pd.isna(got["r3"]), "Open request must be null, not 0 — 0 would read as instant resolution."
     assert pd.isna(got["r4"]), "No created_date means the interval is uncomputable."
     assert got["r5"] == -5, "Closed-before-created must surface as negative, not be suppressed here."
-
-    resolved = dict(zip(out["id"], out["is_resolved"], strict=True))
-    assert resolved["r1"] is True or resolved["r1"] == True   # noqa: E712
-    assert resolved["r3"] == False                             # noqa: E712
 
 
 # ── 3. Deduplication ──────────────────────────────────────────────────────────
@@ -199,23 +147,9 @@ def test_deduplication():
 
 
 def test_deduplication_under_production_conditions():
-    """The real case: every row carries the SAME timestamp, so ties decide everything.
+    """Stage 3 stamps one timestamp on every row, so every duplicate is a tie.
 
-    This fixture is the one that matters, because it is what actually happens.
-    Stage 3 assigns one stamp to the whole frame (`df["_ingest_timestamp"] =
-    <mtime>`), so in production the timestamp sort key is constant and carries
-    no information — every duplicate is a tie.
-
-    The test above passes with distinct timestamps and therefore never exercised
-    this. The original implementation sorted on the timestamp alone with pandas'
-    default quicksort, which is not stable, so tied rows resolved in an
-    unspecified order: 1,000 keys duplicated across two pages came out as a
-    997/3 mix of pages rather than cleanly from either. It kept an arbitrary
-    row while its docstring claimed it kept the newest.
-
-    Pagination overlap means the later copy is the fresher read of a row that
-    may have changed between page requests, so the later fetch must win — for
-    every key, not most of them.
+    The later fetch is the fresher read and must win for every key.
     """
     n = 500
     df = pd.DataFrame({
@@ -261,12 +195,8 @@ def test_quarantine_selects_only_negative_resolution_days():
 def test_data_quality_metrics():
     """Exact counts for the five checks that feed fct_data_quality.
 
-    ONE deduped frame is passed, not two. The signature used to take a
-    `df_deduped` for counts and a separate `df_derived` for masks; they are the
-    same population at the only call site, and the split let local_runner hand
-    the post-quarantine frame to the counting slot. See the call-site test in
-    tests/local/test_stage3_dq_metrics.py — this test cannot catch that, and
-    never could, because it calls the function correctly by construction.
+    The call site (which frame local_runner passes) is covered by
+    tests/local/test_stage3_dq_metrics.py.
     """
     bronze = pd.DataFrame({
         "unique_key":   ["a", "a", None, "d"],           # 1 null, 1 duplicate

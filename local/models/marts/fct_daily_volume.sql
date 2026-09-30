@@ -1,25 +1,25 @@
-{{
-    config(
-        materialized = 'table',
-        schema       = 'gold'
-    )
-}}
-
--- Grain: one row per (calendar date, borough, complaint category).
+-- One row per (created date, borough, complaint category), pre-aggregated so
+-- dashboards do not scan fct_service_requests.
 --
--- EVERY RATE HERE IS WINDOWED, because a rate whose numerator is "closed" over
--- a denominator of "created this day" is right-censored, worst on the newest
--- days. Measured on the local load (horizon 2026-08-24), the old pct_resolved
--- ran 0.7452 at 12 days observed down to 0.4003 at zero, and avg_resolution_days
--- 1.38 down to 0.07 — printed in the same column as though comparable. So every
--- rate is bounded to closure_window_days ("closed within N days of creation")
--- and published ONLY where N complete days follow the day; otherwise NULL.
--- total_requests is not censored — a created-count is whole once the source has
--- published the day, which is what is_complete_day says. See dbt/.
+-- Every closure rate here is windowed and gated. A newly created cohort has
+-- had little time to close, so "closed / created that day" reads low on the
+-- newest days (right-censoring). So each rate counts "closed within
+-- closure_window_days of creation", and a day publishes it only once that many
+-- complete days of history follow it (is_denominator_closed); otherwise the
+-- rate is NULL. assert_daily_volume_rates_have_closed_denominators checks the
+-- gate against an independent recomputation.
 --
--- overdue_requests is gone: it summed is_overdue, which is NULL while a request
--- is open, so a request open for 200 days counted ZERO while one closed on day
--- 31 counted one. requests_open_past_window counts both. See dbt/.
+-- The daily fetch re-pulls requests created in the last 37 days, so a row's
+-- status keeps updating until day 37: closures up to day 30 plus 7 days for
+-- the source to settle (ADR 016). A published rate can still rise slightly
+-- until its day leaves that window; after that it is final.
+--
+-- total_requests is not censored: a count of requests created on a day is
+-- whole once the source has published the day (see is_complete_day).
+--
+-- requests_open_past_window counts every request not closed within the
+-- window, including ones still open. A sum of is_overdue would miss those,
+-- because is_overdue is NULL while a request is open.
 
 with fct as (
 
@@ -39,20 +39,16 @@ dim_location as (
 
 ),
 
--- Per-day source completeness, from the one model that defines it. Every
--- figure here is a per-day figure and the newest loaded day is always partial
--- (~23.5h publish lag; 358 rows vs a ~10,500 median), which is how the
--- weekday-vs-weekend volume comparison got contaminated. Metadata join on the
--- date, one row per day — it cannot change this model's grain. See dbt/.
+-- One row per day from the single definition of a complete day. The newest
+-- loaded day is always partial, so per-day averages must filter on it.
 load_completeness as (
 
     select * from {{ ref('int_load_completeness') }}
 
 ),
 
--- End of trustworthy history — same definition fct_complaint_recurrence uses,
--- read from the same model. NOT max(created_date). NULL when no day is
--- complete, written out below rather than left to GREATEST. See dbt/.
+-- End of trustworthy history: the newest complete day, the same horizon
+-- fct_complaint_recurrence uses. NULL when no loaded day is complete.
 horizon as (
 
     select max(load_day) as last_complete_date
@@ -64,28 +60,30 @@ horizon as (
 aggregated as (
 
     select
+        -- ── Grain keys ────────────────────────────────────────────────────────
         d.full_date,
         d.year,
         d.month,
         d.quarter,
         d.is_weekend,
         d.is_federal_holiday,
-        -- Three-valued: TRUE / FALSE / NULL, where NULL means the day is
-        -- outside the currently loaded source window and this build cannot
-        -- assess it — not "incomplete". Deliberately not coalesced. See dbt/.
+        -- NULL once the day leaves the loaded window: not assessable, which is
+        -- not the same as incomplete, so it is not coalesced.
         c.is_complete_day,
+        -- A fact row with no location_id folds into UNSPECIFIED, not dropped.
         coalesce(l.borough, 'UNSPECIFIED')                                      as borough,
         f.complaint_category,
 
+        -- ── Volume (not censored) ─────────────────────────────────────────────
         count(*)                                                                as total_requests,
 
+        -- ── Decode coverage (not censored) ────────────────────────────────────
         -- Rows whose resolution text the closure_type decoder could not read.
-        -- is_actioned is FALSE for all of them, so this is the decode-shaped
-        -- floor under pct_actioned_within_window at the same grain. Not
-        -- censored — a property of the rows, not of elapsed time. See dbt/.
+        -- They count as not actioned, so this sizes the floor under
+        -- pct_actioned_within_window.
         sum(case when f.closure_type = 'Undecodable' then 1 else 0 end)         as undecodable_closure_requests,
 
-        -- Censored numerators; gated in `final`, never selected raw.
+        -- ── Window numerators (gated in `final`, never selected raw) ──────────
         sum(
             case
                 when f.is_resolved
@@ -103,6 +101,8 @@ aggregated as (
             end
         )                                                                       as actioned_in_window,
 
+        -- Mean days to close among requests closed inside the window, so it is
+        -- fixed per cohort instead of creeping up as late closures arrive.
         avg(
             case
                 when f.is_resolved
@@ -122,6 +122,7 @@ aggregated as (
     left join load_completeness c
         on d.full_date = c.load_day
 
+    -- Drop rows whose created_date falls outside the date spine.
     where d.full_date is not null
 
     group by
@@ -141,9 +142,10 @@ observed as (
 
     select
         a.*,
-        -- Complete days of published history following this created day.
-        -- Floored at zero like fct_complaint_recurrence; NULL horizon written
-        -- out so both engines agree. See dbt/.
+
+        -- Complete days of history after this day, floored at zero. The NULL
+        -- case is explicit because GREATEST(0, NULL) is NULL on Snowflake but
+        -- 0 on DuckDB.
         case
             when h.last_complete_date is null then null
             else greatest(0, datediff('day', a.full_date, h.last_complete_date))
@@ -158,12 +160,15 @@ eligibility as (
 
     select
         o.*,
-        -- THE PUBLICATION RULE, in SQL not prose. Clause 1: the cohort has had
-        -- the full window to close. Clause 2: the day's own rows are whole — a
-        -- day the source published two hours of is a biased sample of itself at
-        -- any age (the 2026-08-18 stall made that shape). IS DISTINCT FROM
-        -- FALSE, not = TRUE: NULL means "aged out of the assessable window",
-        -- not "incomplete", and = TRUE would NULL all of production. See dbt/.
+
+        -- The publication rule:
+        --   observation_days >= closure_window_days: the cohort has had the
+        --     full window to close.
+        --   is_complete_day IS DISTINCT FROM FALSE: the day's own rows are
+        --     whole; a half-published day is a biased sample however old it is.
+        --     NULL (aged out of the load) is allowed, or no day in a long-lived
+        --     warehouse would ever publish.
+        -- FALSE, never NULL, when no complete day exists.
         (
             o.observation_days is not null
             and o.observation_days >= {{ var('closure_window_days') }}
@@ -196,13 +201,12 @@ final as (
         total_requests,
         undecodable_closure_requests,
 
-        -- The eligibility contract, published as data: a consumer sees WHY a
-        -- rate is NULL without rederiving the rule, and the singular test
-        -- compares it against an independent recomputation.
+        -- ── Eligibility, published so a reader can see why a rate is NULL ─────
         {{ var('closure_window_days') }}                                        as closure_window_days,
         observation_days,
         is_denominator_closed,
 
+        -- ── Window measures, published only over a closed denominator ─────────
         case when is_denominator_closed then closed_in_window end                as requests_closed_within_window,
 
         case when is_denominator_closed then total_requests - closed_in_window end

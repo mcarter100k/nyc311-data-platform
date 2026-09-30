@@ -1,22 +1,10 @@
-{{
-    config(
-        materialized = 'table',
-        schema       = 'gold'
-    )
-}}
-
--- Calendar spine dimension. Grain: one row per day, 2010-01-01 → 2030-12-31
--- (driven by the min_date / max_date project vars). Time attributes — weekday,
--- weekend, US federal holidays — are computed once here so every query joins
--- to the same answer instead of re-deriving its own date math; "was this a
--- holiday?" must mean the same thing in every dashboard. Generated from a
--- spine rather than the data so days with zero requests still exist as rows
--- (a gap in complaint volume is a finding, not a missing join).
+-- Calendar dimension: one row per day from min_date to max_date. Weekday,
+-- weekend and US federal holiday flags are computed once here so every query
+-- gets the same answer. Built from a spine, not the data, so a day with zero
+-- requests still has a row.
 
 with date_spine as (
 
-    -- generate_date_spine wraps dbt_utils.date_spine to produce one row per calendar day.
-    -- Range is driven by project variables min_date / max_date (default 2010-01-01 → 2030-12-31).
     {{ generate_date_spine(
         start_date = var('min_date'),
         end_date   = var('max_date')
@@ -31,21 +19,16 @@ dates as (
 
 ),
 
--- Federal holiday rules (US). Non-fixed holidays use week-of-month arithmetic:
--- "3rd Monday" = dayofmonth BETWEEN 15 AND 21 AND dayofweekiso = 1.
--- All day-of-week logic uses DAYOFWEEKISO (1=Monday … 7=Sunday), which is
--- fixed by the ISO standard and immune to the Snowflake WEEK_START session /
--- account parameter. Plain DAYOFWEEK shifts with WEEK_START — using it would
--- silently invert is_weekend and break every holiday rule if the parameter
--- were ever changed.
--- Observed holidays (e.g. Jul 4 on Saturday → observed Friday) are not modelled
--- here; extend this CTE if reporting requires observed-holiday awareness.
+-- Floating holidays use week-of-month arithmetic: "3rd Monday" = day 15-21
+-- and ISO weekday 1. ISO weekdays (1=Monday … 7=Sunday) are fixed by standard,
+-- immune to the Snowflake WEEK_START session parameter, which would silently
+-- shift plain DAYOFWEEK and break is_weekend. Observed holidays (Jul 4 on a
+-- Saturday -> Friday off) are not modelled.
 
 with_attributes as (
 
     select
-        -- ── Primary key ───────────────────────────────────────────────────────
-        -- YYYYMMDD integer — compact, sortable, joins cleanly to fct tables.
+        -- YYYYMMDD integer: compact, sortable, human-readable.
         to_char(full_date, 'YYYYMMDD')::integer                                 as date_id,
         full_date,
 
@@ -57,9 +40,6 @@ with_attributes as (
         to_char(full_date, 'MON')                                               as month_abbr,
         dayofmonth(full_date)                                                   as day_of_month,
         dayofweekiso(full_date)                                                 as day_of_week,      -- ISO: 1=Mon … 7=Sun
-        -- Derived from dayofweekiso rather than to_char(..., 'DAY') so the value
-        -- is deterministic and documented here, not dependent on format-element
-        -- behaviour across Snowflake versions.
         decode(dayofweekiso(full_date),
             1, 'Monday',
             2, 'Tuesday',

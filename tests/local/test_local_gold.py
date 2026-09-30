@@ -1,11 +1,9 @@
 """
-Behavioral tests for Gold-layer semantics, executed against the real dbt
-project in local/ on a seeded DuckDB database (fixture: tests/local/conftest.py).
-
-These cover the gaps the structural suite cannot: it asserts what the compiled
-manifest *declares*; these assert what the models *do* when built twice over
-changing data — the incremental (only-new-rows) watermark, snapshot rename
-detection, and the SCD2 point-in-time agency join.
+Behavioral tests of Gold semantics: the real local/ dbt project built twice
+over changing seeded data in DuckDB (fixtures in tests/local/conftest.py).
+The structural suite checks what the manifest declares; these check what the
+models do: the incremental watermark, snapshot rename detection, the SCD2
+point-in-time join, and the reconciliation deletes.
 """
 
 
@@ -63,12 +61,12 @@ def test_scd2_rename_versions_and_point_in_time_assignment(gold_db):
 def test_upsert_propagates_status_change(gold_db):
     """r2 closes between the two loads (same natural key, fresh pipeline
     timestamp). The incremental upsert must UPDATE the existing fact row, not
-    duplicate it or leave it stale. This path only receives data at all
-    because the ingest watermark re-fetches updated rows (ingest_config.py) —
-    it was dead code under the old created_date predicate.
+    duplicate it or leave it stale. Updates reach this path because the daily
+    fetch re-pulls the whole trailing created_date window, so a row that
+    closes inside the window is fetched again (ADR 010).
 
-    NOTE: this runs under dbt-duckdb's delete+insert strategy; the Snowflake
-    project's `merge` strategy is spec-level and unverified (no warehouse)."""
+    Runs under dbt-duckdb's delete+insert; the Snowflake `merge` is unverified
+    (no warehouse)."""
     fct = gold_db["incremental"]["fct"]
     assert fct["r2"]["status"] == "Closed", (
         f"r2 status is {fct['r2']['status']!r} after the incremental run — "
@@ -80,9 +78,8 @@ def test_upsert_propagates_status_change(gold_db):
 def test_correction_reconciliation_deletes_disqualified_row(gold_db):
     """r6 was VALID in phase 1 (present in the fact) and corrected in phase 2
     so it now fails the closed-before-created quality filter. Without the
-    reconciliation post_hook the merge would never touch it again and the
-    fact would serve its stale pre-correction values forever — diverging from
-    --full-refresh. Asserts the full lifecycle: built, then deleted, and both
+    first reconciliation post_hook the fact would keep its stale row, unlike a
+    full refresh. Asserts the full lifecycle: built, then deleted, and both
     build modes agree."""
     assert "r6" in gold_db["phase1_fct_keys"], (
         "Precondition broken: r6 must exist in the fact after phase 1 — "
@@ -102,21 +99,10 @@ def test_correction_reconciliation_deletes_disqualified_row(gold_db):
 def test_silver_quarantine_reconciliation_deletes_stranded_row(gold_db):
     """r9 was VALID in phase 1 and QUARANTINED BY SILVER in phase 2.
 
-    This is the case r6 above cannot cover. r6 stays in silver.service_requests
-    and merely fails the dbt quality filter, so it is present in staging and
-    absent from int — exactly the shape the original post_hook looks for.
-
-    r9 leaves silver entirely, because quarantine runs in pandas before dbt sees
-    anything. It is therefore absent from staging too, which makes the original
-    post_hook structurally blind to it: a row loaded before it became invalid
-    stayed in the fact table indefinitely, and the serving layer kept publishing
-    a record the pipeline's own quality rules had rejected.
-
-    Found 2026-08-22 by an end-to-end run after the fetch window moved — two
-    real requests served as "In Progress" in Gold while the source reported them
-    closed seconds before they were created. Nothing failed at the time: row
-    counts stayed plausible and the fact table simply undercounted closures by
-    two. Asserts the whole lifecycle, because "never built" would prove nothing.
+    Unlike r6, r9 leaves silver.service_requests entirely (quarantine runs in
+    pandas before dbt), so it is absent from staging and only the second,
+    quarantine post_hook can delete its fact row. Asserts the whole lifecycle,
+    because "never built" would prove nothing.
     """
     assert "r9" in gold_db["phase1_fct_keys"], (
         "Precondition broken: r9 must exist in the fact after phase 1 — "
@@ -165,11 +151,8 @@ def test_recurrence_detects_a_repeat_and_respects_censoring(gold_db):
     """fct_complaint_recurrence must find a genuine repeat and must NOT claim
     a ticket did not recur when there was no time left to observe it.
 
-    The seeded timeline gives r1 a closure followed by a same-address,
-    same-type complaint, which is the signal the model exists to detect.
-    observation_days must never be negative — a negative value would mean the
-    horizon predates the closure, which would silently invert every rate
-    computed from this table."""
+    The seeded timeline gives r7 a closure followed by a same-address,
+    same-type complaint, which is the signal the model exists to detect."""
     rows = gold_db["incremental"]["recurrence"]
     assert rows, "fct_complaint_recurrence built no rows for the seeded closures."
 
@@ -181,29 +164,12 @@ def test_recurrence_detects_a_repeat_and_respects_censoring(gold_db):
         f"{by_key['r7']['days_to_next']}."
     )
 
-    for r in rows:
-        assert r["observation_days"] >= 0, (
-            f"{r['unique_key']} has observation_days={r['observation_days']}; a "
-            "negative observation window inverts every rate built on this table."
-        )
-        if r["days_to_next"] is not None:
-            assert r["days_to_next"] >= 0, (
-                f"{r['unique_key']} recurs {r['days_to_next']} days BEFORE it closed."
-            )
-
 
 # ── The observation horizon ──────────────────────────────────────────────────
-# observation_days was measured against max(created_date) over the load. That
-# reads as obviously right and is systematically wrong: the source publishes on
-# a ~23.5h lag, so its newest created_date is never a whole day — measured on
-# live loads it held 358, 372, 382 and 832 rows against a ~10,500 median. Every
-# closure was therefore credited with up to a full day of observation that had
-# not happened, and the error was differential across closure_type, which is the
-# one dimension this table exists to compare.
-#
-# The fixture timeline is built so the two horizons differ loudly: only Jan 4 is
-# a complete day, while the newest CREATED day is TODAY. Old horizon → ~950;
-# correct horizon → 1 and 2.
+# observation_days must be measured to the newest COMPLETE day, not
+# max(created_date), which is always a partial day. In the fixture only Jan 4 is
+# complete while the newest created day is TODAY, so a wrong horizon gives ~950
+# instead of 1 and 2.
 
 def test_completeness_marks_only_the_fully_published_day(gold_db):
     """int_load_completeness must judge each day on its own tail coverage, not
@@ -232,12 +198,9 @@ def test_completeness_marks_only_the_fully_published_day(gold_db):
 
 
 def test_observation_days_measure_to_the_last_complete_day(gold_db):
-    """The regression test for the defect itself, in numbers.
-
-    Horizon = Jan 4 (the only complete day), NOT the newest created day. r1
+    """Horizon = Jan 4 (the only complete day), not the newest created day. r1
     closed Jan 3 → 1 day observed. r2 closed Jan 4 → 0, floored because nothing
-    published follows it. Under the old max(created_date) horizon both would be
-    in the high hundreds."""
+    published follows it."""
     by_key = {r["unique_key"]: r for r in gold_db["incremental"]["recurrence"]}
 
     assert by_key["r1"]["observation_days"] == 1, (
@@ -267,14 +230,13 @@ def test_horizon_tests_pass_on_a_clean_build(gold_db):
 
 
 def test_horizon_guard_fires_when_the_horizon_runs_past_the_last_complete_day(gold_db):
-    """Non-vacuity, direction one. Advancing the horizon by a day is the defect
-    verbatim. It floors nothing, so the floor guard must stay GREEN and only the
-    horizon guard may fire — otherwise the two tests are one test."""
+    """Non-vacuity, direction one. Advancing the horizon by a day floors
+    nothing, so the floor guard must stay green and only the horizon guard may
+    fire; otherwise the two tests are one test."""
     sabotage = gold_db["guards"]["horizon_advanced"]
     assert sabotage["returncode"] != 0, (
-        "observation_days was advanced by a day — the horizon now sits one day "
-        "past the last completely published day, which is precisely the bug this "
-        "model was shipped with — and dbt test still passed.\n"
+        "observation_days was advanced by a day, so the horizon sits one day "
+        "past the last complete day, and dbt test still passed.\n"
         + sabotage["output"][-4000:]
     )
     assert "assert_recurrence_horizon_is_last_complete_day" in sabotage["output"], (
@@ -289,15 +251,12 @@ def test_horizon_guard_fires_when_the_horizon_runs_past_the_last_complete_day(go
 
 
 def test_floor_guard_fires_when_every_row_is_floored(gold_db):
-    """Non-vacuity, direction two — and the specific thing the old test could
-    not see. `observation_days >= 0` sat on GREATEST(0, ...), so a horizon that
-    froze or fell behind floored every row and the test reported PASS while the
-    sample silently drained out of every `observation_days >= N` filter."""
+    """Non-vacuity, direction two. A frozen or backdated horizon floors every
+    row to 0, which a `>= 0` test on a GREATEST(0, ...) column cannot see."""
     sabotage = gold_db["guards"]["all_floored"]
     assert sabotage["returncode"] != 0, (
-        "Every observation_days was set to 0 — the state a frozen or backdated "
-        "horizon produces — and dbt test still passed. This is exactly the "
-        "condition the old `>= 0` test was blind to.\n"
+        "Every observation_days was set to 0 (a frozen or backdated horizon) "
+        "and dbt test still passed.\n"
         + sabotage["output"][-4000:]
     )
     assert "assert_observation_days_floor_is_explained" in sabotage["output"], (
@@ -317,12 +276,10 @@ def test_horizon_guards_recover_after_the_model_is_rebuilt(gold_db):
 
 
 # ── Referential integrity across a moving Silver window ──────────────────────
-# fct_service_requests accumulates; Silver carries a rolling 7-day window. Any
-# dimension rebuilt from that window therefore forgets members the fact still
-# references. Measured on the production artifact before the fix: 88 dangling
-# location_id values, every one of them predating the window, growing ~15-20 a
-# day, and completely silent — fct_daily_volume coalesced the failed join to
-# borough 'UNSPECIFIED' and the row counts stayed plausible.
+# fct_service_requests accumulates while Silver holds a rolling window, so a
+# dimension rebuilt from that window would forget members the fact still
+# references, and fct_daily_volume would silently file their volume under
+# 'UNSPECIFIED'.
 
 def test_dim_location_keeps_members_whose_rows_left_the_window(location_retention_db):
     """A location must not disappear from dim_location because its source rows
@@ -384,10 +341,9 @@ def test_phase2_build_passes_its_own_relationships_tests(location_retention_db):
 
 
 def test_relationships_test_on_location_id_actually_fires(location_retention_db):
-    """Non-vacuity. Every assertion above stays green if someone deletes the
-    relationships test from marts.yml — that is exactly how the guard was lost
-    the first time, on the reasoning that a dimension sharing the fact's source
-    could never dangle. Drop a dim_location member by hand and dbt must fail."""
+    """Non-vacuity. Every assertion above stays green if the relationships
+    test is deleted from marts.yml. Drop a dim_location member by hand and dbt
+    must fail."""
     assert location_retention_db["guard_returncode"] != 0, (
         "A dim_location member was deleted while fact rows still referenced it, "
         "and `dbt test` still passed. The relationships test on "

@@ -1,38 +1,21 @@
-{{
-    config(
-        materialized = 'table',
-        schema       = 'gold'
-    )
-}}
-
--- fct_complaint_recurrence
+-- One row per closed service request that has a usable address.
 --
--- Grain: one row per CLOSED service request that carries a usable address.
+-- 311 records what the city said happened (closure_type), not whether the
+-- problem went away. The one test available from 311 alone: did the same
+-- complaint come back at the same address soon after the closure?
 --
--- Why this exists: fct_service_requests records what the city SAID happened
--- (closure_type), and nothing in that data says whether the resident's problem
--- actually went away. This model supplies the only test available from 311
--- alone — did the same complaint reappear at the same address shortly after the
--- closure? A closure followed by an identical complaint three days later did
--- not resolve anything.
+-- No recurrence window is baked in. The model emits days_to_next_same_complaint
+-- and observation_days, and a consumer computing a rate over N days must keep
+-- only rows with observation_days >= N; otherwise tickets closed near the end
+-- of the data, which have had no chance to recur, count as "did not recur".
 --
--- DELIBERATELY NO WINDOW IS BAKED IN. The model emits `days_to_next_same_complaint`
--- and `observation_days`; consumers choose their own threshold. Hardcoding
--- "recurred within N days" would hide right-censoring: a ticket closed on the
--- last day of loaded history has had no opportunity to recur, and counting it
--- as "did not recur" silently biases every rate downward. Filter on
--- `observation_days >= N` before computing a rate over window N.
+-- Rebuilt each run from the current Silver window (the 37-day daily fetch),
+-- so observation_days is at most ~36 and a 30-day rate covers only closures
+-- from the first days of the window.
 --
--- The join is bounded by the recurrence_max_window_days var. That bound is
--- correctness-preserving for the intended question (nobody asks about
--- recurrence a year later) and it is what keeps the self-join tractable:
--- unbounded, a chronic address with hundreds of tickets fans out quadratically.
---
--- `is_chronic_location` is not decoration. Measured on one week of live data,
--- a single address carried 236 Noise - Residential complaints. Such locations
--- recur by nature rather than by failed resolution, and they dominate any
--- unfiltered recurrence rate — excluding them cut the spread between closure
--- types roughly in half. Any honest rate reports both figures.
+-- is_chronic_location marks addresses that recur by nature (one address filed
+-- 236 noise complaints in a week). They dominate any unfiltered rate, so report
+-- rates with and without them.
 
 with source as (
 
@@ -45,15 +28,11 @@ with source as (
         created_date,
         closed_date,
         status,
-        -- Address identity: upper, trim, and collapse internal whitespace.
-        -- Measured before choosing: of 33,469 distinct address strings, runs of
-        -- internal spaces account for 226 of the 232 collapsible duplicates —
-        -- 97% of the available gain — and change the key for 4.71% of tickets
-        -- ('WEST   86 STREET' vs 'WEST 86 STREET'). Suffix folding
-        -- (STREET->ST, AVENUE->AVE, ...) was measured too and buys SIX more
-        -- strings; it is deliberately not done, because an abbreviation table
-        -- is a maintenance surface and 6 strings does not pay for one.
-        -- Geocoding to a BBL/BIN remains the real fix and a separate concern.
+        -- Address identity: upper, trim, collapse internal whitespace. That
+        -- catches almost all duplicate spellings; suffix folding (STREET->ST)
+        -- gained only a handful more and is not worth maintaining. Geocoding
+        -- would be the real fix. The POSIX class avoids backslash escaping;
+        -- DuckDB needs the 'g' flag to replace every match, Snowflake does not.
         regexp_replace(upper(trim(incident_address)), '[[:space:]]+', ' ')             as address_key
 
     from {{ ref('int_service_requests_cleaned') }}
@@ -63,7 +42,7 @@ with source as (
 
 ),
 
--- Every ticket is a candidate *recurrence* of an earlier one, open or closed.
+-- Any ticket, open or closed, can be the recurrence of an earlier one.
 candidates as (
 
     select address_key, complaint_type, created_date
@@ -71,8 +50,8 @@ candidates as (
 
 ),
 
--- Only closed tickets can be assessed: an open ticket has not been resolved,
--- so a later complaint is not evidence about a resolution.
+-- Only closed tickets are assessed: a later complaint says nothing about a
+-- resolution that has not happened.
 closed as (
 
     select *
@@ -82,26 +61,10 @@ closed as (
 
 ),
 
--- The horizon against which observation time is measured: the newest day the
--- source has published IN FULL.
---
--- It used to be max(created_date) over the load, and that was wrong in a way
--- that survived review because it looks obviously right. The source publishes
--- on a ~23.5h lag, so the newest created_date is NEVER a whole day — it is the
--- first two hours of one (358, 372, 382, 832 rows measured, against a ~10,500
--- median). Measuring observation time against it credited every closure with
--- up to a full extra day it never had, and the error was differential across
--- closure_type, which is the dimension this table exists to compare.
---
--- The completeness rule lives in int_load_completeness, once, because
--- fct_daily_volume needs the same concept for its per-day figures. MAX over
--- complete days rather than MAX over days is also what makes a multi-day gap
--- safe: the 2026-08-18 upstream stall (docs/postmortems/) left two trailing
--- days unusable, and nothing here needs to know that.
---
--- NULL is possible — a load holding less than one complete day has no honest
--- horizon — and it is deliberately NOT defaulted to anything. See the
--- observation_days expression below for what happens then.
+-- The horizon is the newest COMPLETE day from int_load_completeness, not
+-- max(created_date): the newest loaded day is always partial, and measuring
+-- against it would credit every closure with time it never had. NULL when no
+-- loaded day is complete, and deliberately not defaulted.
 horizon as (
 
     select max(load_day) as last_complete_date
@@ -122,10 +85,9 @@ with_next as (
         c.created_date,
         c.closed_date,
 
-        -- Days until the next same-address, same-type complaint was filed after
-        -- this one closed. NULL means none was observed inside the bounded
-        -- window — which is NOT the same as "the problem was fixed"; read it
-        -- together with observation_days.
+        -- Days until the next same-address, same-type complaint after this
+        -- closure. NULL means none was seen within the bounded window, which is
+        -- not the same as "fixed"; read it with observation_days.
         min(
             datediff('day', cast(c.closed_date as date), cast(n.created_date as date))
         )                                                                       as days_to_next_same_complaint
@@ -146,7 +108,7 @@ with_next as (
 
 ),
 
--- Ticket volume per (address, complaint type) across the loaded window.
+-- Tickets per (address, complaint type) in the loaded window.
 location_volume as (
 
     select address_key, complaint_type, count(*) as location_ticket_count
@@ -168,37 +130,14 @@ final as (
         w.closed_date,
         w.days_to_next_same_complaint,
 
-        -- How many days of COMPLETELY PUBLISHED history follow this closure. A
-        -- rate computed over window N is only honest across rows where this is
-        -- >= N, and that guarantee is only as good as the horizon: under the
-        -- old max(created_date) horizon a row reading 3 had really had ~2.04
-        -- days, because the newest loaded day contributed ~2 hours.
-        --
-        -- Floored at zero, and the floor is load-bearing rather than cosmetic.
-        -- Any bounded load contains requests closed after the horizon — the
-        -- city keeps closing tickets during the ~23.5h the newest day has not
-        -- finished publishing — and the raw difference is then negative, which
-        -- is not a meaning this column has: "days of published history
-        -- following this closure" bottoms out at none. Zero is also the correct
-        -- value for the consumer contract, since `observation_days >= N`
-        -- excludes these rows from every window, exactly as right-censoring
-        -- requires.
-        --
-        -- The floor is NOT a licence to floor everything, which is precisely
-        -- what a broken horizon would do, silently and invisibly to a `>= 0`
-        -- test. assert_observation_days_floor_is_explained.sql requires every
-        -- floored row to be a row that closed on or after the last complete
-        -- day, and assert_recurrence_horizon_is_last_complete_day.sql recovers
-        -- the horizon back out of this column and compares it to
-        -- int_load_completeness.
-        --
-        -- The NULL horizon case is explicit rather than left to GREATEST, whose
-        -- NULL handling differs by warehouse: Snowflake returns NULL from
-        -- GREATEST(0, NULL) while DuckDB returns 0. Relying on that would make
-        -- "we have no complete day" a loud failure on one engine and a table
-        -- full of silent zeros on the other. Written out, both engines produce
-        -- NULL, the not_null test reddens the build, and nobody consumes a
-        -- fabricated horizon.
+        -- Complete days of published history after this closure, floored at
+        -- zero: rows closed after the horizon have had no observed time, and
+        -- `observation_days >= N` then excludes them as it should.
+        -- assert_observation_days_floor_is_explained and
+        -- assert_recurrence_horizon_is_last_complete_day catch a horizon that
+        -- is too far back or too far forward. The NULL case is explicit because
+        -- GREATEST(0, NULL) is NULL on Snowflake but 0 on DuckDB; NULL fails
+        -- the not_null test instead of filling the table with zeros.
         case
             when h.last_complete_date is null then null
             else greatest(
@@ -209,10 +148,7 @@ final as (
 
         v.location_ticket_count,
 
-        -- Chronic locations recur regardless of how any single ticket was
-        -- closed. Threshold is deliberately low and deliberately a var: at one
-        -- week of history 5 tickets at one address is already exceptional, and
-        -- the right cut changes as history deepens.
+        -- A var because the right cut changes with how much history is loaded.
         case
             when v.location_ticket_count >= {{ var('chronic_location_min_tickets') }}
                 then true

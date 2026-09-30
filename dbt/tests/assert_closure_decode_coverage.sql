@@ -1,27 +1,15 @@
--- Closure-decode coverage guard.
+-- Fails when more than 12% of rows with resolution text are 'Undecodable'.
 --
--- closure_type is read out of free text, so it has a failure mode the complaint
--- taxonomy does not: the source can rewrite a template overnight and every rule
--- that matched it stops matching, silently. The rows do not disappear — they
--- move into the catch-all, is_actioned turns FALSE for all of them, and every
--- action rate steps down without anything going red.
+-- closure_type is read from free text, so a template the source rewrites
+-- overnight stops matching silently: its rows move to 'Undecodable', turn
+-- is_actioned FALSE, and every action rate drops with nothing going red.
 --
--- That is not hypothetical. Until this pass the catch-all was named
--- 'Unspecified' and ALSO held the rows with no resolution text at all, so a
--- decoder miss and a silent source were one number and neither could be
--- measured. Splitting them made the miss visible: 8,330 rows on the local load,
--- 7.34% of every row that carried resolution text.
+-- Denominator: rows that carry resolution text, the rows the rules actually
+-- read. Rows with no text would inflate it and hide a rules regression.
 --
--- DENOMINATOR: rows that carry resolution text. Not all rows — a request with
--- no resolution_description gave the decoder nothing to fail at, and including
--- it would let a flood of empty text mask a rules regression by inflating the
--- denominator. This is the population the rules were actually applied to.
---
--- THRESHOLD 12%, against 7.34% measured. Deliberately loose: this is a
--- regression alarm for a template change or a deleted rule, not a precision
--- target, and the honest reading of the current 7.34% is that the rules have
--- real ground to make up. Tightening it as the rules improve is the intended
--- direction; raising it needs evidence, and never to silence a red build.
+-- 12% is a loose regression alarm (about 7% at the time it was set), not a
+-- precision target. Tighten it as the rules improve; never raise it to
+-- silence a failure.
 
 with population as (
 

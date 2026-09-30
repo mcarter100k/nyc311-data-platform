@@ -1,6 +1,6 @@
 # ADR 004: Medallion Architecture vs. Alternative Ingestion Patterns
 
-**Status:** Accepted
+**Status:** Accepted. The Bronze/Silver tooling is superseded by [ADR 014](014-transform-before-load.md) (see the end).
 **Date:** 2026-05-27
 
 ## Context
@@ -125,3 +125,26 @@ reads from this schema under the TRANSFORMER role. If the handoff mechanism chan
 (e.g. replacing the connector with Snowpipe ingest from ADLS directly), only the Silver
 job changes — dbt models are unaffected because they read from a stable schema contract,
 not from a file path. This decoupling is intentional.
+
+
+---
+
+## Amendment 2026-09-29 — the layers stay, the tools changed
+
+Databricks was removed on 2026-08-20, so the tool column of the table above no
+longer describes the system. The layering decision stands: Bronze holds the raw
+data, Silver cleans it, Gold applies business logic. What implements each layer
+now:
+
+| Layer  | Implementation |
+|--------|----------------|
+| Bronze | the raw JSON file from the fetch, exposed as a DuckDB view ([ADR 014](014-transform-before-load.md)) |
+| Silver | a pandas transform (`local/silver_transformations.py`) loaded into DuckDB |
+| Gold   | dbt, against DuckDB daily; Snowflake is specified, not provisioned |
+
+Two reasons above no longer hold. Rejecting pure ELT partly to showcase
+Databricks is moot now that Databricks is gone; the debugging-checkpoint reason
+still holds. And Bronze is not append-only or immutable: the raw file is
+overwritten every run, so replay from Bronze covers only the current fetch
+window. The role-based layer enforcement described above exists only in the
+Snowflake Terraform.

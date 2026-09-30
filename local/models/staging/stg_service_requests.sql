@@ -1,3 +1,8 @@
+-- Rename and retype SILVER.service_requests, one row per Silver row, no
+-- business logic. The only model that reads the source, so an upstream rename
+-- or type change is absorbed here. Rules about meaning go in
+-- int_service_requests_cleaned.
+
 with source as (
 
     select * from {{ source('silver', 'service_requests') }}
@@ -11,7 +16,7 @@ renamed as (
         unique_key::varchar                                                     as unique_key,
         {{ dbt_utils.generate_surrogate_key(['unique_key']) }}                  as service_request_id,
 
-        -- ── Timestamps (TIMESTAMP instead of TIMESTAMP_NTZ — DuckDB compat) ─
+        -- ── Timestamps ───────────────────────────────────────────────────────
         created_date::timestamp                                                 as created_date,
         closed_date::timestamp                                                  as closed_date,
         resolution_action_updated_date::timestamp                               as resolution_action_updated_date,
@@ -41,7 +46,10 @@ renamed as (
 
         -- ── Metadata ─────────────────────────────────────────────────────────
         open_data_channel_type::varchar                                         as channel_type,
-        _silver_timestamp::timestamp                                            as _loaded_at,
+        -- Silver's write time, not dbt's: the fct_service_requests watermark.
+        _silver_timestamp::timestamp                                             as _loaded_at,
+
+        -- See schema_version in dbt_project.yml.
         '{{ var("schema_version") }}'::varchar                                  as schema_version
 
     from source

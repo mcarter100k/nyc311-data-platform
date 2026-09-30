@@ -1,32 +1,18 @@
-# terraform/main.tf
+# Root module for the Snowflake foundation. Written and validated in CI, never
+# applied (applying needs a paid Snowflake account).
 #
-# Root Terraform configuration for the NYC 311 Data Platform.
-# Declares required providers with explicit version pins and wires together
-# the snowflake-foundation child module.
-#
-# Authentication — credentials are never stored in .tf files.
-# Pass them via environment variables before running terraform plan/apply:
-#
-#   Snowflake:
-#     SNOWFLAKE_ACCOUNT    — account identifier in org-account format (e.g. MYORG-MYACCOUNT)
-#     SNOWFLAKE_USER       — service user with SYSADMIN role
-#     SNOWFLAKE_PASSWORD   — password (or use SNOWFLAKE_PRIVATE_KEY + SNOWFLAKE_PRIVATE_KEY_PASSPHRASE)
-#
-#   Azure (remote state backend only — see backend.tf):
-#     ARM_CLIENT_ID        — service principal app ID
-#     ARM_CLIENT_SECRET    — service principal secret
-#     ARM_TENANT_ID        — Azure AD tenant
-#     ARM_SUBSCRIPTION_ID  — target subscription
-#     ARM_ACCESS_KEY       — storage account key for backend state locking
+# Credentials come from environment variables, never .tf files:
+#   SNOWFLAKE_ACCOUNT    account identifier, org-account format (MYORG-MYACCOUNT)
+#   SNOWFLAKE_USER       service user with the SYSADMIN role
+#   SNOWFLAKE_PASSWORD   or SNOWFLAKE_PRIVATE_KEY + SNOWFLAKE_PRIVATE_KEY_PASSPHRASE
+#   ARM_ACCESS_KEY       storage account key for the state backend (backend.tf)
 
 terraform {
   required_version = ">= 1.6.0"
 
   required_providers {
-    # terraform-provider-snowflake underwent a major API rewrite starting at v0.87.
-    # Pinned to ~> 0.89 (post-rewrite stable series) to avoid both the pre-rewrite
-    # deprecated resources and the further breaking changes introduced in 0.90+.
-    # Re-evaluate this pin before upgrading; review the provider changelog carefully.
+    # 0.89.x: after the provider's 0.87 rewrite, before the breaking changes in
+    # 0.90+. Read the changelog before moving this pin.
     snowflake = {
       source  = "Snowflake-Labs/snowflake"
       version = "~> 0.89.0"
@@ -35,18 +21,12 @@ terraform {
 }
 
 provider "snowflake" {
-  # Account identifier and user credentials are sourced from environment variables
-  # (SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PASSWORD / SNOWFLAKE_PRIVATE_KEY).
-  # SYSADMIN is used for provisioning; application roles (LOADER, TRANSFORMER, REPORTER)
-  # are created by this configuration and assigned to service users separately.
+  # SYSADMIN provisions; the LOADER, TRANSFORMER and REPORTER roles it creates
+  # are assigned to service users separately.
   role = var.snowflake_role
 }
 
-# ---------------------------------------------------------------------------
-# snowflake-foundation module
-# Provisions database, schemas, warehouse, roles, and all grants.
-# ---------------------------------------------------------------------------
-
+# Database, schemas, warehouse, roles and grants.
 module "snowflake_foundation" {
   source = "./modules/snowflake-foundation"
 
@@ -55,9 +35,3 @@ module "snowflake_foundation" {
   warehouse_size       = var.warehouse_size
   auto_suspend_seconds = var.auto_suspend_seconds
 }
-
-#
-#   environment         = var.environment
-#   resource_group_name = var.resource_group_name
-#   location            = var.azure_location
-# }

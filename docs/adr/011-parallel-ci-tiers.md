@@ -1,6 +1,6 @@
 # ADR 011: Three Parallel CI Tiers as Independent Required Checks
 
-**Status:** Accepted
+**Status:** Accepted. Amended 2026-08-20 and 2026-09-29 (see the end).
 **Date:** 2026-08-18
 
 ## Context
@@ -93,3 +93,24 @@ deployment that never existed. Three parallel required checks, unchanged in
 shape — fast-gate, unit, behavioral-duckdb — and the tier no longer needs a JVM,
 so it is faster and has one less moving part. The zero-skip enforcement that
 makes the tier meaningful is unchanged.
+
+## Amendment 2026-09-29 — CI as it stands
+
+- **Actions are SHA-pinned.** Every `uses:` names a full commit SHA, with the
+  version in a comment, and Dependabot's `github-actions` entry bumps them.
+  actionlint, which Dependabot does not track, is pinned by version and sha256
+  in `ci.yml`.
+- **Pins live in the requirements files, not the workflow**: `dbt/requirements.txt`
+  (dbt-core 1.12.5, dbt-snowflake 1.12.1), `local/requirements.txt` (dbt-core
+  1.12.5, dbt-duckdb 1.11.0, pandas 3.0.6), `tests/unit/requirements.txt` and
+  `requirements-dev.txt`. The pyspark and `dbt-duckdb==1.7.4` pins above are
+  gone.
+- **One Dependabot pip entry covers all four requirements roots**, so a minor
+  or patch bump to a package pinned in two files lands in both in one grouped
+  PR.
+- **Zero skips everywhere.** All three required jobs (`fast-gate`, `unit`,
+  `behavioral-duckdb`) write a junit report and fail unless at least one test
+  ran and none skipped. fast-gate also runs ruff.
+- **Two checks that are not required.** `front-door` (in `ci.yml`) runs
+  `./run_tests.sh` from a clean checkout. `terraform.yml` runs `terraform fmt`
+  and `validate` on both root modules.

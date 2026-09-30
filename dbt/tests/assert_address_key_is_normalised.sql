@@ -1,13 +1,6 @@
--- Guards address_key normalisation against a SILENT no-op.
---
--- The first attempt at this used '\\s+' as the pattern. In SQL that is a
--- literal backslash followed by 's+', so it matched nothing — and a regex that
--- matches nothing raises no error. The build passed, the column looked right,
--- and 475 rows kept their double spaces. Nothing failed; the fix simply had no
--- effect.
---
--- That is the failure mode this test exists for. A normalisation step that
--- can silently do nothing needs an assertion on its OUTPUT, not on its code.
+-- address_key must have no run of 2+ spaces and no leading/trailing space.
+-- Asserts on the output, not the code: a regex that matches nothing (e.g. a
+-- mis-escaped '\\s+') raises no error and silently normalises nothing.
 
 select
     service_request_id,

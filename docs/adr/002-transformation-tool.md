@@ -1,6 +1,6 @@
 # ADR 002: Transformation Tool Selection
 
-**Status:** Accepted
+**Status:** Accepted. Amended 2026-08-20 and 2026-09-29: the PySpark side was removed, and dbt runs against DuckDB (see the end).
 **Date:** 2026-05-27
 
 ## Context
@@ -99,12 +99,12 @@ Violating this contract by pushing business logic into Databricks notebooks that
 directly to Gold schema bypasses the dbt test framework and breaks the lineage graph.
 
 **Orchestration of `dbt run` is delegated to Airflow.** dbt Core has no built-in scheduler.
-The Airflow DAG (`airflow/dags/nyc311_pipeline.py`) invokes `dbt run --target prod` via
-BashOperator after the Databricks Silver job completes successfully. This dependency is
+The cloud Airflow DAG (`nyc311_pipeline.py`, since deleted) invoked `dbt run --target prod` via
+BashOperator after the Databricks Silver job completed successfully. This dependency is
 enforced at the DAG level, not by dbt (see ADR 005).
 
 **The `dbt test` step is a blocking gate in CI.** Schema tests (`unique`, `not_null`,
-`relationships`) and the singular test (`assert_resolution_days_nonnegative`) run as part
+`relationships`) and the singular tests in `dbt/tests/` run as part
 of every CI pipeline. A failing test blocks the merge. This is the data quality contract
 between the transformation layer and any downstream consumer.
 
@@ -126,3 +126,11 @@ that never ran and by its own tests — while the pandas transform that runs
 daily had no unit tests at all. The decision recorded here still holds; the
 alternative it was weighed against no longer exists in the repo. Silver logic
 now lives in `local/silver_transformations.py`, and the tests moved onto it.
+
+*Added 2026-09-29.* dbt runs through `local/local_runner.py` against DuckDB:
+every day from `.github/workflows/daily-run.yml` (ADR 010), and on demand from
+the local Airflow DAG `airflow/dags/nyc311_local.py`. The `local/` project
+mirrors `dbt/` and differs only in dialect lines
+(`scripts/check_model_drift.py` enforces this). In CI, `fast-gate` parses the
+Snowflake project and `behavioral-duckdb` builds and tests the DuckDB mirror.
+The Snowflake target is never run.

@@ -2,13 +2,8 @@
 """
 Source-to-target reconciliation for the local NYC 311 pipeline.
 
-Answers the question the test suite cannot: does the Gold layer agree with
-REALITY, not just with itself? Tests verify the pipeline is internally
-consistent; this tool verifies it is faithful to the source. (It exists
-because a run with 102 green tests still carried a 4-hour timestamp shift —
-caught only by the checks below.)
-
-Three rungs, weakest to strongest:
+Tests check that the pipeline agrees with itself; this checks that Gold agrees
+with the source. Three rungs, weakest to strongest:
 
   1. CONSERVATION   — every ingested record is accounted for across layers:
                       raw = bronze, silver = deduped - quarantined,
@@ -26,7 +21,7 @@ Run immediately after a pipeline run, from the repo root or local/:
     python local/reconcile.py            # exit 0 = reconciled, 1 = mismatch
 
 The resolution-days definition is calendar-day difference (date boundaries
-crossed), matching datediff('day', ...) in the dbt models and the cloud spec.
+crossed), matching datediff('day', ...) in the dbt models.
 """
 
 import json
@@ -40,22 +35,12 @@ import duckdb
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent))
-from local_runner import DUCKDB_PATH, RAW_FILE, SOCRATA_ENDPOINT
-
-# BOROUGH_MAP comes from its owner, not second-hand via local_runner. The
-# re-export made local_runner's import list read as if it used the map itself.
+from ingest_config import SOCRATA_URL
+from local_runner import DUCKDB_PATH, RAW_FILE, _get_with_retry, raw_ingest_timestamp
 from silver_transformations import BOROUGH_MAP
 
-# Socrata is not read-consistent (see the rung-3 comment). Point lookups are
-# probed until one succeeds; absence is only reported when every probe agrees.
-#
-# Ten, not four. Four was the first guess and it was measurably too few: on
-# 2026-08-26 a key that demonstrably exists (70178973, created 16:43, status
-# In Progress) was found on only 8 of 15 probes — a ~47% per-probe miss rate.
-# At four probes that is 0.47^4 ≈ 5% false failure per key, and with three keys
-# sampled per run roughly one reconcile in seven would go red for no reason.
-# Ten puts it near 0.05% per key. Found because the check failed on a healthy
-# database and the failure was investigated rather than retried away.
+# A key that exists was missed on ~47% of single probes (measured 2026-08-26),
+# so 10 probes keep false alarms near 0.05% per key.
 SOURCE_PROBES      = 10
 SOURCE_PROBE_PAUSE = 0.6
 
@@ -79,8 +64,8 @@ def std_borough(raw_value):
     return BOROUGH_MAP.get(str(raw_value or "").strip().upper(), "UNSPECIFIED")
 
 
-# Every relation the three rungs below read. Listed in build order so the
-# message names the earliest missing layer first.
+# Every relation the three rungs below read, in build order so the message
+# names the earliest missing layer first.
 REQUIRED_RELATIONS = [
     ("bronze", "service_requests"),
     ("silver", "service_requests"),
@@ -112,13 +97,10 @@ def main() -> int:
     raw = json.load(open(RAW_FILE))
     con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
 
-    # Preflight. Reconciliation reads Bronze, Silver AND Gold, but Gold is
-    # built last (stage 4, `dbt build`) — so the database most likely to be
-    # sitting on disk when someone runs this is one from a run that FAILED at
-    # dbt. Querying it raised a raw CatalogException ("Table with name
-    # fct_service_requests does not exist!"), which reads as a bug in this tool
-    # rather than as "your pipeline did not finish". Name the missing layer and
-    # the command that builds it instead.
+    def one(q):
+        return con.sql(q).fetchone()[0]
+
+    # Preflight: a database left by a run that failed in dbt has no Gold.
     missing = _missing_tables(con)
     if missing:
         print("Cannot reconcile — the pipeline has not finished building.")
@@ -130,16 +112,17 @@ def main() -> int:
         print("      python local/reconcile.py")
         return 1
 
-    def one(q):
-        return con.sql(q).fetchone()[0]
+    # Preflight: a raw file newer than Silver would show up as data mismatches.
+    if one("SELECT max(_ingest_timestamp) FROM silver.service_requests") != raw_ingest_timestamp():
+        print("Cannot reconcile — the raw file changed after Silver was built.")
+        print("  Rebuild stages 2-5 from the current raw file, then re-run this check:")
+        print("      python local/local_runner.py --stage 2")
+        print("      python local/reconcile.py")
+        return 1
 
-    # Deduplicate the raw records the same way Silver does (one row per
-    # unique_key) so the independent recompute covers the same population.
-    by_key = {}
-    for r in raw:
-        k = r.get("unique_key")
-        if k is not None and k not in by_key:
-            by_key[k] = r
+    # One row per unique_key, last copy wins, as in Silver (every row of a run
+    # shares one ingest timestamp, so the later fetch wins the tie).
+    by_key = {r["unique_key"]: r for r in raw if r.get("unique_key") is not None}
 
     print("── Rung 1: conservation across layers ──────────────────────────")
     n_bronze = one("SELECT count(*) FROM bronze.service_requests")
@@ -161,15 +144,8 @@ def main() -> int:
           n_silver == len(by_key) - quarantined,
           f"{n_silver:,} vs {len(by_key):,} - {quarantined}")
 
-    # Gold is INCREMENTAL and accumulates; Silver is rebuilt from the current
-    # fetch window every run. Once the window advances past a previously loaded
-    # day, gold > silver permanently — by design, and the whole point of
-    # keeping history for fct_complaint_recurrence.
-    #
-    # `gold fact = silver` was asserted here for months and only ever passed
-    # because every build was either full-refresh or inside one window. The
-    # first live run after the window moved failed it: 83,622 vs 62,557. The
-    # equality was never the invariant; these two are.
+    # Gold accumulates history; Silver holds only the current window. So check
+    # containment, and equality inside the window, not total equality.
     window_lo, window_hi = con.sql(
         "SELECT min(cast(created_date AS date)), max(cast(created_date AS date)) "
         "FROM silver.service_requests"
@@ -185,19 +161,14 @@ def main() -> int:
     )
     check("gold contains every silver row", n_missing == 0, f"{n_missing:,} missing")
 
-    # Inside the window the two should agree. A surplus here is Gold still
-    # holding a row Silver has since rejected: quarantine is applied in Silver
-    # BEFORE dbt sees anything, so the fact table's reconciliation post_hook
-    # (which deletes rows present in staging but absent from int) is
-    # structurally unable to see them. Reported with its cause rather than
-    # asserted to zero, because the surplus is real and currently unfixable
-    # from inside dbt.
-    surplus = n_gold_window - n_silver
+    # Inside the window Gold and Silver must match exactly: rows Silver
+    # quarantines are deleted from Gold by fct_service_requests' stg_quarantine
+    # post_hook.
     check("gold within the fetch window = silver",
-          surplus == 0,
+          n_gold_window == n_silver,
           f"{n_gold_window:,} vs {n_silver:,}"
-          + (f"  (+{surplus} retained from an earlier run, now quarantined in Silver "
-             f"— see docs/BACKLOG.md)" if surplus else ""))
+          + (" — Gold has extra rows: usually requests the source deleted, "
+             "which Gold keeps" if n_gold_window > n_silver else ""))
 
     n_gold_history = n_fct - n_gold_window
     print(f"  · gold retains {n_gold_history:,} rows older than the window "
@@ -211,12 +182,7 @@ def main() -> int:
         "SELECT unique_key FROM gold.fct_service_requests").fetchall()}
     src = {k: r for k, r in by_key.items() if k in gold_keys}
 
-    # Every Gold aggregate below must be scoped to the SAME rows `src` holds.
-    # `src` is already raw ∩ gold — the current fetch window — but the Gold side
-    # was being aggregated over the whole table, which includes every earlier
-    # window Gold has accumulated. That compared 7 days of raw against 9 days of
-    # Gold and reported a data-integrity failure (39,291 vs 53,870) for what was
-    # only a difference in scope.
+    # Scope every Gold aggregate to the raw file's keys, the same rows src holds.
     IN_SCOPE = (f"f.unique_key IN (SELECT unique_key FROM "
                 f"read_json_auto('{str(RAW_FILE)}'))")
 
@@ -263,32 +229,23 @@ def main() -> int:
     check("created_date exact-timestamp match", ts_bad == 0,
           f"{ts_bad} of {len(src):,} differ" if ts_bad else f"all {len(src):,} rows")
 
+
     print("── Rung 3: live spot-check against the source API ──────────────")
     try:
         sample = [r[0] for r in con.sql(
             "SELECT unique_key FROM gold.fct_service_requests USING SAMPLE 3").fetchall()]
-        # A miss is only believable if it repeats.
-        #
-        # Socrata is NOT read-consistent: identical queries are answered by
-        # replicas at different indexing states. Measured 2026-08-26, the same
-        # point lookup repeated four times returned [0, 0, 1] and [0, 1, 0] for
-        # keys that demonstrably exist, and `max(created_date)` disagreed with
-        # `$order=created_date DESC LIMIT 1` on three of five identical calls.
-        #
-        # A single empty response therefore proves nothing, and this rung used to
-        # treat it as a hard failure — so the strongest check in the repo could
-        # go red because of which replica answered the phone. Existence is a
-        # MAXIMUM over replicas: a row visible on ANY of them exists.
-        #
-        # Absence is only reported after every probe agrees, which is a stronger
-        # claim than the original made. Retries are printed rather than hidden:
-        # needing them is a fact about the source, and smoothing it away would
-        # repeat the mistake this whole reconciliation exists to prevent.
+
+        # Socrata replicas disagree; a row seen on ANY probe exists. Absence is
+        # reported only after every probe misses.
         def _lookup(key):
             for probe in range(1, SOURCE_PROBES + 1):
-                rows = requests.get(SOCRATA_ENDPOINT,
-                                    params={"$where": f"unique_key='{key}'"},
-                                    timeout=30).json()
+                try:
+                    resp = _get_with_retry(requests.get, SOCRATA_URL,
+                                           params={"$where": f"unique_key='{key}'"},
+                                           timeout=30, what=f"reconcile lookup {key}")
+                except RuntimeError as exc:        # retries exhausted
+                    raise requests.ConnectionError(str(exc)) from exc
+                rows = resp.json()
                 if rows:
                     return rows[0], probe
                 if probe < SOURCE_PROBES:
@@ -315,18 +272,11 @@ def main() -> int:
                     and ours[2] == parse_ts(a.get("created_date")))
             check(f"unique_key {k} matches source", same,
                   "" if same else f"gold={ours} api={a.get('complaint_type'), a.get('borough'), a.get('created_date')}")
-        # Note: mutable fields (status, closed_date) are deliberately excluded —
-        # the source may legitimately have newer values than our snapshot.
-    except requests.RequestException as exc:
-        # ONLY a network fault is a skip. This handler was `except Exception`,
-        # which reported every failure as "network unavailable" — so a real data
-        # defect (a fact row whose location_id has no dim_location match makes
-        # `ours` None and raises TypeError) was indistinguishable from an offline
-        # laptop, and both exited 0.
-        #
-        # Not hypothetical: while fixing this rung, a NameError of mine was
-        # swallowed and printed as a network skip. The check that exists to stop
-        # silence from looking like success was hiding its own breakage.
+        # Mutable fields (status, closed_date) are excluded: the source may
+        # legitimately be newer than our snapshot.
+    except (requests.ConnectionError, requests.Timeout) as exc:
+        # Only an unreachable source (or exhausted retries) is a skip. A 4xx or
+        # an unreadable response is a real failure.
         print(f"  ~ skipped (network unavailable: {type(exc).__name__}) — rungs 1–2 stand alone")
     except Exception as exc:
         check("rung 3 completed", False,

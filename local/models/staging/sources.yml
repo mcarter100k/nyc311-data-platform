@@ -2,39 +2,84 @@ version: 2
 
 sources:
   - name: silver
+    description: >
+      Deduplicated, typed tables written by the Silver step
+      (local/silver_transformations.py). DuckDB receives them directly. On
+      Snowflake the loader is an open decision (ADR 008), and it must land rows
+      within one hour of their _silver_timestamp or the fct_service_requests
+      watermark skips them.
     database: nyc311_local
     schema: silver
+
     tables:
       - name: service_requests
+        description: >
+          One row per NYC 311 service request in the current fetch window,
+          deduplicated on unique_key. Columns follow the Socrata export, with
+          timestamps typed and strings left as text.
+        config:
+          loaded_at_field: _silver_timestamp
+          freshness:
+            warn_after:  {count: 24, period: hour}
+            error_after: {count: 48, period: hour}
         columns:
           - name: unique_key
+            description: "Natural key from NYC Open Data. Numeric string, unique per service request."
             tests:
               - unique
               - not_null
           - name: created_date
+            description: "Timestamp when the service request was submitted to 311."
             tests:
               - not_null
-          # Parity with dbt/models/staging/sources.yml: same source contract
-          # columns tested on both sides. Freshness is not configured here —
-          # local freshness is enforced by SLO-1 (scripts/slo/slo1_freshness.sql)
-          # on every scheduled run instead of `dbt source freshness`.
+          - name: closed_date
+            description: "Timestamp when the request was resolved. NULL for open/pending requests."
           - name: agency
+            description: "Agency abbreviation (e.g. NYPD, DOT, DSNY, DEP)."
             tests:
               - not_null
+          - name: agency_name
+            description: "Full agency name corresponding to the abbreviation."
           - name: complaint_type
+            description: "Primary category of the complaint as classified by the 311 operator."
             tests:
               - not_null
+          - name: descriptor
+            description: "Sub-category providing additional complaint detail."
+          - name: location_type
+            description: "Type of location (e.g. Residential Building/House, Street/Sidewalk)."
+          - name: incident_zip
+            description: "5-digit ZIP code of the incident address."
+          - name: incident_address
+            description: "Street address of the incident."
+          - name: street_name
+            description: "Street name component of the incident address."
+          - name: city
+            description: "City component of the incident address (often the borough name)."
+          - name: borough
+            description: "NYC borough. Raw string — may contain variants (BROOKLYN, Brooklyn, BK)."
+          - name: community_board
+            description: "Community board number in 'NN BOROUGH' format (e.g. '01 BROOKLYN')."
+          - name: latitude
+            description: "WGS84 latitude. NULL where the address was not geocodable."
+          - name: longitude
+            description: "WGS84 longitude. NULL where latitude is NULL."
+          - name: status
+            description: "Current status of the service request."
+          - name: resolution_description
+            description: "Free-text description of how the request was resolved."
+          - name: resolution_action_updated_date
+            description: "Last timestamp at which the resolution action was updated."
+          - name: open_data_channel_type
+            description: "Submission channel (PHONE, ONLINE, MOBILE, OTHER)."
+
       - name: quarantine
         description: >
-          Rows the Silver transform rejected this run, retained rather than
-          discarded. Quarantine happens in pandas before dbt sees anything, so
-          without this table a row loaded by an earlier run and rejected by a
-          later one stays in Gold forever: the fact table's reconciliation
-          post_hook can only see rows that reached staging, and a quarantined
-          row never does. Replaced every run, never appended — it means "rejected
-          by the CURRENT fetch". A growing history would be actively wrong, since
-          a row the city later corrects must stop being listed or the post_hook
-          would delete a valid row from Gold on every subsequent run.
+          Rows the Silver step rejected on the current run. They never reach
+          staging, so fct_service_requests reads this table to delete any copy
+          an earlier run loaded. Replaced every run, never appended: once the
+          city corrects a row it must stop being listed, or the delete would
+          keep removing a valid row.
         columns:
           - name: unique_key
             description: "Natural key of the rejected request; the join key the post_hook deletes on."
@@ -45,11 +90,22 @@ sources:
             description: "Why the row was rejected. 'negative_resolution_days' is the only value today."
             tests:
               - not_null
+
       - name: data_quality_log
+        description: >
+          One row per (run_date, check_name). Appended by the Silver step after
+          it writes silver.service_requests; re-running a day replaces that
+          day's rows. Read by fct_data_quality.
         columns:
           - name: run_date
-            tests:
-              - not_null
+            description: "UTC date of the pipeline run (YYYY-MM-DD string)."
           - name: check_name
-            tests:
-              - not_null
+            description: "Identifier for the quality check (e.g. null_rate_unique_key, duplicate_rate)."
+          - name: records_checked
+            description: "Number of records in scope for this check."
+          - name: records_failed
+            description: "Number of records that failed this check."
+          - name: failure_rate
+            description: "records_failed / records_checked. Range 0.0–1.0."
+          - name: pipeline_stage
+            description: "Always 'silver' for records written by the Silver transform."

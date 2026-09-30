@@ -1,21 +1,8 @@
 """
-Import health for the modules in local/ — the code that actually runs daily.
-
-Why this tier and not the structural one. The check has to be a *real* import
-to be worth anything, and importing these modules pulls pandas, duckdb and
-requests. The structural tier is deliberately dependency-light (it installs dbt
-and pytest, nothing else) so it can stay a seconds-long gate; this tier already
-installs local/requirements.txt, so the real thing runs here for free.
-
-Why it exists at all. A cleanup deleted an import from local_runner that ruff
-reported as unused. It *was* unused there — but reconcile.py imported it FROM
-local_runner as a re-export, so reconcile broke at its import line, and the
-entire 93-test suite stayed green, because nothing in it imports reconcile.
-
-A pipeline module that cannot be imported is broken regardless of what it
-contains, and that was untested. Re-exports make it worse than it sounds: the
-name a linter sees as dead in one module can be another module's only source
-for it, and neither file reads as wrong on its own.
+Every module in local/ must import. A name ruff reports as unused in one module
+can be another module's import (reconcile.py imports from local_runner), and
+nothing else in the suite imports reconcile. Lives in this tier because the
+imports need pandas, duckdb and requests.
 """
 
 import importlib
@@ -27,9 +14,8 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LOCAL_DIR = os.path.join(ROOT, "local")
 
-# Every module in local/. Listed explicitly rather than globbed so that adding a
-# module is a deliberate act that shows up in review, and so a file disappearing
-# fails loudly here instead of silently shrinking the parametrisation.
+# Listed, not globbed, so a module disappearing fails the next test instead of
+# silently shrinking the parametrisation.
 LOCAL_MODULES = [
     "dbt_exec",
     "ingest_config",
