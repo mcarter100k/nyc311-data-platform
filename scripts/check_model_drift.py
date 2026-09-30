@@ -1,28 +1,20 @@
 #!/usr/bin/env python3
 """
-check_model_drift.py — CI guard for the dbt/ ↔ local/ model mirror.
+check_model_drift.py: CI guard for the dbt/ (Snowflake) and local/ (DuckDB)
+copies of the dbt project.
 
-local/ is a hand-synced DuckDB mirror of the Snowflake dbt project — the
-duplication that makes the behavioral test tier possible, and the same
-numbers-in-two-places hazard the README markers solved for counts: edit one
-side, forget the other, and nothing notices.
+Comments and code are meant to be identical on both sides. The only
+differences allowed are SQL dialect lines (e.g. dayofweekiso vs isodow, merge
+vs delete+insert) and files that exist on one side only; those are recorded in
+model_drift_baseline.json. This script recomputes the differences and fails
+when they no longer match, i.e. when one side was edited without the other.
 
-Same remedy as scripts/check_claims.py — a single machine-readable source of
-truth plus a CI check. Every INTENTIONAL divergence between the two projects
-(dialect differences: dayofweekiso vs isodow, merge vs delete+insert, files
-that exist on one side only) is registered in model_drift_baseline.json.
-This script recomputes the actual divergence and fails when it no longer
-matches the register — i.e., when someone changed one side without the
-other, or changed both sides in a way that alters the registered dialect gap.
-
-The comparison is content-only (the +/- lines of a unified diff, no hunk
-headers), so editing BOTH sides identically shifts nothing, while any
-one-sided edit changes the divergence and fails the build.
+The comparison uses only the +/- lines of a diff (no line numbers), so an
+identical edit on both sides changes nothing.
 
 Run:    python scripts/check_model_drift.py            # verify
-        python scripts/check_model_drift.py --update   # re-register after an
+        python scripts/check_model_drift.py --update   # re-record after an
                                                        # intentional change
-                                                       # (reviewed like any diff)
 """
 
 import difflib
@@ -34,14 +26,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASELINE = os.path.join(ROOT, "scripts", "model_drift_baseline.json")
 
 # Mirrored trees, relative to dbt/ and local/ respectively.
-# "tests" is included so one-sided edits to the singular Gold-integrity tests
-# are caught — they were invisible to this gate before (found in audit).
 SUBDIRS = ("models", "snapshots", "macros", "tests")
 EXTS = (".sql", ".yml")
 
-# Project-root files mirrored by relative name. Covers materialization
-# configs, vars, and package version pins — a one-sided change to any of
-# these diverges the projects just as surely as a model edit.
+# Project-root files mirrored by name: materializations, vars, package pins.
 ROOT_FILES = ("dbt_project.yml", "packages.yml", "package-lock.yml")
 
 
@@ -66,10 +54,8 @@ def collect(side: str) -> dict:
 def divergence(dbt_text: str, local_text: str) -> str:
     """Content-only diff: the +/- lines, without positional hunk headers.
 
-    Headers are excluded by exact sentinel label, NOT by '+++'/'---' prefix:
-    a removed SQL comment line diffs as '-' + '--' = '---...', and a prefix
-    filter silently discards it — which made the first version of this
-    checker blind to one-sided comment edits in SQL files.
+    Headers are dropped by their exact labels, not by a '---' prefix: a removed
+    SQL comment line also starts with '---' and must be kept.
     """
     lines = difflib.unified_diff(
         dbt_text.splitlines(), local_text.splitlines(),
@@ -97,15 +83,9 @@ def main() -> int:
     state = current_state()
 
     if "--update" in sys.argv:
-        # Loud summary of exactly what the update absorbs, so a reviewer of
-        # the baseline commit sees the changed files without decoding the
-        # JSON diff. --update is the gate's designed bypass; this printout is
-        # the audit trail that keeps it reviewable.
-        # The summary is best-effort: an unreadable baseline (corrupt, or
-        # carrying conflict markers mid-rebase) must NOT stop the rewrite —
-        # that is precisely the situation where regenerating is the fix. An
-        # earlier version raised JSONDecodeError here and left the broken
-        # file in place, which then got committed.
+        # Print which files the update absorbs, so the baseline commit is
+        # reviewable. Best-effort: an unreadable baseline (corrupt, or with
+        # merge-conflict markers) must not block the rewrite that fixes it.
         old = None
         if os.path.exists(BASELINE):
             try:

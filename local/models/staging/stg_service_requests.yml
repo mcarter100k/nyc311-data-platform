@@ -57,7 +57,7 @@ models:
         description: "Type of premises where the incident occurred (e.g. Residential Building/House)."
 
       - name: incident_zip
-        description: "5-digit ZIP code of the incident. NULL for ~3% of records."
+        description: "5-digit ZIP code of the incident. NULL when the source omits it."
 
       - name: incident_address
         description: "Street address of the incident. May be cross-street or intersection."
@@ -77,7 +77,7 @@ models:
         description: "Community board designation in 'NN BOROUGH' format (e.g. '07 BROOKLYN')."
 
       - name: latitude
-        description: "WGS84 latitude of the incident. NULL for ~15% of records with no geocodable address."
+        description: "WGS84 latitude of the incident. NULL where the address was not geocodable."
 
       - name: longitude
         description: "WGS84 longitude of the incident. NULL wherever latitude is NULL."
@@ -105,25 +105,14 @@ models:
 
       - name: _loaded_at
         description: >
-          Timestamp from Silver's _silver_timestamp column — the moment the
-          Silver transform last wrote or updated this row. Used as the
-          incremental watermark in fct_service_requests: on each dbt run, only
-          rows where _loaded_at exceeds the previous run's max are merged in.
+          Silver run timestamp (_silver_timestamp); every row written in one
+          run carries the same value. fct_service_requests merges rows with
+          _loaded_at later than one hour before its current max, which in
+          practice re-merges the whole current Silver window every run.
         tests:
           - not_null
 
       - name: schema_version
-        description: >
-          Integer string identifying the current schema contract version, set
-          from the dbt_project.yml var `schema_version`. Because this model is a
-          view, the value is evaluated at query time and always shows the
-          current var — it is NOT a durable per-row stamp here. The stamp
-          becomes durable in fct_service_requests, whose incremental merge
-          writes it into each physical row; use that column to compare pre- and
-          post-breaking-change rows when backfilling or validating a schema
-          migration. The var is incremented in a PR whenever a breaking schema
-          change (column removal, rename, or incompatible type change) is
-          deployed to Gold; additive changes do not increment it.
-          See docs/adr/006-schema-evolution.md for the full contract.
+        description: "The schema_version var at query time; the durable per-row stamp is fct_service_requests.schema_version (ADR 006)."
         tests:
           - not_null

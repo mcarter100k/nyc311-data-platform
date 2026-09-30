@@ -1,17 +1,5 @@
-{{
-    config(materialized = 'view')
-}}
-
-{#
-  Staging passthrough over the Silver quarantine table.
-
-  Exists so fct_service_requests can delete rejected rows without referencing a
-  source directly — marts reading sources is a layer violation the architecture
-  tests enforce (test_no_model_references_source_except_staging).
-
-  Deliberately no transformation. The rows here have already been judged; this
-  model only makes them addressable inside the dbt graph.
-#}
+-- Passthrough over SILVER.quarantine, so fct_service_requests can delete
+-- rejected rows without reading a source directly.
 
 select
     unique_key,

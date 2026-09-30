@@ -34,7 +34,6 @@ nyc311:
       database:  "{{ env_var('SNOWFLAKE_DATABASE', 'NYC311_DB_DEV') }}"
       warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', 'NYC311_WH_DEV') }}"
 
-      # dbt writes to <database>.<target_schema>_<model_schema>.
       # With schema: gold, a marts model lands in NYC311_DB_DEV.GOLD.
       schema: gold
 
@@ -43,8 +42,8 @@ nyc311:
       query_tag: "dbt-dev"
 
     # ── Production target ─────────────────────────────────────────────────────
-    # Invoked by the Airflow BashOperator:  dbt run --target prod
-    # Uses RSA key-pair authentication — no password in CI environment.
+    # For a manual Snowflake run: dbt build --target prod
+    # Uses RSA key-pair authentication, no password.
     prod:
       type: snowflake
       account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
@@ -60,6 +59,6 @@ nyc311:
       warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', 'NYC311_WH') }}"
       schema: gold
 
-      threads: 8                    # higher parallelism on scheduled runs
+      threads: 8
       client_session_keep_alive: false
       query_tag: "dbt-prod"
