@@ -163,30 +163,36 @@ def fetch_live_records(days: int = LIVE_DAYS, cap: int = LIVE_ROW_CAP, get=None)
     """Fetch every row created in the trailing `days` window.
 
     The whole window is re-pulled each run, so status changes inside it are
-    captured. Hitting `cap` and fetching zero rows both raise: the daily run is
-    red or fully loaded, never partly loaded. `get` is injectable for tests.
+    captured. It is fetched one day per query (see ingest_config), the last day
+    open-ended. Hitting `cap` and fetching zero rows both raise: the daily run
+    is red or fully loaded, never partly loaded. `get` is injectable for tests.
     """
     if get is None:
         get = requests.get
     headers = _socrata_headers()
 
-    run_date = (datetime.now(UTC) - timedelta(days=days)).date().isoformat()
+    today = datetime.now(UTC).date()
+    start = today - timedelta(days=days)
     records: list = []
-    page = 0
-    while True:
-        resp = _get_with_retry(get, SOCRATA_URL, params=build_page_params(run_date, page),
-                               headers=headers, what=f"Socrata fetch on page {page}")
-        batch = resp.json()
-        if not batch:
-            break
-        records.extend(batch)
-        page += 1
-        if len(records) > cap:
-            raise RuntimeError(
-                f"Live fetch exceeded the row cap ({len(records):,} > {cap:,} in "
-                f"{days} days). This signals an upstream volume spike — investigate "
-                f"before raising LIVE_ROW_CAP in local_runner.py / ADR 010."
-            )
+    for offset_days in range(days + 1):
+        day = (start + timedelta(days=offset_days)).isoformat()
+        last = offset_days == days
+        page = 0
+        while True:
+            resp = _get_with_retry(get, SOCRATA_URL,
+                                   params=build_page_params(day, page, open_ended=last),
+                                   headers=headers, what=f"Socrata fetch for {day}, page {page}")
+            batch = resp.json()
+            if not batch:
+                break
+            records.extend(batch)
+            page += 1
+            if len(records) > cap:
+                raise RuntimeError(
+                    f"Live fetch exceeded the row cap ({len(records):,} > {cap:,} in "
+                    f"{days} days). This signals an upstream volume spike — investigate "
+                    f"before raising LIVE_ROW_CAP in local_runner.py / ADR 010."
+                )
     if not records:
         raise RuntimeError(
             f"Live fetch returned zero rows for the trailing {days} days — the "
