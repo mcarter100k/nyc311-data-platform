@@ -4,18 +4,14 @@ config-version: 2
 
 profile: 'nyc311'
 
-# Environments pin exact versions in dbt/requirements.txt (single source of
-# truth for installs); this range declares what the project itself supports.
+# Exact versions are pinned in requirements.txt; this is the supported range.
 require-dbt-version: [">=1.7.0", "<2.0.0"]
 
 model-paths:    ["models"]
 test-paths:     ["tests"]
 macro-paths:    ["macros"]
-# Seeds live OUTSIDE this project, in repo-root config/, because the borough
-# mapping is shared by three consumers: this project, the local DuckDB mirror,
-# and the pandas Silver transform. One file, one
-# source of truth — previously the same mapping was hardcoded in four places
-# and had already drifted (see docs/BACKLOG.md).
+# The borough mapping lives in repo-root config/ because the pandas Silver
+# transform reads the same file.
 seed-paths:     ["../config"]
 snapshot-paths: ["snapshots"]
 
@@ -27,86 +23,45 @@ models:
     staging:
       +materialized: view
       +tags: ["staging"]
-      # No +schema: staging views land in target.schema (GOLD).
-      # To route staging to a dedicated STAGING schema, provision it in
-      # terraform/modules/snowflake-foundation/main.tf with TRANSFORMER grants,
-      # then re-add +schema: staging here.
 
     intermediate:
+      # A table, not a view: several models read int_service_requests_cleaned,
+      # and its ILIKE classification should run once per build, not once per reader.
       +materialized: table
-      # Table, not view: int_service_requests_cleaned is read by three models
-      # (dim_location, agency_snapshot, fct_service_requests). As a view, its
-      # 12-branch leading-wildcard ILIKE classification would re-execute over
-      # full history three times per run; materializing it computes that once.
-      # No +schema: the intermediate table lands in target.schema (GOLD).
 
     marts:
       +materialized: table
       +schema: gold
       +tags: ["gold"]
-      # generate_schema_name macro (macros/generate_schema_name.sql) returns
-      # 'gold' as-is. Without the macro, this would produce 'gold_gold'.
 
-# Project-level variable defaults.
-# Override at runtime:  dbt run --vars '{"min_date": "2020-01-01"}'
-# Override in CI:       dbt run --vars '{"max_date": "{{ run_started_at.strftime(\"%%Y-%%m-%%d\") }}"}'
+# Every model lands in the target schema (GOLD); see macros/generate_schema_name.sql.
+
 vars:
   min_date: '2010-01-01'
   max_date: '2030-12-31'
 
-  # Schema version stamp selected in stg_service_requests as a literal column.
-  # Staging is a view, so the value there is evaluated at query time; it becomes
-  # durable in fct_service_requests, whose incremental merge writes it into each
-  # physical row. Rows untouched by later merges keep the version they were
-  # built under, so history can be traced to the schema contract that produced
-  # it. (A --full-refresh restamps all history with the current version.)
-  #
-  # Increment this integer whenever a BREAKING schema change reaches Gold —
-  # meaning a column is removed, renamed, or its type changes incompatibly.
-  # Additive changes (new Bronze columns flowing through Silver) do NOT require
-  # a version bump because they are invisible to existing Gold consumers until
-  # someone explicitly adds them to a mart .sql file.
-  #
-  # The version is an integer string so it sorts correctly in Snowflake VARCHAR
-  # comparisons and remains legible without a lookup table.
-  # See ADR 006 for the full schema evolution contract.
+  # Bump on a breaking Gold change (column removed, renamed or retyped).
+  # Stored per row in fct_service_requests. See ADR 006.
   schema_version: '1'
 
-  # fct_complaint_recurrence. The join to later complaints is bounded by this
-  # window — correctness-preserving for the question (nobody asks about
-  # recurrence a year later) and what keeps a self-join over a chronic address
-  # from fanning out quadratically.
+  # fct_complaint_recurrence only looks this far ahead for a repeat complaint.
+  # The bound keeps the self-join on a busy address from growing quadratically.
   recurrence_max_window_days: 30
 
-  # An (address, complaint_type) pair at or above this ticket count is treated
-  # as a chronic location: it recurs by nature rather than by failed
-  # resolution, and it dominates any unfiltered recurrence rate.
+  # An (address, complaint_type) pair with at least this many tickets is a
+  # chronic location: it recurs by nature, not because a fix failed.
   chronic_location_min_tickets: 5
 
-  # fct_daily_volume. Every rate on that table is bounded to this window
-  # ("closed within N days of creation", not "closed by now") and is published
-  # only for days that N complete days of history follow. Days newer than that
-  # publish NULL, because their denominators are still filling: measured on a
-  # 14-day local load the same pct_resolved column read 0.7452 at 12 days
-  # observed and 0.4003 at zero, and the second number is not a bad day for the
-  # city, it is a cohort that has not happened yet.
-  #
-  # 30 is not a free parameter. It is the NYC administrative standard already
-  # encoded in fct_service_requests.is_overdue (resolution_days > 30), so the
-  # window this table publishes over and the deadline the city is held to stay
-  # one number in one place. Consequence, stated rather than hidden: on a 7–14
-  # day mirror NO day is eligible and every rate column reads NULL — the correct
-  # answer for a 14-day load asked a 30-day question.
+  # 30 = NYC's closure standard. fct_daily_volume counts "closed within this
+  # many days of creation" (fct_service_requests.is_overdue hard-codes the
+  # same 30; see its comment). A day's rates publish only once this many complete days follow it.
+  # The daily fetch re-pulls 37 days so Gold sees every closure up to day 30
+  # after the source settles (ADR 016); a shorter fetch window makes these
+  # rates read low.
   closure_window_days: 30
 
-  # int_load_completeness. A loaded day counts as COMPLETE when the newest
-  # request created on it lands within this many minutes of midnight.
-  #
-  # The value is deliberately not fine-tuned, because the quantity it cuts is
-  # bimodal by three orders of magnitude: on a 14-day live load every complete
-  # day ended 1 minute short of midnight and the trailing partial day ended
-  # 1,314 minutes short. Anything from ~5 to ~600 gives the same verdicts. 60
-  # is chosen as an hour — a value a reader can reason about — with the failure
-  # direction being conservative either way: too tight retires a complete day
-  # (understating observation time), never the reverse.
+  # int_load_completeness: a day is complete when its newest request is within
+  # this many minutes of midnight. Complete days end ~1 minute short and the
+  # partial day hundreds of minutes short, so any value from ~5 to ~600 gives
+  # the same verdicts (measured in ADR 016).
   complete_day_tail_minutes: 60

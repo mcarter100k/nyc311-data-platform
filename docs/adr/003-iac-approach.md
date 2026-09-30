@@ -1,6 +1,6 @@
 # ADR 003: Infrastructure as Code Approach
 
-**Status:** Accepted
+**Status:** Accepted. Amended 2026-08-20: Databricks and Azure providers removed; a second, applied root module added (see the end).
 **Date:** 2026-05-27
 
 ## Context

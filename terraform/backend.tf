@@ -1,17 +1,7 @@
-# terraform/backend.tf
+# Remote state in Azure Blob Storage: shared between operators and CI, and
+# blob leases lock the state so two applies cannot run at once.
 #
-# Remote state configuration — Azure Blob Storage.
-#
-# State is stored remotely so that:
-#   1. Multiple team members and CI runners share a single source of truth.
-#   2. State is not lost if a local machine is wiped.
-#   3. Azure Blob lease-based locking prevents concurrent applies from
-#      corrupting state.
-#
-# ── Bootstrap (one-time, before `terraform init`) ────────────────────────────
-#
-# The storage account must exist before Terraform can write state to it.
-# Run the following Azure CLI commands once per environment:
+# One-time bootstrap, before `terraform init` (the storage account must exist):
 #
 #   LOCATION="eastus2"
 #   RG="nyc311-tfstate-rg"
@@ -34,10 +24,8 @@
 #     --account-name $SA \
 #     --auth-mode login
 #
-# ── Authentication ────────────────────────────────────────────────────────────
-#
-# Pass the storage account access key via environment variable — never
-# hardcode it here or in any .tfvars file:
+# Authenticate with the storage account key in the environment, never in a
+# file:
 #
 #   export ARM_ACCESS_KEY=$(az storage account keys list \
 #     --account-name nyc311tfstate \
@@ -46,18 +34,10 @@
 #
 #   terraform init
 #
-# In CI (GitHub Actions), set ARM_ACCESS_KEY as a repository secret and inject
-# it via the `env:` block in the workflow step.
-#
-# ── State file key convention ─────────────────────────────────────────────────
-#
-# Use one state file per environment by passing -backend-config on init:
+# One state file per environment, chosen on init:
 #
 #   terraform init -backend-config="key=nyc311/dev/terraform.tfstate"
 #   terraform init -backend-config="key=nyc311/prod/terraform.tfstate"
-#
-# This allows dev and prod state to coexist in the same container without
-# risk of cross-environment overwrites.
 
 terraform {
   backend "azurerm" {
@@ -65,9 +45,7 @@ terraform {
     storage_account_name = "nyc311tfstate"
     container_name       = "tfstate"
 
-    # Default key — override per-environment with -backend-config on init.
+    # Default key; override per environment with -backend-config.
     key = "nyc311/dev/terraform.tfstate"
-
-    # ARM_ACCESS_KEY must be set in the environment — never hardcoded.
   }
 }

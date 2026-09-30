@@ -1,6 +1,6 @@
 # ADR 013: No source-freshness SLO — gate on what we control, warn on what we don't
 
-**Status:** Accepted
+**Status:** Accepted. Amended 2026-09-29: the stall warning's inputs changed in ADR 015 (see the end).
 **Date:** 2026-08-20
 **Relates to:** [ADR 010](010-scheduled-operation.md) (scheduled operation and the SLO gates), [docs/SLO.md](../SLO.md), [2026-08-18 postmortem](../postmortems/2026-08-18-upstream-publish-stall.md)
 
@@ -12,7 +12,7 @@ spot: SLO-1 measures our own load stamp, so it reads healthy minutes after any
 successful run even if the run loaded nothing new.
 
 The blind spot is real. The question this ADR settles is whether a *gate* is the
-right instrument for it, given that SLO-2 was redefined ten days earlier
+right instrument for it, given that SLO-2 was redefined earlier the same day
 (#24) specifically so that a city publishing outage could no longer redden our
 pipeline's reliability signal.
 
@@ -82,3 +82,14 @@ it as a known limit rather than a surprise.
 If a future incident shows partial stalls happening in practice, the fix is to
 tighten or re-shape the *warning*, not to promote it to a gate — the reasoning
 above does not change with the threshold.
+
+---
+
+## Amendment 2026-09-29 — the warning now reads the source
+
+[ADR 015](015-slo2-population-is-complete-days.md) rebuilt
+`check_upstream_stall.py` on the same population as SLO-2. It no longer counts
+our own rows for T-1; it reads the source's captured counts for complete days.
+Staleness: the newest complete day is more than 2 days behind today (UTC).
+Volume: that day's source count is below 40% of the median of the other
+complete days. The decision here is unchanged: it warns and never gates.

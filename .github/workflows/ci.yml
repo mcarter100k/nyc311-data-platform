@@ -1,24 +1,16 @@
 name: CI
 
-# Three parallel, independently-required checks — one per failure class:
-#   fast-gate         — contract drift: dbt parse, structural pytest, claim /
-#                       mirror checkers, workflow lint. Fails when the repo
-#                       stops agreeing with itself.
-#   unit              — Silver transform logic (pandas) against fixtures.
-#                       Fails when the transformation code is wrong.
-#   behavioral-duckdb — the dbt models built twice against seeded DuckDB.
-#                       Fails when Gold semantics (watermark, SCD2 join,
-#                       upsert) regress.
-# No `needs:` between them: a red check names its failure class directly,
-# and total wall time is the slowest tier, not the sum. See ADR 011.
-#
-# Every job below sets timeout-minutes. The GitHub default is 6 HOURS, so a
-# job that hangs on a network read burns a runner all afternoon and — because
-# these are required checks — leaves the PR pending rather than red. Measured
-# over the last 12 runs: fast-gate 0.6m, unit 0.4m, behavioral-duckdb 1.5m,
-# front-door 2.0m (maxima). The values are ~8x those, generous enough that a
-# slow pip mirror is not a false failure and tight enough that a hang is
-# reported in minutes.
+# Four parallel jobs, split by what each tier needs installed. The first three
+# are required checks (terraform/github); a red one names its tier directly.
+#   fast-gate         — dbt + pyyaml: dbt parse, structural pytest (manifest,
+#                       DAG graph, Terraform, workflows, pure-Python helpers),
+#                       the claim and model-drift checkers, ruff, actionlint.
+#   unit              — pandas: the Silver transforms.
+#   behavioral-duckdb — duckdb + dbt-duckdb: two seeded dbt builds, the SLO
+#                       gate, the stage-3 loader and the mocked fetcher.
+#   front-door        — ./run_tests.sh from a clean checkout.
+# See ADR 011. Every job sets timeout-minutes (default is 6 hours) at several
+# times its normal duration, so a hang is reported in minutes.
 on:
   push:
     branches:
@@ -50,72 +42,61 @@ jobs:
       - name: Install dbt
         run: pip install -r dbt/requirements.txt
 
-      # The mock CI profile is committed at dbt/ci-profile/profiles.yml and is
-      # credential-free. This step used to `cat >` a heredoc that dbt-docs.yml
-      # duplicated verbatim and that run_tests.sh never had at all; the file is
-      # now the single source of truth all three share.
+      # dbt/ci-profile/profiles.yml is a committed, credential-free profile.
       - name: dbt deps
         run: dbt deps --profiles-dir ci-profile --project-dir . --no-version-check
         working-directory: dbt
 
+      # parse, not compile: compile opens a Snowflake connection. parse checks
+      # refs, macros and YAML; it does not check the Snowflake SQL itself.
       - name: dbt parse (compile without connecting)
-        # dbt compile triggers a Snowflake connection even with placeholder credentials.
-        # dbt parse validates the project and writes the manifest with no DB connection —
-        # the same approach used by run_tests.sh locally.
         run: dbt parse --profiles-dir ci-profile --project-dir . --target ci --no-version-check
         working-directory: dbt
 
       - name: Install test dependencies
-        run: |
-          pip install pytest pyyaml
-          pip install -r requirements-dev.txt
-          pip install pytest-github-actions-annotate-failures || true
+        run: pip install -r requirements-dev.txt
 
-      # Python lint. Runs inside fast-gate rather than as a fourth required
-      # check: it shares this job's checkout and interpreter, costs ~1s, and a
-      # separate tier would mean another branch-protection context to declare
-      # in terraform/github for no extra signal. Rule set is curated in
-      # ruff.toml — see the rationale block at the top of that file.
+      # Rules are in ruff.toml.
       - name: ruff (Python lint)
         run: ruff check . --output-format=github
 
-      # The unit and local tiers have their own jobs; collecting them here
-      # would only re-report their conftest skips as noise.
+      # The unit and local tiers run in their own jobs.
       - name: Structural pytest
-        run: pytest tests/ --ignore=tests/unit --ignore=tests/local -q
+        run: pytest tests/ --ignore=tests/unit --ignore=tests/local -q -ra --junitxml=structural-report.xml
 
-      # Fail the build if README.md or anything under docs/ has drifted from the
-      # repo: counts, links and fragments, citation anchors, the documented DAG
-      # task names, and the dbt model inventory.
-      #
-      # MUST run after `dbt parse` above. Three claims and the model inventory
-      # are read from dbt/target/manifest.json; without it the script exits 2
-      # ("cannot check") rather than passing silently. Reordering these steps
-      # turns this check red with an instruction, not green with a hole.
+      # A skipped test is not a pass. Every tier fails on any skip.
+      - name: Enforce zero skips
+        run: |
+          python - << 'EOF'
+          import xml.etree.ElementTree as ET
+          root = ET.parse("structural-report.xml").getroot()
+          suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+          tests = sum(int(s.get("tests", 0)) for s in suites)
+          skipped = sum(int(s.get("skipped", 0)) for s in suites)
+          assert tests > 0, "zero structural tests collected — the tier is hollow"
+          assert skipped == 0, f"{skipped} test(s) skipped — this job exists so importorskip can never hollow it out"
+          print(f"{tests} structural tests ran, 0 skipped")
+          EOF
+
+      # Fails if README.md or docs/ disagree with the repo: counts, links,
+      # citations, DAG task names, the dbt model inventory. Needs the manifest
+      # from dbt parse above (exits 2 without it).
       - name: Check README and docs/ claims against the repo
         run: python scripts/check_claims.py
 
-      # Fail the build if the dbt/ and local/ model mirrors drifted apart
-      # beyond their registered dialect divergences.
+      # Fails if dbt/ and local/ models differ beyond the recorded dialect
+      # differences.
       - name: Check dbt/local model mirror drift
         run: python scripts/check_model_drift.py
 
-      # Unconditional rather than diff-guarded: it finishes in seconds, and a
-      # changed-files condition would add a third-party dependency this repo
-      # doesn't otherwise carry.
       - name: actionlint (workflow lint)
         env:
-          # shellcheck (present on ubuntu runners, so actionlint engages it)
-          # gates at warning+ only: its info/style advisories first fired on
-          # dbt-docs.yml, the house-standard file this workflow must not
-          # rewrite. Real script defects still fail. ADR 011.
+          # actionlint runs shellcheck on run: scripts; only warnings and
+          # errors fail, not style notes. ADR 011.
           SHELLCHECK_OPTS: --severity=warning
-        # Version- and checksum-pinned: the previous curl|bash of the
-        # installer from the upstream repo's mutable `main` branch executed
-        # unpinned third-party code inside a required check on every PR —
-        # and, not being an action, it sat outside Dependabot's reach.
-        # Bumping the version means updating BOTH the version and the sha256
-        # (from actionlint_<ver>_checksums.txt on the release page).
+        # Pinned by version and sha256 because Dependabot does not track it.
+        # To bump, update both (sha256 from actionlint_<ver>_checksums.txt on
+        # the release page).
         run: |
           ver="1.7.12"
           sha="8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
@@ -138,17 +119,13 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-
-      # Pinned in tests/unit/requirements.txt so Dependabot tracks it. The
-      # tier tests local/silver_transformations.py — pure pandas, no JVM.
       - name: Install test dependencies
         run: pip install -r tests/unit/requirements.txt
 
       - name: Unit tests
         run: pytest tests/unit -v -ra --junitxml=unit-report.xml
 
-      # The tier importorskips pandas so a bare laptop skips gracefully. Here,
-      # a skip (or an empty collection) is a red build, never a pass.
+      # The tier importorskips pandas so a bare laptop skips; here a skip fails.
       - name: Enforce zero skips
         run: |
           python - << 'EOF'
@@ -175,30 +152,19 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      # local/requirements.txt carries the pins (dbt-duckdb==1.7.4,
-      # dbt-core==1.7.19) plus pandas/requests, which the live-fetch unit
-      # tests need just to import local_runner.
+      # local/requirements.txt pins dbt-duckdb and dbt-core, plus pandas and
+      # requests for the fetch tests.
       - name: Install pipeline and test dependencies
-        run: |
-          pip install -r local/requirements.txt
-          pip install pytest
+        run: pip install -r local/requirements.txt -r requirements-dev.txt
 
-      # Builds the local/ dbt project twice against a seeded DuckDB database:
-      # incremental watermark + lookback boundary, snapshot rename detection,
-      # SCD2 point-in-time join, upsert propagation, and the mocked live-fetch
-      # contract tests.
+      # Two seeded dbt builds (incremental watermark, snapshot renames, SCD2
+      # point-in-time join, upserts), the SLO gate, the stage-3 loader and the
+      # mocked fetcher.
       - name: Behavioral tests
         run: pytest tests/local -v -ra --junitxml=local-report.xml
 
-      # Same gate the unit tier has, for the same reason and after the same
-      # failure. Every test in tests/local sits behind a module-level
-      # importorskip (duckdb and dbt-duckdb in conftest.py, pandas in two
-      # files), so a dependency that stops resolving turns all 63 into skips
-      # and this job green. That is not hypothetical: until this commit,
-      # test_bronze_is_a_view.py's two database tests were skipped on EVERY run
-      # of this job — they were gated on local/data/nyc311_local.duckdb, which
-      # nothing in CI has ever built — and run 33039271264 on main reported
-      # "61 passed, 2 skipped" and passed. A skip is not a pass.
+      # Every test here sits behind an importorskip, so a dependency that stops
+      # resolving would turn them all into skips. A skip is not a pass.
       - name: Enforce zero skips
         run: |
           python - << 'EOF'
@@ -212,20 +178,9 @@ jobs:
           print(f"{tests} behavioral tests ran, 0 skipped")
           EOF
 
-  # ── front-door ────────────────────────────────────────────────────────────
-  # Runs ./run_tests.sh — the command the README documents as THE way to run
-  # the suite — exactly as a newcomer would, from a clean checkout following
-  # only the documented install steps.
-  #
-  # Why this job exists. run_tests.sh sat broken at exit 1, running zero tests,
-  # while all three checks above stayed green: every one of them invokes pytest
-  # DIRECTLY, so no CI job had ever executed this script. The documented front
-  # door was the one path nothing tested. Green CI is not evidence that the
-  # README works unless something runs what the README says to run.
-  #
-  # Deliberately NOT a required status check: required contexts are declared in
-  # terraform/github, and adding one is a Terraform change that has not been
-  # approved. This job runs and reports; promoting it is a separate decision.
+  # Runs ./run_tests.sh from a clean checkout, the path the README documents.
+  # The other jobs call pytest directly, so only this one tests the script.
+  # Not a required check.
   front-door:
     name: front-door
     runs-on: ubuntu-latest
@@ -239,14 +194,13 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      # The README quickstart, verbatim. If these two lines drift from the
-      # README, this job is no longer testing the documented path.
+      # The README quickstart, verbatim. If this line drifts from the README
+      # quickstart, this job no longer tests the documented path.
       - name: Install exactly what the README quickstart installs
         run: pip install -r local/requirements.txt -r dbt/requirements.txt -r requirements-dev.txt
 
-      # A clean checkout has no dbt/target/manifest.json and no dbt/profiles.yml
-      # — that is precisely the case that used to fail. Assert it rather than
-      # assume it, so the job cannot quietly start testing a warmed-up tree.
+      # A clean checkout has no manifest and no dbt/profiles.yml. Assert it, so
+      # the job cannot quietly start testing a warmed-up tree.
       - name: Assert the checkout really is cold
         run: |
           test ! -e dbt/target/manifest.json || { echo "manifest.json present — this job is not testing a clean checkout"; exit 1; }

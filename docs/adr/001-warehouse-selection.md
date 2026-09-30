@@ -1,6 +1,6 @@
 # ADR 001: Warehouse Selection
 
-**Status:** Accepted
+**Status:** Accepted. Amended 2026-09-29: the Databricks and Azure side was removed on 2026-08-20 (see the end).
 **Date:** 2026-05-27
 
 ## Context
@@ -70,7 +70,7 @@ idle compute cost, its dbt adapter is the industry reference implementation, and
 strict compute isolation between the ETL warehouse and the BI warehouse prevents the
 priority starvation failure mode that Databricks SQL cannot eliminate by design.
 
-The interview-defensible framing of this architecture:
+In one sentence:
 > "Databricks is the compute engine for transformation. Snowflake is the serving layer
 > for queries. Conflating the two forces ETL jobs and analyst queries to compete for the
 > same resources. Separating them means a long-running dbt run has zero impact on
@@ -101,3 +101,17 @@ lives entirely in PySpark and is warehouse-agnostic.
 the BI warehouse to run under the `NYC311_REPORTER` role, which has `SELECT` on GOLD only.
 ETL runs under `NYC311_TRANSFORMER`. This isolation is enforced at the Snowflake account
 level and cannot be bypassed by misconfigured BI tool credentials.
+
+
+---
+
+## Amendment 2026-09-29 — Databricks and Azure were removed
+
+The Databricks and Azure half of this design was removed (ADR 008 amendment,
+ADR 014). The comparison with Databricks SQL stays as the reason Snowflake was
+chosen, but the consequences about ADLS egress and co-locating Snowflake on
+Azure no longer apply: there is no ADLS and no Silver-to-Snowflake sync. The
+cleaning logic is now pandas (`local/silver_transformations.py`), still outside
+the warehouse, so the dialect point above holds. The pipeline that runs every
+day builds Gold in DuckDB (ADR 010). Snowflake is still the specified Gold
+warehouse, written as dbt models and Terraform, and has never been provisioned.

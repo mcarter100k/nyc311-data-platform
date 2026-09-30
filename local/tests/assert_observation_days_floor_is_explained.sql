@@ -1,14 +1,12 @@
--- Every floored observation_days must be explainable by the row's own closure
--- date: a row may read 0 only because it closed on or after the last complete
--- day, never because the horizon collapsed underneath it.
+-- A row may have observation_days = 0 only if it closed on or after the last
+-- complete day. Catches a horizon that is frozen or too far back: rows then
+-- floor to 0 en masse and silently drop out of every `observation_days >= N`
+-- filter, which a `>= 0` test cannot see.
 --
--- This is the half of the old `>= 0` test that was worth keeping, written so
--- it can fail. GREATEST(0, ...) makes a negative unrepresentable, so the real
--- failure was never "a negative appeared" but "the negatives were absorbed" —
--- a frozen or backdated horizon floors rows en masse and they drop silently
--- out of every `observation_days >= N` filter. Compared against
--- int_load_completeness, so sabotaging the model's horizon cannot move both
--- sides together. See dbt/ for the full rationale.
+-- Compared against int_load_completeness, not the model, so a broken model
+-- horizon cannot move both sides. The companion test,
+-- assert_recurrence_horizon_is_last_complete_day, catches a horizon too far
+-- forward.
 
 with expected as (
 

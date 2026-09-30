@@ -1,6 +1,6 @@
 # ADR 008: Prototype Scope — Cloud Services Specified, Not Provisioned
 
-**Status:** Accepted
+**Status:** Accepted. Amended by [ADR 010](010-scheduled-operation.md) (the pipeline runs daily) and [ADR 012](012-github-repo-as-code.md) (one Terraform module is applied); see the amendments at the end.
 **Date:** 2026-08-17
 
 ## Context
@@ -23,7 +23,7 @@ as code, a dimensional model, and test scaffolding — with one fully executable
 - The end-to-end pipeline logic, executed locally against DuckDB:
   `local/local_runner.py` runs ingest → bronze → silver → dbt gold → sample queries
   against the live Socrata API with no cloud accounts.
-- The dbt project: parses in CI (`.github/workflows/dbt.yml`), architecture verified by
+- The dbt project: parses in CI (`.github/workflows/ci.yml`), architecture verified by
   the pytest suite against the compiled manifest.
 - Terraform: passes `terraform validate` in CI (`.github/workflows/terraform.yml`).
   It has never been applied; no state file exists.
@@ -89,3 +89,15 @@ Silver into it remains an open decision.
 The reasoning for deletion: unrun *logic* is a liability, because it invites
 claims nothing can verify. Unapplied *declarative* config (the Terraform
 module) is a design document, and is labelled as one.
+
+## Amendment 2026-09-29 — what the "Real" list says today
+
+- Silver's unit tests run on the pandas transform (`local/silver_transformations.py`),
+  not on a SparkSession.
+- The Snowflake Terraform module has still never been applied. The GitHub
+  module in `terraform/github/` is applied ([ADR 012](012-github-repo-as-code.md)).
+- Scheduled execution is real: `.github/workflows/daily-run.yml` runs the local
+  pipeline against the live API every day ([ADR 010](010-scheduled-operation.md)).
+  `airflow/dags/nyc311_pipeline.py` was deleted with the Databricks path; the
+  local DAG `airflow/dags/nyc311_local.py` runs only while someone runs
+  Airflow on their machine.

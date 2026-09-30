@@ -1,29 +1,11 @@
-# ---------------------------------------------------------------------------
-# GitHub repository infrastructure — THE ROOT MODULE THAT IS ACTUALLY APPLIED
-# ---------------------------------------------------------------------------
-# The sibling root module (../) provisions Snowflake and has never been applied,
-# because applying it requires a paid account. This one manages infrastructure
-# the project genuinely depends on and costs nothing: the operational labels the
-# breach automation writes to, the branch protection that makes "required
-# checks" true rather than aspirational, and the Pages site that serves dbt docs.
+# The applied root module: this repository's settings, issue labels, branch
+# protection and Pages site. It is separate from the Snowflake module (../) so
+# it can be planned with only a GitHub token. State is local and gitignored;
+# with one maintainer there is no second operator to race. README.md covers
+# applying and the first-time imports.
 #
-# Why a SEPARATE root module rather than more resources in ../:
-#   a single root would make `terraform plan` require Snowflake credentials AND
-#   a GitHub token simultaneously. Splitting them means this one can be applied
-#   by anyone with a token, while the Snowflake module stays a design document.
-#
-# State: local, gitignored. Honest for a single-maintainer repo — there is no
-# second operator to race with. A team would need a remote backend with locking
-# (the pattern is already written down in ../backend.tf).
-#
-# Apply:
 #   export GITHUB_TOKEN=$(gh auth token)
 #   cd terraform/github && terraform init && terraform plan
-#
-# Resources that already exist must be imported before the first apply — see
-# README.md in this directory. Importing existing infrastructure rather than
-# recreating it is the point: this repo was not built by Terraform, it is being
-# brought under management.
 
 terraform {
   required_version = ">= 1.6.0"
@@ -38,18 +20,11 @@ terraform {
 
 provider "github" {
   owner = var.github_owner
-  # Token from the GITHUB_TOKEN environment variable — never in a .tf or
-  # .tfvars file, matching the credential handling in ../main.tf.
+  # Token from the GITHUB_TOKEN environment variable.
 }
 
-# ---------------------------------------------------------------------------
-# Repository settings
-# ---------------------------------------------------------------------------
-# Imported, not created. Every attribute below mirrors the repository's current
-# state so the first plan is a no-op except for the changes this module is
-# deliberately making (topics, delete_branch_on_merge, pages). Declaring a
-# managed resource without matching its live state is how IaC adoption breaks
-# things it was meant to protect.
+# Imported, not created: attributes match the live repository so a plan
+# changes only what this module means to change.
 
 resource "github_repository" "this" {
   name        = "nyc311-data-platform"
@@ -64,12 +39,10 @@ resource "github_repository" "this" {
   allow_squash_merge = true
   allow_auto_merge   = false
 
-  # Changed from the live state on purpose: merged branches were accumulating
-  # (eight stale ones at last count) because nothing cleaned them up.
+  # Merged branches are deleted so they do not pile up.
   delete_branch_on_merge = true
 
-  # Changed from the live state on purpose: a public repository with no topics
-  # is invisible to every search that would surface it.
+  # Topics make the public repository findable in search.
   topics = [
     "data-engineering",
     "dbt",
@@ -82,36 +55,21 @@ resource "github_repository" "this" {
   ]
 
   lifecycle {
-    # Guard rail on an imported resource: these would be destructive or
-    # irreversible if a future edit got them wrong.
+    # Changing these on an existing repository would be destructive.
     ignore_changes = [auto_init, template]
   }
 }
 
-# ---------------------------------------------------------------------------
-# GitHub Pages
-# ---------------------------------------------------------------------------
-# The setting whose absence kept .github/workflows/dbt-docs.yml failing at
-# "Configure GitHub Pages" — the workflow was fixed in an earlier PR, but there
-# was no Pages site to publish to, so it failed one step later. build_type
-# "workflow" means the docs workflow publishes directly; there is no gh-pages
-# branch to keep in sync.
+# The Pages site dbt-docs.yml publishes to. build_type "workflow" means the
+# workflow deploys directly; there is no gh-pages branch.
 
 resource "github_repository_pages" "docs" {
   repository = github_repository.this.name
   build_type = "workflow"
 }
 
-# ---------------------------------------------------------------------------
-# Operational labels
-# ---------------------------------------------------------------------------
-# These were previously created imperatively, on every scheduled run:
-#
-#     gh label create daily-run-breach --color B60205 --force || true
-#
-# That is infrastructure created as a side effect of a job, with the failure
-# swallowed. Declaring them means the breach automation can assume they exist,
-# and their colour and meaning are reviewable in a diff.
+# Labels the workflows file issues under. Declared here so the workflows can
+# assume they exist rather than creating them as a side effect.
 
 resource "github_issue_label" "daily_run_breach" {
   repository  = github_repository.this.name
@@ -127,33 +85,22 @@ resource "github_issue_label" "upstream_stall" {
   description = "Source feed published abnormally little data — not a pipeline failure"
 }
 
-# ---------------------------------------------------------------------------
-# Branch protection
-# ---------------------------------------------------------------------------
-# ADR 011 said branch protection "should require exactly fast-gate, unit and
-# behavioral-duckdb". It said should, because it was never configured — main was
-# unprotected while the README claimed three *required* checks. This resource is
-# what makes that claim true.
+# Requires the three CI tiers from ADR 011 before a merge to main.
 
 resource "github_branch_protection" "main" {
   repository_id = github_repository.this.node_id
   pattern       = "main"
 
   required_status_checks {
-    # strict = false deliberately: requiring branches to be up to date with main
-    # forces a rebase every time anything else merges. With three tiers taking
-    # about a minute, the churn costs more than the staleness risk.
+    # Not strict: requiring an up-to-date branch forces a rebase after every
+    # merge, which costs more than the staleness risk with minute-long checks.
     strict   = false
     contexts = ["fast-gate", "unit", "behavioral-duckdb"]
   }
 
-  # NO required_pull_request_reviews block, deliberately. A single maintainer
-  # cannot approve their own pull request, so requiring reviews would make
-  # merging impossible rather than safer. Add it the day a second person does.
+  # No required reviews: a sole maintainer cannot approve their own PR.
 
-  # false deliberately: leaves the maintainer an escape hatch if CI itself
-  # breaks. Enforcing against admins on a solo repo means a broken workflow
-  # locks the only person who could fix it out of main.
+  # Admins are exempt so a broken CI cannot lock the only maintainer out.
   enforce_admins = false
 
   allows_force_pushes = false

@@ -1,18 +1,21 @@
 # GitHub repository infrastructure
 
-The Terraform root module that is **actually applied**. Its sibling (`../`)
-provisions Snowflake and never has been, because applying it needs a paid
-account — this one manages infrastructure the project genuinely depends on and
-costs nothing.
+Terraform code for this repository's own GitHub settings. Terraform describes
+infrastructure in files, and `terraform apply` makes the live settings match
+them. This is the one Terraform module in the repo that is **applied**; the
+settings it manages cost nothing. Its sibling (`../`) specifies Snowflake and has
+never been applied, because applying it needs a paid account. The two are
+separate so this one can be planned with only a GitHub token
+([ADR 012](../../docs/adr/012-github-repo-as-code.md)).
 
 ## What it manages
 
 | Resource | Why it is here |
 |---|---|
-| `github_issue_label` × 2 | `daily-run-breach` and `upstream-stall` were created imperatively by `gh label create ... --force \|\| true` on every scheduled run — infrastructure as a job side effect, with the failure swallowed |
-| `github_branch_protection` | ADR 011 said protection *should* require `fast-gate`, `unit`, `behavioral-duckdb`. It said *should* because it was never configured: main was unprotected while the README claimed three **required** checks |
-| `github_repository_pages` | The setting whose absence made `dbt-docs.yml` fail at "Configure GitHub Pages" — the workflow was fixed earlier, but there was no site to publish to |
-| `github_repository` | Imported. Adds topics (a public repo with none is unfindable) and `delete_branch_on_merge` (merged branches were accumulating) |
+| `github_issue_label` × 2 | `daily-run-breach` and `upstream-stall`, the labels the workflows file issues under. Declared here so the workflows can assume they exist. |
+| `github_branch_protection` | Makes `fast-gate`, `unit` and `behavioral-duckdb` required checks on `main` ([ADR 011](../../docs/adr/011-parallel-ci-tiers.md)). |
+| `github_repository_pages` | The Pages site `dbt-docs.yml` deploys the dbt docs to. |
+| `github_repository` | Repository settings, plus topics (so the public repo is findable) and `delete_branch_on_merge` (so merged branches do not pile up). |
 
 ## Applying
 
@@ -26,10 +29,9 @@ terraform apply
 
 ## First-time import
 
-The repository and the `daily-run-breach` label already existed. They were
-**imported**, not recreated — bringing existing infrastructure under management
-is the realistic case, and declaring a managed resource without matching its
-live state is how IaC adoption breaks the thing it was meant to protect:
+The repository and the `daily-run-breach` label existed before this module, so
+they were **imported**, not recreated. Without an import, Terraform would try
+to create a second copy or overwrite the live settings:
 
 ```bash
 terraform import github_repository.this nyc311-data-platform
@@ -37,22 +39,10 @@ terraform import github_issue_label.daily_run_breach nyc311-data-platform:daily-
 ```
 
 The first plan after importing showed `3 to add, 1 to change, 0 to destroy`,
-with 37 repository attributes unchanged — the check that the import matched.
+with 37 repository attributes unchanged: the check that the import matched.
 
-## State
+## State, and what it leaves out
 
-Local and gitignored. Honest for a single-maintainer repo: there is no second
-operator to race with, and the state contains resource metadata that should not
-sit in a public repo. A team would need a remote backend with locking; that
-pattern is already written down in [`../backend.tf`](../backend.tf).
-
-## Deliberate omissions
-
-- **No `required_pull_request_reviews`.** A single maintainer cannot approve
-  their own pull request, so requiring reviews would make merging impossible
-  rather than safer. Add it the day a second person joins.
-- **`enforce_admins = false`.** On a solo repo, enforcing against admins means a
-  broken workflow locks out the only person who could fix it.
-- **`strict = false`** on required checks. Requiring branches to be current with
-  main forces a rebase every time anything merges; with tiers taking about a
-  minute, that churn costs more than the staleness risk.
+State is local and gitignored. Why, and why there are no required reviews,
+`enforce_admins = false` and `strict = false`: see
+[ADR 012](../../docs/adr/012-github-repo-as-code.md).

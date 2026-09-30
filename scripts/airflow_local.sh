@@ -8,10 +8,8 @@
 #   ./scripts/airflow_local.sh test   — run the DAG once, synchronously, no server
 #   ./scripts/airflow_local.sh ui     — full scheduler + webserver on :8080
 #
-# Airflow lives in its OWN virtualenv (.venv-airflow). It is kept apart from
-# .venv on purpose: Airflow pins many shared dependencies and installing it
-# beside dbt is a known way to break dbt. The DAG's tasks invoke .venv's
-# interpreter explicitly.
+# Airflow lives in its own virtualenv (.venv-airflow) because its pins break
+# dbt; the DAG's tasks call .venv's interpreter explicitly.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

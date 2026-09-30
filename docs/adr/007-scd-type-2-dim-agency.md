@@ -1,6 +1,6 @@
 # ADR 007: SCD Type 2 for the Agency Dimension
 
-**Status:** Accepted
+**Status:** Accepted. Corrected 2026-09-29 (see *What triggers a new version*).
 **Date:** 2026-06-05
 
 ## Context
@@ -174,6 +174,10 @@ so it is caught before any BI consumer sees corrupted data.
 would insert a new record for NYDS and expire the DSNY record — they are treated as
 distinct agencies. This is consistent with how foreign keys work: `fct_service_requests`
 stores the abbreviation that appeared in the API response at ingestion time.
+
+*Correction 2026-09-29:* the snapshot does not set `hard_deletes`, so an
+abbreviation that stops appearing is not expired; DSNY would stay current
+alongside NYDS.
 
 ## Consequences
 

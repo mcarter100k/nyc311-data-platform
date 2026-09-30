@@ -1,17 +1,13 @@
 name: Terraform
 
-# Runs on EVERY PR and on pushes to main — deliberately no `paths:` filter.
-# A path-filtered workflow cannot be a required branch-protection check
-# (non-matching PRs would block forever on a pending status), and the old
-# PR-only + paths trigger meant direct pushes to main shipped unvalidated.
-# fmt+validate completes in seconds; running it unconditionally buys a
-# requirable, always-on gate.
+# fmt and validate for both root modules, with no credentials. No paths:
+# filter, so it can be made a required check without blocking unrelated PRs.
+# It is not required today (see terraform/github/main.tf).
 on:
   pull_request:
   push:
     branches: [main]
 
-# Least-privilege and superseded-run cancellation, matching dbt-docs.yml.
 permissions:
   contents: read
 
@@ -23,16 +19,13 @@ jobs:
   validate:
     name: Format check and validate (${{ matrix.dir }})
     runs-on: ubuntu-latest
-    # Default is 6 hours. Measured max over the last 12 runs: 0.2m per matrix
-    # leg. `terraform init` reaches the provider registry, which is the only
-    # step here that can hang.
+    # terraform init reaches the provider registry and could hang.
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        # Two independent root modules: the Snowflake foundation (specified,
-        # never applied — applying needs a paid account) and the GitHub repo
-        # config (applied for real). Both must validate; neither needs creds to.
+        # The Snowflake foundation (never applied) and the repository config
+        # (applied).
         dir: [terraform, terraform/github]
 
     defaults:

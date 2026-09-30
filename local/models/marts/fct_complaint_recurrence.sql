@@ -1,20 +1,21 @@
-{{
-    config(
-        materialized = 'table',
-        schema       = 'gold'
-    )
-}}
-
--- fct_complaint_recurrence — grain: one closed service request with an address.
+-- One row per closed service request that has a usable address.
 --
--- Did the same complaint reappear at the same address after this closure? The
--- only test of resolution quality available from 311 alone.
+-- 311 records what the city said happened (closure_type), not whether the
+-- problem went away. The one test available from 311 alone: did the same
+-- complaint come back at the same address soon after the closure?
 --
--- NO window is baked in: consumers filter on observation_days >= N before
--- computing a rate over window N, or right-censoring biases it downward.
--- is_chronic_location matters — one address carried 236 Noise complaints in a
--- single week; such locations recur by nature, not by failed resolution.
--- See dbt/ for the full rationale.
+-- No recurrence window is baked in. The model emits days_to_next_same_complaint
+-- and observation_days, and a consumer computing a rate over N days must keep
+-- only rows with observation_days >= N; otherwise tickets closed near the end
+-- of the data, which have had no chance to recur, count as "did not recur".
+--
+-- Rebuilt each run from the current Silver window (the 37-day daily fetch),
+-- so observation_days is at most ~36 and a 30-day rate covers only closures
+-- from the first days of the window.
+--
+-- is_chronic_location marks addresses that recur by nature (one address filed
+-- 236 noise complaints in a week). They dominate any unfiltered rate, so report
+-- rates with and without them.
 
 with source as (
 
@@ -27,11 +28,11 @@ with source as (
         created_date,
         closed_date,
         status,
-        -- upper + trim + collapse internal whitespace. DuckDB needs the 'g'
-        -- flag; Snowflake's regexp_replace is global by default. The POSIX class
-        -- avoids backslash escaping, which silently produced a literal '\\s' and
-        -- matched nothing. Suffix folding
-        -- measured and rejected — it buys 6 strings. See dbt/.
+        -- Address identity: upper, trim, collapse internal whitespace. That
+        -- catches almost all duplicate spellings; suffix folding (STREET->ST)
+        -- gained only a handful more and is not worth maintaining. Geocoding
+        -- would be the real fix. The POSIX class avoids backslash escaping;
+        -- DuckDB needs the 'g' flag to replace every match, Snowflake does not.
         regexp_replace(upper(trim(incident_address)), '[[:space:]]+', ' ', 'g')        as address_key
 
     from {{ ref('int_service_requests_cleaned') }}
@@ -41,7 +42,7 @@ with source as (
 
 ),
 
--- Every ticket is a candidate *recurrence* of an earlier one, open or closed.
+-- Any ticket, open or closed, can be the recurrence of an earlier one.
 candidates as (
 
     select address_key, complaint_type, created_date
@@ -49,8 +50,8 @@ candidates as (
 
 ),
 
--- Only closed tickets can be assessed: an open ticket has not been resolved,
--- so a later complaint is not evidence about a resolution.
+-- Only closed tickets are assessed: a later complaint says nothing about a
+-- resolution that has not happened.
 closed as (
 
     select *
@@ -60,13 +61,10 @@ closed as (
 
 ),
 
--- The horizon: the newest day the source has published IN FULL. NOT
--- max(created_date) — the source lags ~23.5h, so the newest loaded day is
--- always the first ~2 hours of one (358/372/382/832 rows vs a ~10,500 median),
--- and measuring against it credited every closure with up to a day it never
--- had. The completeness rule lives in int_load_completeness, once, because
--- fct_daily_volume needs it too. MAX over COMPLETE days also absorbs a
--- multi-day publish gap. NULL when no day is complete — see below. See dbt/.
+-- The horizon is the newest COMPLETE day from int_load_completeness, not
+-- max(created_date): the newest loaded day is always partial, and measuring
+-- against it would credit every closure with time it never had. NULL when no
+-- loaded day is complete, and deliberately not defaulted.
 horizon as (
 
     select max(load_day) as last_complete_date
@@ -87,10 +85,9 @@ with_next as (
         c.created_date,
         c.closed_date,
 
-        -- Days until the next same-address, same-type complaint was filed after
-        -- this one closed. NULL means none was observed inside the bounded
-        -- window — which is NOT the same as "the problem was fixed"; read it
-        -- together with observation_days.
+        -- Days until the next same-address, same-type complaint after this
+        -- closure. NULL means none was seen within the bounded window, which is
+        -- not the same as "fixed"; read it with observation_days.
         min(
             datediff('day', cast(c.closed_date as date), cast(n.created_date as date))
         )                                                                       as days_to_next_same_complaint
@@ -110,7 +107,7 @@ with_next as (
 
 ),
 
--- Ticket volume per (address, complaint type) across the loaded window.
+-- Tickets per (address, complaint type) in the loaded window.
 location_volume as (
 
     select address_key, complaint_type, count(*) as location_ticket_count
@@ -132,17 +129,14 @@ final as (
         w.closed_date,
         w.days_to_next_same_complaint,
 
-        -- How many days of COMPLETELY PUBLISHED history follow this closure. A
-        -- rate over window N is only honest where this is >= N — and under the
-        -- old horizon a row reading 3 had really had ~2.04 days.
-        -- Floored at zero: a request closed after the horizon has no observed
-        -- time, not negative time. The floor is not a licence to floor
-        -- everything, which is what a broken horizon does silently; the two
-        -- singular tests in tests/ hold it to that.
-        -- The NULL horizon is written out rather than left to GREATEST, whose
-        -- NULL handling differs by engine (Snowflake NULL, DuckDB 0) — so "no
-        -- complete day" reddens the build instead of yielding silent zeros.
-        -- See dbt/ for the full rationale.
+        -- Complete days of published history after this closure, floored at
+        -- zero: rows closed after the horizon have had no observed time, and
+        -- `observation_days >= N` then excludes them as it should.
+        -- assert_observation_days_floor_is_explained and
+        -- assert_recurrence_horizon_is_last_complete_day catch a horizon that
+        -- is too far back or too far forward. The NULL case is explicit because
+        -- GREATEST(0, NULL) is NULL on Snowflake but 0 on DuckDB; NULL fails
+        -- the not_null test instead of filling the table with zeros.
         case
             when h.last_complete_date is null then null
             else greatest(
@@ -153,10 +147,7 @@ final as (
 
         v.location_ticket_count,
 
-        -- Chronic locations recur regardless of how any single ticket was
-        -- closed. Threshold is deliberately low and deliberately a var: at one
-        -- week of history 5 tickets at one address is already exceptional, and
-        -- the right cut changes as history deepens.
+        -- A var because the right cut changes with how much history is loaded.
         case
             when v.location_ticket_count >= {{ var('chronic_location_min_tickets') }}
                 then true

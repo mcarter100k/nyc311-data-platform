@@ -1,10 +1,4 @@
-# modules/snowflake-foundation/outputs.tf
-#
-# Exports Snowflake resource identifiers consumed by:
-#   - Root module outputs (terraform output → CI/CD env vars)
-#   - dbt profiles.yml (database, schema, warehouse)
-#   - Airflow Snowflake connection configuration
-#   - azure-infra module (Databricks job parameters)
+# Resource names read by the root module outputs and dbt profiles.yml.
 
 output "database_name" {
   description = "Fully-resolved name of the Snowflake database (includes environment suffix)."

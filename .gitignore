@@ -18,10 +18,7 @@ logs/
 *.log
 
 # ── Terraform ─────────────────────────────────────────────────────────────────
-# Provider binaries — restored by `terraform init`. Pattern is deliberately
-# path-agnostic: the original `terraform/.terraform/` matched only the root
-# module, so a second root module (terraform/github/) would have committed a
-# 24MB provider binary.
+# Provider binaries (restored by `terraform init`), in every root module.
 **/.terraform/
 
 # .terraform.lock.hcl is intentionally committed — it pins provider versions
@@ -30,8 +27,6 @@ logs/
 # Local override files — never commit these
 *.tfvars
 *.tfvars.json
-terraform.tfstate
-terraform.tfstate.backup
 override.tf
 override.tf.json
 *_override.tf
@@ -40,7 +35,6 @@ override.tf.json
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
-*.pyo
 .pytest_cache/
 .venv/
 .venv-airflow/
@@ -79,6 +73,3 @@ local/.user.yml
 **/*.tfstate
 **/*.tfstate.backup
 tfplan
-
-# Agent worktrees — ephemeral clones, never part of the repo.
-.claude/

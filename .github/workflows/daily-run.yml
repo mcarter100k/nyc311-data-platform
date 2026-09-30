@@ -1,9 +1,7 @@
 name: Daily Live Run
 
-# 10:00 UTC = 06:00 America/New_York while DST is in effect. GitHub cron has
-# no timezone anchor, so when DST ends the same trigger fires at 05:00 local —
-# accepted drift, documented in ADR 010. workflow_dispatch exists for manual
-# runs and for the post-merge verification of this workflow itself.
+# Cron is 10:00 UTC (06:00 New York in summer); GitHub typically starts it
+# 3-8h late. workflow_dispatch is for manual runs and replays. See ADR 010.
 on:
   schedule:
     - cron: "0 10 * * *"
@@ -11,21 +9,21 @@ on:
     inputs:
       window_days:
         description: >
-          Width of the fetch window in days. Leave at 7 for a normal run. Widen it
-          to replay a range — dimensions rebuild from this window, so a dimension
-          can lose members the accumulating fact table still references, and one
-          wide build re-seats them without deleting any fact row.
+          Width of the fetch window in days. Leave at 37 for a normal run. Widen
+          it to replay a range: every row in the window is re-fetched and
+          upserted, so stored statuses refresh. Only rows Silver quarantines are
+          removed from Gold. The
+          800,000-row cap limits one run to roughly 75 days.
         required: false
-        default: "7"
+        default: "37"
 
 permissions:
   contents: read
   issues: write
 
-# One run at a time: a manual dispatch overlapping the cron run would race the
-# non-atomic issue-dedup below (list → create) and could file duplicate breach
-# issues, and both runs would fight over the cached DuckDB. Queue, don't
-# cancel — a manual run should still happen after the scheduled one finishes.
+# One run at a time: overlapping runs would race the issue dedup below
+# (list, then create) and the cached DuckDB. Queue rather than cancel, so a
+# manual run still happens after the scheduled one.
 concurrency:
   group: daily-run
   cancel-in-progress: false
@@ -35,15 +33,9 @@ jobs:
     name: Live fetch, build, SLO check
     runs-on: ubuntu-latest
 
-    # The default job timeout is 6 HOURS. Combined with the queueing
-    # concurrency group above — correct for dedup, but it means a queued run
-    # waits rather than replacing — one hung run could hold the group long
-    # enough to swallow the next day's scheduled trigger, and the pipeline
-    # would go silent without a single red run. Measured over the last 12 runs:
-    # median 1.7m, max 3.9m. 15m is ~4x the worst observed, leaves room for a
-    # slow Socrata fetch, and guarantees the group is clear many hours before
-    # the next 10:00 UTC trigger.
-    timeout-minutes: 15
+    # The default is 6 hours, and a hung run holds the queue above into the
+    # next day's trigger. A 37-day run takes about 8 minutes.
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -56,12 +48,9 @@ jobs:
       - name: Install pipeline dependencies
         run: pip install -r local/requirements.txt
 
-      # Restore the previous run's database so Gold builds INCREMENTALLY on
-      # top of accumulated state — the fact table merges, the SCD2 snapshot
-      # spans runs, and the DQ log grows real 7-day history. Without this,
-      # every scheduled run was a from-scratch --full-refresh and the
-      # incremental path the spec describes never executed live.
-      # restore-keys picks the most recent prior save (keys are per-run).
+      # Gold builds incrementally on the previous run's database: the fact
+      # table merges, the SCD2 snapshot spans runs, and the DQ log keeps its
+      # history. Keys are per run; restore-keys picks the newest save.
       - name: Restore previous DuckDB (incremental accumulation)
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -70,44 +59,20 @@ jobs:
           restore-keys: |
             nyc311-duckdb-
 
-      # Reconcile stored derivations with current model logic BEFORE dbt runs.
-      #
-      # The fact accumulates far beyond silver's rolling window (170,046 rows
-      # spanning 17 days against silver's 64,292 over 7, measured 2026-08-29),
-      # so rows outside that window are never revisited by an incremental
-      # build. When #55 corrected the is_overdue rule, the 3,241 rows already
-      # stored under the old rule became permanently wrong AND permanently
-      # unreachable: every run from 2026-08-27 failed the singular test that
-      # guards the rule, and because the cache saves only on success, each run
-      # restored the same poisoned database. The pipeline could not heal.
-      #
-      # This step breaks that loop and prevents the next one. It is idempotent
-      # and prints "nothing to backfill" on a healthy database, so it stays
-      # cheap once the debt is paid rather than needing to be removed.
-      #
-      # It is NOT `dbt build --full-refresh`: that rebuilds the fact from
-      # silver and would delete the 105,754 rows silver no longer carries to
-      # repair 3,241.
-      - name: Reconcile stored derivations (idempotent)
-        run: python scripts/backfill_is_overdue.py local/data/nyc311_local.duckdb
-
-      # Trailing-7-day created_date window, hard 150k row cap. Transient HTTP
-      # faults (429, 5xx) retry twice with exponential backoff; everything else
-      # — a non-retryable status, a cap breach, a zero-row fetch, exhausted
-      # retries — is a red run, never a partial load.
-      # SOCRATA_APP_TOKEN reaches the fetcher via env (local_runner.py reads
-      # os.environ); an unset secret resolves to empty, which the runner
-      # treats as unauthenticated.
+      # Fetches every request created in the trailing 37 days, so 30-day
+      # closure rates see closures up to day 30 plus the source's settling lag.
+      # Transient HTTP errors (429, 5xx) are retried; any other failure,
+      # including a row-cap hit or zero rows, fails the run rather than loading
+      # partial data. An unset SOCRATA_APP_TOKEN means unauthenticated requests.
       - name: Run live pipeline (fetch → bronze → silver → dbt build)
         env:
           SOCRATA_APP_TOKEN: ${{ secrets.SOCRATA_APP_TOKEN }}
-          # Scheduled runs have no inputs context, so this resolves to 7.
-          WINDOW_DAYS: ${{ github.event.inputs.window_days || '7' }}
+          # Scheduled runs have no inputs, so this falls back to 37.
+          WINDOW_DAYS: ${{ github.event.inputs.window_days || '37' }}
         run: python local/local_runner.py --live --days "$WINDOW_DAYS"
 
-      # Save only on success: a failed run must not advance the cached state,
-      # so the next run restores the last GOOD database instead of a
-      # possibly partial one.
+      # Save only on success, so the next run starts from the last good
+      # database rather than a partial one.
       - name: Save DuckDB for the next run
         if: success()
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -115,24 +80,11 @@ jobs:
           path: local/data/nyc311_local.duckdb
           key: nyc311-duckdb-${{ github.run_id }}
 
-      # `always()`: a pipeline failure is exactly when the evidence file is
-      # needed for the postmortem — upload whatever exists, even mid-build
-      # state. NOTE (conscious trade-off): artifacts on a public repo are
-      # downloadable by any logged-in GitHub user for the retention window.
-      # This database holds only public NYC 311 data; keep it that way, or
-      # gate this upload before landing anything non-public.
-      #
-      # The raw JSON ships WITH the database, and must keep doing so. Since
-      # ADR 014, bronze.service_requests is a view over that file rather than a
-      # copy of it, so a database downloaded on its own has a Bronze layer that
-      # raises `IO Error: No files found` on first query. Gold and Silver are
-      # materialised and survive; raw — the thing a postmortem most wants —
-      # does not. Uploading the pair keeps the evidence bundle self-contained.
-      #
-      # The `if: always()` below is load-bearing and was missing: with no `if:`
-      # key a step defaults to success(), so this upload was SKIPPED on exactly
-      # the runs the comment above says it exists for. It went unnoticed
-      # because every failure to date happened downstream of this step.
+      # Always upload: a failed run is when the evidence matters most. The
+      # raw JSON ships with the database because bronze is a view over that
+      # file (ADR 014); without it the downloaded database's bronze layer
+      # cannot be queried. Artifacts on a public repo are downloadable by any
+      # GitHub user, so this must stay public data only.
       - name: Upload DuckDB artifact
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -144,17 +96,13 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      # Executes the same scripts/slo/*.sql that docs/SLO.md displays —
-      # check_claims fails CI if those two ever differ, so there is exactly
-      # one copy of each contract query in play.
+      # Runs scripts/slo/*.sql, the same queries docs/SLO.md shows
+      # (check_claims fails CI if they differ).
       - name: Check SLOs
         run: python scripts/check_slos.py local/data/nyc311_local.duckdb --report slo_report.md
 
-      # WARNING path, not a gate (exit 0 either way): the volume-cliff check
-      # that used to be SLO-2. A city publishing outage no longer reddens
-      # this run — SLO-2 now verifies we loaded everything the source
-      # published — but the stall must stay visible, so a labeled issue is
-      # filed/updated below while the run stays green.
+      # Warning only (exits 0): if the city stops publishing, file an
+      # upstream-stall issue while the run stays green.
       - name: Check upstream publish volume (warning only)
         id: upstream
         run: python scripts/check_upstream_stall.py local/data/nyc311_local.duckdb --report upstream_report.md
@@ -174,9 +122,9 @@ jobs:
             cat upstream_report.md
           } > stall_body.md
 
-          # Label declared in terraform/github, not created here.
-          # Same one-open-issue dedup pattern as the breach stream, separate
-          # label: this thread tracks the CITY's outage, not our failures.
+          # One open issue per label: comment on it if it exists. Labels are
+          # declared in terraform/github. This stream tracks the city's
+          # outages, not ours.
           existing=$(gh issue list --label upstream-stall --state open \
                        --json number --jq '.[0].number // empty')
           if [ -n "$existing" ]; then
@@ -210,12 +158,7 @@ jobs:
             fi
           } > breach_body.md
 
-          # Labels are declared in terraform/github (applied), not created here.
-          # They were previously `gh label create ... --force || true` on every
-          # run: infrastructure made as a job side effect, with failure swallowed.
-
-          # One open issue per breach stream: comment on the existing one
-          # rather than opening a duplicate every day a breach persists.
+          # One open issue per label: comment on it if it exists.
           existing=$(gh issue list --label daily-run-breach --state open \
                        --json number --jq '.[0].number // empty')
           if [ -n "$existing" ]; then

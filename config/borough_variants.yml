@@ -3,14 +3,10 @@ version: 2
 seeds:
   - name: borough_variants
     description: >
-      Canonical NYC borough spelling map — the single source of truth shared by
-      every layer that standardizes borough. Loaded as a dbt seed by both the
-      Snowflake project and the DuckDB mirror, and read directly as a CSV by
-      local/silver_transformations.py (the pandas Silver transform). Before this file the same 24 variants were hardcoded in four
-      places and had already drifted: the dbt CASE knew only 19 of them.
-
-      Adding a newly observed spelling is a one-line edit here that every
-      engine picks up — no code change, and drift is structurally impossible.
+      Canonical NYC borough spelling map, the one definition every layer uses.
+      Loaded as a dbt seed by both the Snowflake and DuckDB projects, and read
+      as a CSV by local/silver_transformations.py. A newly observed spelling is
+      a one-line edit here.
     columns:
       - name: variant
         description: >

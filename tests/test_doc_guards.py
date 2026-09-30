@@ -1,24 +1,16 @@
 """
-Tests for scripts/check_claims.py — the documentation guard itself.
+Tests for scripts/check_claims.py, the documentation guard.
 
-Why this file exists. Every check in check_claims.py is an assertion about the
-repository, and an assertion that cannot fail is worse than no assertion: it
-reports green and is read as evidence. This repo has shipped three such checks by
-accident — an ADR-table search that passed because ADRs are also linked from
-prose, an `N-task` substring match that a second DAG name kept satisfying, and a
-line-number citation format that `check_links` silently discarded before
-comparing. Each was found by hand, months later.
-
-So each guard is exercised here against a synthetic tree with the thing it
-guards deliberately broken. A refactor that makes a check unfireable fails these
-tests instead of quietly passing CI.
+A check that cannot fail is worse than no check: it reports green and is read
+as evidence. So each guard is run here against a synthetic tree with the thing
+it guards deliberately broken. A refactor that makes a check unable to fire
+fails these tests instead of quietly passing CI.
 
 The functions under test read files under `check_claims.ROOT`; the tests point
 ROOT at a tmp_path so nothing here touches the real repo.
 """
 
 import importlib.util
-import json
 import os
 import sys
 
@@ -82,8 +74,7 @@ def test_citation_checker_reports_itself_vacuous_when_nothing_uses_the_form(tree
 
 
 def test_citations_are_not_checked_inside_adrs(tree):
-    """An ADR records a decision AT A TIME; the code it cites may be gone.
-    docs/adr/010 still cites databricks/, deleted 2026-08-20, and truthfully so."""
+    """An ADR records a decision at a point in time; the code it cites may be gone."""
     tree("src/live.sql", "still_here\n")
     tree("docs/adr/001-x.md", '`src/deleted.sql#"long gone"`\n')
     tree("docs/CLAIMS.md", '`src/live.sql#"still_here"`\n')
@@ -128,8 +119,8 @@ def test_path_span_ignores_prose_in_backticks(tree, span):
 # ── Links and fragments ───────────────────────────────────────────────────────
 
 def test_link_is_resolved_relative_to_the_linking_file_not_the_repo_root(tree):
-    """docs/ARCHITECTURE.md's `adr/008-...md` is valid; rooting it at the repo
-    root — which the pre-2026-08-26 checker did — would call it broken."""
+    """docs/ARCHITECTURE.md's `adr/008-...md` is valid; resolving it from the
+    repo root would call it broken."""
     tree("docs/adr/008-x.md", "# X\n")
     tree("docs/ARCHITECTURE.md", "[ADR 008](adr/008-x.md)\n")
     assert cc.check_links(["docs/ARCHITECTURE.md"]) == []
@@ -285,6 +276,73 @@ def test_star_counts_compare_against_the_marts_directory():
     assert cc.check_star_counts("marts: 3 facts · 3 dims", expected)
 
 
+# ── README ADR table and Terraform counts ─────────────────────────────────────
+
+ADR_README = (
+    "## Architecture Decision Records\n\n"
+    "| [001](docs/adr/001-a.md) | x |\n"
+    "\n## Next section\n"
+)
+
+
+def test_adr_table_passes_when_every_adr_has_a_row(tree):
+    tree("docs/adr/001-a.md", "# A\n")
+    assert cc.check_adr_table(ADR_README) == []
+
+
+def test_adr_table_flags_an_adr_linked_only_outside_the_table(tree):
+    """A link elsewhere in the README must not count as a table row."""
+    tree("docs/adr/001-a.md", "# A\n")
+    tree("docs/adr/002-b.md", "# B\n")
+    readme = ADR_README + "See [002](docs/adr/002-b.md).\n"
+    errors = cc.check_adr_table(readme)
+    assert len(errors) == 1
+    assert "002-b.md" in errors[0]
+
+
+def test_terraform_counts_must_match_the_module(tree):
+    tree("terraform/modules/snowflake-foundation/main.tf",
+         'resource "snowflake_schema" "a" {}\nresource "snowflake_schema" "b" {}\n'
+         'resource "snowflake_role" "r" {}\n')
+    assert cc.check_terraform_counts("2 schemas and 1 roles") == []
+    errors = cc.check_terraform_counts("3 schemas and 1 roles")
+    assert len(errors) == 1
+    assert "'2 schemas'" in errors[0]
+
+
+# ── SLO doc sync ──────────────────────────────────────────────────────────────
+
+SLO_SQL = "select 1 as pass;\n"
+
+
+def _slo_doc(sql):
+    return f"# SLO\n\n<!--slo-sql:scripts/slo/x.sql-->\n```sql\n{sql}```\n"
+
+
+@pytest.fixture
+def slo_tree(tree, monkeypatch, tmp_path):
+    tree("scripts/slo/x.sql", SLO_SQL)
+    monkeypatch.setattr(cc, "SLO_DOC", str(tmp_path / "docs/SLO.md"))
+    return tree
+
+
+def test_slo_doc_sync_passes_when_the_doc_matches_the_query(slo_tree):
+    slo_tree("docs/SLO.md", _slo_doc(SLO_SQL))
+    assert cc.check_slo_doc_sync() == []
+
+
+def test_slo_doc_sync_fails_when_the_doc_differs_from_the_query(slo_tree):
+    slo_tree("docs/SLO.md", _slo_doc("select 0 as pass;\n"))
+    errors = cc.check_slo_doc_sync()
+    assert len(errors) == 1
+    assert "SLO drift" in errors[0]
+
+
+def test_slo_doc_without_guarded_blocks_is_an_error(slo_tree):
+    slo_tree("docs/SLO.md", "# SLO\n\n```sql\nselect 1 as pass;\n```\n")
+    assert any("no <!--slo-sql" in e for e in cc.check_slo_doc_sync())
+
+
 # ── Superseded claims, and the ADR carve-out ──────────────────────────────────
 
 def test_a_superseded_claim_outside_adr_fails(tree):
@@ -309,14 +367,13 @@ def test_missing_manifest_is_reported_as_a_precondition_not_a_drift(tmp_path, mo
     assert "CANNOT RUN" in capsys.readouterr().out
 
 
-def test_manifest_test_counts_split_generic_from_singular(tmp_path):
+def test_manifest_test_counts_split_generic_from_singular():
     manifest = {"nodes": {
         "t1": {"resource_type": "test", "test_metadata": {"name": "unique"}},
         "t2": {"resource_type": "test", "test_metadata": {"name": "not_null"}},
         "t3": {"resource_type": "test"},
         "m1": {"resource_type": "model", "name": "dim_date"},
     }}
-    (tmp_path / "m.json").write_text(json.dumps(manifest))
     assert cc.manifest_test_counts(manifest) == (3, 2, 1)
     assert cc.manifest_model_names(manifest) == ["dim_date"]
 

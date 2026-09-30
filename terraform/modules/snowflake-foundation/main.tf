@@ -1,11 +1,9 @@
-# modules/snowflake-foundation/main.tf
+# The Snowflake objects for the platform, with least-privilege roles: no role
+# reads or writes outside its layer.
 #
-# Provisions the complete Snowflake object hierarchy for the NYC 311 platform.
-# Follows least-privilege: each role receives the minimum grants required for its
-# function. No role can read or write outside its designated layer.
-#
-# Role access matrix:
-#   LOADER      → BRONZE write (INSERT only — append-only enforced at privilege layer)
+# Role access:
+#   LOADER      → BRONZE write (INSERT, no UPDATE or TRUNCATE; see the known
+#                 limit in tests/test_pipeline_components.py)
 #   TRANSFORMER → BRONZE read, SILVER write, GOLD write
 #   REPORTER    → GOLD read-only
 #   ADMIN       → full control over all platform objects

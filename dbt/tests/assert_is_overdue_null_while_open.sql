@@ -1,18 +1,7 @@
--- is_overdue must be NULL for anything not closed.
---
--- The three-valued design exists so that `COUNT(*) FILTER (WHERE NOT is_overdue)`
--- cannot count an open request as "on time" — a boolean FALSE would silently
--- inflate every resolution-rate measure built on it.
---
--- The README asserted that property; the implementation did not deliver it.
--- is_overdue keyed on `resolution_days is null`, and the source emits rows that
--- carry a closed_date while status is still Open / In Progress / Assigned. Those
--- rows got a resolution_days, so is_overdue came out FALSE: 4,139 open requests
--- were being counted as on time by the exact expression the design was written
--- to protect.
---
--- Worth asserting rather than trusting, because the failure is invisible in
--- aggregate — the rate simply reads better than it is.
+-- is_overdue must be NULL for anything not Closed, so
+-- `COUNT(*) FILTER (WHERE NOT is_overdue)` cannot count an open request as on
+-- time. The source sends some open rows with a closed_date, so keying on
+-- resolution_days alone is not enough.
 
 select
     service_request_id,

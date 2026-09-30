@@ -1,24 +1,21 @@
-{# dbt-duckdb does not implement the 'merge' incremental strategy;
-   delete+insert on the unique key has the same upsert semantics
-   (the Snowflake project uses merge). #}
 {{
     config(
         materialized         = 'incremental',
-        schema               = 'gold',
         unique_key           = 'location_id',
         incremental_strategy = 'delete+insert',
         on_schema_change     = 'append_new_columns'
     )
 }}
 
-{# Incremental for RETENTION, not performance. Rebuilt as a table this
-   dimension was reconstructed each run from Silver's rolling window, while
-   fct_service_requests accumulates past it — so a combination that left the
-   window vanished from the dimension and the fact's FK silently dangled. A
-   Kimball dimension grows and never loses members. The grain IS the key
-   (location_id hashes exactly borough + community_board + incident_zip, and
-   the table holds nothing else), so members are immutable and append-only is
-   the entire lifecycle. See dbt/ for the full rationale. #}
+-- One row per (borough, community_board, incident_zip) ever seen in the data;
+-- there is no upstream location list. The UNKNOWN coalescing below must match
+-- the join keys in fct_service_requests exactly, or fact rows lose their
+-- location_id.
+--
+-- Incremental so members are never dropped: the fact keeps history longer
+-- than Silver's window, and its location_id must keep resolving. Members never
+-- change (the three columns ARE the key), so insert-only is enough.
+-- Full-refresh this together with fct_service_requests, never alone.
 
 with locations as (
 
@@ -28,8 +25,6 @@ with locations as (
         coalesce(nullif(trim(incident_zip),    ''), 'UNKNOWN')                 as incident_zip
 
     from {{ ref('int_service_requests_cleaned') }}
-
-    where borough_clean is not null
 
 ),
 
@@ -53,6 +48,7 @@ select * from final
 
 {% if is_incremental() %}
 
+-- Append only new members. NOT IN is safe: location_id is never NULL.
 where location_id not in (select location_id from {{ this }})
 
 {% endif %}
