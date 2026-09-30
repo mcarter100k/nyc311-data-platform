@@ -646,6 +646,27 @@ def test_daily_run_uploads_evidence_even_when_the_pipeline_fails():
     )
 
 
+def test_daily_run_scheduled_and_manual_windows_agree():
+    """Scheduled runs have no inputs and use the WINDOW_DAYS fallback; manual
+    runs use the input default. The two must be the same window."""
+    wf = load_workflow("daily-run.yml")
+    triggers = wf.get("on", wf.get(True))
+    manual_default = triggers["workflow_dispatch"]["inputs"]["window_days"]["default"]
+    run_step = next(
+        s for s in wf["jobs"]["daily-run"]["steps"] if "--days" in s.get("run", "")
+    )
+    match = re.fullmatch(
+        r"\$\{\{ github\.event\.inputs\.window_days \|\| '(\d+)' \}\}",
+        run_step["env"]["WINDOW_DAYS"],
+    )
+    assert match, f"unexpected WINDOW_DAYS expression: {run_step['env']['WINDOW_DAYS']}"
+    assert match.group(1) == manual_default, (
+        f"scheduled runs fetch {match.group(1)} days but manual runs default to "
+        f"{manual_default}"
+    )
+    assert '--days "$WINDOW_DAYS"' in run_step["run"]
+
+
 def test_heartbeat_watches_the_daily_run_on_its_own_schedule():
     """The heartbeat has its own schedule; it must speak when daily-run.yml
     does not run."""
