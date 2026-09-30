@@ -1,6 +1,5 @@
-# Weekly dependency updates. Minor + patch releases arrive grouped per
-# ecosystem (one PR, not one per package); majors arrive solo so a breaking
-# bump is never buried inside a routine batch.
+# Weekly dependency updates. Minor and patch releases arrive grouped (one PR
+# per ecosystem); majors arrive one per PR so a breaking bump is never buried.
 version: 2
 
 updates:
@@ -14,33 +13,21 @@ updates:
           - minor
           - patch
 
+  # One entry for every requirements file, so a package pinned in two files
+  # (dbt-core in dbt/ and local/, pandas in local/ and tests/unit/, pytest in
+  # / and tests/unit/) moves in both within a single PR. Separate entries
+  # produce one PR per file, and each fails CI alone because front-door
+  # installs the files together.
   - package-ecosystem: pip
-    directory: /dbt
+    directories:
+      - /
+      - /dbt
+      - /local
+      - /tests/unit
     schedule:
       interval: weekly
     groups:
-      dbt-minor-patch:
-        update-types:
-          - minor
-          - patch
-
-  - package-ecosystem: pip
-    directory: /local
-    schedule:
-      interval: weekly
-    groups:
-      local-minor-patch:
-        update-types:
-          - minor
-          - patch
-
-  # The unit CI tier's pinned pandas (tests/unit/requirements.txt).
-  - package-ecosystem: pip
-    directory: /tests/unit
-    schedule:
-      interval: weekly
-    groups:
-      unit-minor-patch:
+      pip-minor-patch:
         update-types:
           - minor
           - patch
