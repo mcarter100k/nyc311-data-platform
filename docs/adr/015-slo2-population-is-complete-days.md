@@ -120,8 +120,8 @@ faults; it returns 429 and 5xx as ordinary `Response` objects. So the two
 likeliest transient faults against a public, rate-limited API got **zero**
 retries, while a dropped socket got one — the protection was inverted.
 
-Both paths now share `_get_with_retry`: three attempts with exponential backoff
-(1s, 2s), retrying on a connection error or on `{429, 500, 502, 503, 504}`, and
+Both paths now share `_get_with_retry`: attempts with exponential backoff
+(sized in ADR 010's 2026-09-30 amendment), retrying on a connection error or on `{429, 500, 502, 503, 504}`, and
 raising **immediately** on any other non-2xx, because repeating a 404 or a
 malformed-query 400 only buries the real status. The fail-loud contract of
 ADR 010 is unchanged — exhausted retries raise, a cap breach raises, a zero-row

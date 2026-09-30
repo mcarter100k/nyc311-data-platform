@@ -28,7 +28,7 @@ import requests
 # Sibling modules. Silver logic lives in silver_transformations so it can be
 # unit-tested without a database; this module owns I/O.
 from dbt_exec import dbt_executable
-from ingest_config import SOCRATA_URL, build_page_params
+from ingest_config import PAGE_SIZE, SOCRATA_URL, build_page_params
 from silver_transformations import (
     compute_dq_metrics,
     compute_resolution_days,
@@ -67,10 +67,11 @@ SOURCE_COUNT_PROBES        = 11
 SOURCE_COUNT_PAUSE_SECONDS = 0.6
 
 # Retry only transient faults (connection errors, 429, 5xx); any other non-2xx
-# fails at once. 3 attempts = 2 retries, backoff 1s then 2s. Running out of
-# retries raises (ADR 010).
-HTTP_ATTEMPTS          = 3
-HTTP_BACKOFF_SECONDS   = 1.0
+# fails at once. 6 attempts, backoff 2, 4, 8, 16, 32 s: about a minute of
+# waiting, 12x the longest burst of 503s measured on 2026-09-30 (6 in a row
+# over ~5 s, with 11 of 60 requests failing). Running out raises (ADR 010).
+HTTP_ATTEMPTS          = 6
+HTTP_BACKOFF_SECONDS   = 2.0
 HTTP_RETRYABLE_STATUS  = frozenset({429, 500, 502, 503, 504})
 
 
@@ -115,7 +116,9 @@ def _get_with_retry(get, url, *, params, headers=None, timeout=60, what="Socrata
                 f"{what} failed after {HTTP_ATTEMPTS} attempts "
                 f"({HTTP_ATTEMPTS - 1} retries): {reason}"
             ) from reason
-        time.sleep(HTTP_BACKOFF_SECONDS * 2 ** (attempt - 1))
+        wait = HTTP_BACKOFF_SECONDS * 2 ** (attempt - 1)
+        print(f"  retry {attempt}/{HTTP_ATTEMPTS - 1} in {wait:g}s: {what}: {reason}")
+        time.sleep(wait)
 
 
 # ── Stage 1: Ingest ────────────────────────────────────────────────────────────
@@ -193,6 +196,8 @@ def fetch_live_records(days: int = LIVE_DAYS, cap: int = LIVE_ROW_CAP, get=None)
                     f"{days} days). This signals an upstream volume spike — investigate "
                     f"before raising LIVE_ROW_CAP in local_runner.py / ADR 010."
                 )
+            if len(batch) < PAGE_SIZE:  # a short page is the day's last
+                break
     if not records:
         raise RuntimeError(
             f"Live fetch returned zero rows for the trailing {days} days — the "
