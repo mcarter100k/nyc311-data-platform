@@ -9,57 +9,28 @@ stays green; but it must stay VISIBLE, because analysts reading the dashboards
 need to know the data stops short. The daily-run workflow turns a stall verdict
 into a labeled GitHub issue (upstream-stall) while the run itself stays green.
 
-WHY THIS FILE WAS REWRITTEN (2026-08-27). It used to compare yesterday's row
-count in OUR fact table against a trailing 7-day median of our own counts. Both
-halves were wrong:
-
-  * "Yesterday" is never a whole day at the source. The publish lag means
-    yesterday holds its first ~2 hours or nothing at all, so a healthy run
-    scored ~358 against a ~10,500 median — 3.4% of the floor's 40%. The check
-    therefore fired on 100% of healthy runs; issue #40 was commented every day
-    from 2026-08-20. A daily alert that cannot stay quiet discriminates
-    nothing, which is the exact argument ADR 013 makes against signals nobody
-    can act on — applied here to the signal ADR 013 chose to keep.
-  * It compared our counts against our counts, so it could never see the
-    source at all. A day we loaded thinly and a day the city published thinly
-    were the same number to it.
-
-Both are fixed by the same population change SLO-2 makes: judge the newest day
-the LOAD shows as COMPLETE (int_load_completeness — clock coverage, not a row
-threshold), and compare SOURCE counts, captured per day into
-silver.source_counts by local_runner.fetch_source_counts_window.
-
-Two conditions, either of which warns:
+It judges the newest day the load shows as COMPLETE (int_load_completeness)
+against SOURCE counts (silver.source_counts), because yesterday is never a
+whole day at the source and our own counts cannot see the source (ADR 015).
+Either condition warns:
 
   STALENESS — the newest complete day is more than MAX_COMPLETE_DAY_LAG_DAYS
-    behind today (UTC). On a normal day the run at 10:00 UTC sees yesterday as
-    a partial day and the day before as complete, so 2 is the healthy value and
-    3+ means the source missed a publish cycle. Measured 2026-08-27: newest
-    complete day 3 behind, with the last publish 1.4h old and carrying nothing
-    new — the shape of the 2026-08-18 stall. Stated plainly: this rests on few
-    observations of "normal", and it is a warning precisely so that being
-    somewhat wrong about the threshold costs a notification and not a red run.
+    behind today (UTC). At the 10:00 UTC run yesterday is partial and the day
+    before is complete, so 2 is healthy and 3+ means a missed publish cycle.
+    Few observations back this number, which is why it warns rather than gates.
 
-  VOLUME — the newest complete day's SOURCE count below VOLUME_FLOOR of the
-    median source count of the other complete days in the window. This is the
-    old volume cliff, moved onto a real day and onto the source's own numbers.
-    The floor sits under NYC 311's natural ~50-60% weekend/holiday troughs. It
-    covers the partial-stall gap ADR 013 recorded as a known limit: a day the
-    city publishes to midnight but only half fills.
+  VOLUME — the newest complete day's source count is below VOLUME_FLOOR of
+    the median of the other complete days. The floor sits under NYC 311's
+    ~50-60% weekend/holiday troughs; it catches a day the city publishes to
+    midnight but only part-fills.
 
-Relationship to ADR 013, which rejected a source-freshness SLO partly as
-REDUNDANT with this check: the redundancy argument assumed this check worked.
-It did not. Staleness of the complete-day horizon is now the thing this check
-measures, so the argument is restored rather than contradicted — and it is
-still a warning, not a gate. See ADR 015.
-
-Exit code is 0 in both verdicts (warning, not gate). The verdict is emitted
-as `stall=true|false` to $GITHUB_OUTPUT when present (workflow consumption)
-and always printed for humans.
+Exit code is 0 either way. The verdict goes to $GITHUB_OUTPUT as
+`stall=true|false` when that is set, and is always printed.
 
 Usage:  python scripts/check_upstream_stall.py [db_path] [--report path.md]
 """
 
+import argparse
 import os
 import sys
 
@@ -68,13 +39,11 @@ import duckdb
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_DB = os.path.join(ROOT, "local", "data", "nyc311_local.duckdb")
 
-# See the module docstring for how both numbers were arrived at.
 MAX_COMPLETE_DAY_LAG_DAYS = 2
 VOLUME_FLOOR = 0.40
 
-# `current_date` is the SESSION's date, which on a non-UTC laptop is a day
-# behind the UTC day the source and the capture both use. The scheduled run is
-# UTC so it never noticed; taken AT TIME ZONE 'UTC' it is right everywhere.
+# "Today" is taken AT TIME ZONE 'UTC': current_date is the session's date,
+# which on a non-UTC laptop differs from the UTC day the source uses.
 QUERY = f"""
 WITH complete AS (
     SELECT load_day
@@ -112,19 +81,13 @@ def verdict(row: dict) -> tuple[bool, list[str]]:
     """(stall, reasons). Split out from main so it is unit-testable."""
     reasons = []
     if row["newest_complete_day"] is None:
-        # No day in the loaded window is fully published. SLO-2 fails closed on
-        # this too (it cannot measure); here it is simply the strongest stall
-        # signal available.
         reasons.append("no complete day in the loaded window")
     elif row["days_behind"] is not None and row["days_behind"] > row["max_days_behind"]:
         reasons.append(
             f"newest complete day {row['newest_complete_day']} is "
             f"{row['days_behind']} days behind (max {row['max_days_behind']})"
         )
-    # volume_ok is NULL when there is no prior complete day to compare against
-    # — a one-day window, or a database with no captured source counts. NULL is
-    # NOT a stall here: "we cannot compare" is not evidence of a cliff, and the
-    # no-data case is already caught above.
+    # volume_ok is NULL with nothing to compare against; that is not a stall.
     if row["volume_ok"] is False:
         reasons.append(
             f"source published {row['source_rows_newest_complete_day']} rows for "
@@ -134,12 +97,12 @@ def verdict(row: dict) -> tuple[bool, list[str]]:
     return bool(reasons), reasons
 
 
-def main() -> int:
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    db_path = args[0] if args else DEFAULT_DB
-    report_path = None
-    if "--report" in sys.argv:
-        report_path = sys.argv[sys.argv.index("--report") + 1]
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Warn when the city stops publishing normally.")
+    ap.add_argument("db_path", nargs="?", default=DEFAULT_DB)
+    ap.add_argument("--report", help="also write the verdict to this markdown file")
+    args = ap.parse_args(argv)
+    db_path, report_path = args.db_path, args.report
 
     con = duckdb.connect(db_path, read_only=True)
     rel = con.sql(QUERY)

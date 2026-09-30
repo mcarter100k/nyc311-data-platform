@@ -18,6 +18,7 @@ written either way — the daily-run workflow attaches it to breach issues so
 the issue carries the actual numbers, not a paraphrase.
 """
 
+import argparse
 import glob
 import os
 import sys
@@ -29,21 +30,19 @@ DEFAULT_DB = os.path.join(ROOT, "local", "data", "nyc311_local.duckdb")
 SLO_DIR = os.path.join(ROOT, "scripts", "slo")
 
 
-def main() -> int:
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    db_path = args[0] if args else DEFAULT_DB
-    report_path = None
-    if "--report" in sys.argv:
-        report_path = sys.argv[sys.argv.index("--report") + 1]
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Evaluate scripts/slo/*.sql against a DuckDB file.")
+    ap.add_argument("db_path", nargs="?", default=DEFAULT_DB)
+    ap.add_argument("--report", help="also write the results to this markdown file")
+    args = ap.parse_args(argv)
+    db_path, report_path = args.db_path, args.report
 
     con = duckdb.connect(db_path, read_only=True)
     breaches = []
     report = ["# SLO check", f"database: `{db_path}`", ""]
 
     sql_files = sorted(glob.glob(os.path.join(SLO_DIR, "*.sql")))
-    # Guard against the silent-green failure mode: if the SLO directory is
-    # missing, renamed, or empty, zero checks would run and the gate would
-    # pass. Zero evaluated SLOs is a breach of the gate itself, not a pass.
+    # Zero SLO queries found is a breach of the gate, not a pass.
     if not sql_files:
         print(f"SLO GATE ERROR: no SLO queries found in {SLO_DIR} — "
               "refusing to pass with zero checks evaluated.")
@@ -51,7 +50,8 @@ def main() -> int:
 
     for sql_file in sql_files:
         name = os.path.basename(sql_file)
-        rel = con.sql(open(sql_file).read())
+        with open(sql_file) as fh:
+            rel = con.sql(fh.read())
         cols = rel.columns
         row = rel.fetchone()
         values = dict(zip(cols, row, strict=True)) if row else {}
@@ -64,7 +64,8 @@ def main() -> int:
             breaches.append(name)
 
     if report_path:
-        open(report_path, "w").write("\n".join(report) + "\n")
+        with open(report_path, "w") as fh:
+            fh.write("\n".join(report) + "\n")
 
     if breaches:
         print(f"SLO BREACH: {', '.join(breaches)}")
