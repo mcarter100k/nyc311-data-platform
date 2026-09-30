@@ -47,10 +47,7 @@ days; older cohorts never re-enter it.
 **Proposed fix.** Run `daily-run.yml` once by hand with the `window_days`
 input wide enough to reach 2026-08-12 (48 days on 2026-09-29; roughly 500k
 rows, under the 800k cap). The run upserts every re-fetched row and deletes
-none. Dimensions take their members from the window, so the run also re-seats
-any member the fact table references but a dimension has lost (none were
-missing in the 2026-09-29 database). After that, the daily 37-day window keeps
-new cohorts current.
+none. After that, the daily 37-day window keeps new cohorts current.
 
 ---
 

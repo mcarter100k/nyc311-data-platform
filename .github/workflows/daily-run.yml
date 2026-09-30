@@ -10,9 +10,9 @@ on:
       window_days:
         description: >
           Width of the fetch window in days. Leave at 37 for a normal run. Widen
-          it to replay a range: dimensions rebuild from this window, so one wide
-          build restores members the accumulated fact table still references,
-          without deleting any fact row.
+          it to replay a range: every row in the window is re-fetched and
+          upserted, so stored statuses refresh. No fact row is deleted. The
+          800,000-row cap limits one run to roughly 75 days.
         required: false
         default: "37"
 

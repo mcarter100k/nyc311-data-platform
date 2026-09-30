@@ -266,9 +266,8 @@ def fetch_source_counts_window(days: int = LIVE_DAYS, get=None) -> list[dict]:
 def stage1_live(days: int = LIVE_DAYS) -> None:
     """Fetch the trailing `days` window and the source's per-day counts.
 
-    A wider window replays a range, which re-seats dimension members the
-    accumulating fact table still references (see the window_days input in
-    .github/workflows/daily-run.yml).
+    A wider window replays a range: every row in it is re-fetched and upserted
+    (see the window_days input in .github/workflows/daily-run.yml).
     """
     _banner(f"Stage 1 — Live ingest  (trailing {days} days, cap {LIVE_ROW_CAP:,})")
     if days != LIVE_DAYS:
@@ -604,8 +603,7 @@ def main() -> None:
         type=int,
         default=LIVE_DAYS,
         help=f"Width of the --live window in days (default {LIVE_DAYS}). Widen it to "
-             f"replay a range: a dimension rebuilt from the window can lose members "
-             f"the accumulating fact still references, and one wide build re-seats them.",
+             f"replay a range: every row in the window is re-fetched and upserted.",
     )
     args = parser.parse_args()
 
