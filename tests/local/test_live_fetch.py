@@ -74,13 +74,29 @@ def test_window_and_params_come_from_the_shared_builder():
         "Live fetch must build its query through ingest_config.build_page_params "
         f"for the trailing-{LIVE_DAYS}-day window — not through a private param dict."
     )
-    assert get.calls[0]["params"]["$where"].startswith(f"created_date >= '{expected_date}")
+
+
+def test_day_slices_tile_the_window_with_no_gap_or_overlap():
+    """Each day is one query; together they must cover [start, open end) exactly."""
+    days = 5
+    get = FakeGet([])  # every query is empty; the fetch then fails on zero rows
+    with pytest.raises(RuntimeError, match="[Zz]ero rows"):
+        fetch_live_records(days=days, get=get)
+
+    today = datetime.now(UTC).date()
+    expected = [build_page_params((today - timedelta(days=days - i)).isoformat(), 0,
+                                  open_ended=(i == days))
+                for i in range(days + 1)]
+    assert [c["params"] for c in get.calls] == expected
+    bounded = [c["params"]["$where"] for c in get.calls[:-1]]
+    assert all(" and created_date < " in w for w in bounded), bounded
+    assert " and " not in get.calls[-1]["params"]["$where"], "the last slice must be open-ended"
 
 
 def test_pagination_advances_offset_until_empty_page():
     page = [{"unique_key": str(i)} for i in range(3)]
     get = FakeGet([page, page])  # two pages, then the built-in empty page
-    records = fetch_live_records(get=get)
+    records = fetch_live_records(days=0, get=get)  # one slice
 
     assert len(records) == 6
     offsets = [c["params"]["$offset"] for c in get.calls]
