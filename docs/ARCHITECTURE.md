@@ -11,7 +11,7 @@ flowchart TD
     API["NYC Open Data · Socrata API<br/><i>311 service requests · ~22M rows · daily</i>"]
 
     subgraph INGEST["Ingest — local_runner.py"]
-        S1["stage 1 · fetch<br/><i>paginated, 37-day created window, 800k cap</i>"]
+        S1["stage 1 · fetch<br/><i>one query per day, 37-day created window, 800k cap</i>"]
         S2["stage 2 · bronze<br/><i>view over the raw JSON, nothing copied</i>"]
         S3["stage 3 · silver<br/><i>dedup · types · borough · quarantine · DQ log</i>"]
     end
@@ -65,7 +65,7 @@ The borough mapping is drawn dotted because it is configuration, not code: one C
 
 ### Fetch — `local_runner.py` stage 1
 
-Downloads every request with `created_date` in the last 37 days, in 50,000-row pages (the API maximum), and writes it to one file, `nyc311_raw.json` in `local/data/raw/`. The whole window is re-fetched every run, which is how a request's later status changes reach Gold.
+Downloads every request with `created_date` in the last 37 days, one day per query in 50,000-row pages (the API maximum), and writes it to one file, `nyc311_raw.json` in `local/data/raw/`. The whole window is re-fetched every run, which is how a request's later status changes reach Gold.
 
 Why 37 days: 30 days is NYC's closure standard, and the source's copies of a day keep changing for about 7 days ([ADR 016](adr/016-source-settling-horizon.md)). A shorter window made closure rates read low, because Gold stopped seeing a request once it left the window ([ADR 010](adr/010-scheduled-operation.md)). A request older than 37 days keeps the status it had when it left. To refresh older rows, run once with a wider window (`--live --days N`).
 
