@@ -1,14 +1,6 @@
--- Singular test: assert that the data_quality_log was updated in the last 24 hours.
---
--- Returns one row when max(run_date) is more than one day old, which causes
--- `dbt test` to fail. Zero rows means the DQ log reflects a pipeline run from
--- today or yesterday — the Silver job ran successfully and wrote quality metrics.
---
--- Why a singular test instead of source freshness:
---   The `run_date` column is a VARCHAR (YYYY-MM-DD string), not a timestamp, so
---   dbt source freshness cannot parse it correctly. This test casts run_date
---   explicitly and is more debuggable: the failing row shows the actual latest
---   run_date alongside the staleness threshold, making the failure self-explanatory.
+-- Fails when the newest data_quality_log run_date is more than a day old, or
+-- the log is empty. A singular test rather than source freshness because
+-- run_date is a YYYY-MM-DD string, which freshness cannot parse.
 
 select
     max(run_date)       as latest_run_date,
@@ -16,8 +8,6 @@ select
 
 from {{ source('silver', 'data_quality_log') }}
 
--- The IS NULL disjunct guards the empty-table case: max() over zero rows is
--- NULL, NULL < date is NULL, and a bare HAVING would filter the aggregate row
--- out — passing the test precisely when the log was never written at all.
+-- IS NULL catches an empty log: max() is then NULL and a bare HAVING would pass.
 having max(run_date::date) < current_date - 1
     or max(run_date::date) is null

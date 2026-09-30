@@ -1,13 +1,19 @@
+-- All business rules for service requests, in five steps: standardize
+-- borough, compute resolution_days, classify complaint_type (21 categories),
+-- classify closure_type from the resolution text, and drop rows closed before
+-- they opened. One row per request that passes the filter. Staging stays
+-- mechanical and marts stay presentational; rules about meaning change here.
+
 with source as (
 
     select * from {{ ref('stg_service_requests') }}
 
 ),
 
--- Step 1: standardize borough from the shared seed (config/borough_variants.csv),
--- the same file the Python Silver transforms read. LEFT JOIN + COALESCE
--- reproduces the previous CASE ... ELSE 'UNSPECIFIED' exactly; `variant` is
--- unique-tested so no fan-out is possible.
+-- ── Step 1: Standardize borough names ────────────────────────────────────────
+-- The mapping is the borough_variants seed (config/borough_variants.csv), the
+-- same file the pandas Silver transform reads. An unmatched or NULL borough
+-- becomes UNSPECIFIED. `variant` is unique-tested, so the join cannot fan out.
 
 borough_standardized as (
 
@@ -22,6 +28,11 @@ borough_standardized as (
 
 ),
 
+
+-- ── Step 2: Compute resolution_days ─────────────────────────────────────────
+-- Calendar days (midnights crossed) from created to closed; NULL while open.
+-- This is the one definition of resolution_days. Negative values are removed
+-- in Step 5, not here, so the filter stays visible.
 with_resolution_days as (
 
     select
@@ -36,15 +47,18 @@ with_resolution_days as (
 
 ),
 
--- Step 3: classify complaint_type into 21 operational categories.
--- Order matters (first match wins); the '%tree%' guard and the Animals /
--- Construction / Environmental orderings are load-bearing — see dbt/.
+-- ── Step 3: Classify complaint types into categories ─────────────────────────
+-- 400+ raw complaint_type values map to 21 categories that follow how the city
+-- is organised (HPD housing, DOB construction, DSNY waste, TLC vehicles), so a
+-- category has an accountable owner.
 --
--- The catch-all is 'Undecodable', not 'Other'. No rule assigns 'Other', so the
--- bucket was by construction "no rule matched" — 189 of 189 rows on the local
--- load carried a real complaint_type with no rule for it (Green Infrastructure,
--- E-Scooter, LinkNYC, …), i.e. 100% decoder miss and 0% genuine other. Missing
--- input gets its own branch first so the ELSE means one thing. See dbt/.
+-- 'Unspecified' means the source sent no complaint_type. 'Undecodable' means
+-- it sent one and no rule matched: a decoder miss, not a verdict.
+-- assert_complaint_classification_coverage fails the build if 'Undecodable'
+-- exceeds 5% of rows.
+--
+-- CASE is first-match-wins and the patterns overlap; each ordering constraint
+-- is commented at the rule that depends on it.
 
 with_complaint_category as (
 
@@ -130,13 +144,9 @@ with_complaint_category as (
                 then 'Illegal Dumping'
 
             -- ── Parks & Trees ────────────────────────────────────────────
-            -- The '%tree%' wildcard is guarded with NOT ILIKE '%street%'
-            -- because "S-tree-t" contains "tree": before this guard,
-            -- "Street Sweeping Complaint" and all three "Street Sign - ..."
-            -- types (309 rows in a one-week sample) were classified as
-            -- Parks & Trees. The guard is order-independent, so a future rule
-            -- reshuffle cannot resurrect the bug. No NYC tree complaint type
-            -- contains the word "street".
+            -- '%tree%' excludes '%street%' because "sTREEt" contains "tree";
+            -- no NYC tree complaint type contains "street". The guard does not
+            -- depend on rule order.
             when (complaint_type ilike '%tree%' and complaint_type not ilike '%street%')
               or complaint_type ilike '%overgrown%'
               or complaint_type ilike '%root/sewer/sidewalk%'
@@ -156,9 +166,7 @@ with_complaint_category as (
               or complaint_type ilike '%highway condition%'
               or complaint_type ilike '%bridge condition%'
               or complaint_type ilike '%obstruction%'
-              -- Snow/ice clearance is unobservable in a summer window; the
-              -- rule is declared now so winter volume cannot land in the
-              -- 'Undecodable' catch-all.
+              -- Declared ahead of winter so snow volume is not 'Undecodable'.
               or complaint_type ilike '%snow%'
                 then 'Street Condition'
 
@@ -239,8 +247,7 @@ with_complaint_category as (
               or complaint_type ilike '%tattooing%'
                 then 'Consumer & Business'
 
-            -- No rule matched a complaint_type that WAS supplied. Not 'Other'
-            -- — nothing here decided this belongs with the long tail.
+            -- A complaint_type was supplied and no rule matched it.
             else 'Undecodable'
         end                                                                     as complaint_category
 
@@ -248,24 +255,26 @@ with_complaint_category as (
 
 ),
 
--- Step 4: classify how the request was closed, from the templated
--- resolution_description text. 'Closed' != 'fixed' — see dbt/ for the full
--- rationale and the ordering constraints.
+-- ── Step 4: Classify how the request was closed ──────────────────────────────
+-- status = 'Closed' says an agency finished with a ticket, not that anything
+-- was fixed; most closures report no violation, nothing found, a duplicate or
+-- a handoff. resolution_description is heavily templated (a few hundred
+-- distinct strings), so pattern matching is reliable here.
 --
--- TWO catch-alls, not one. Both ends of this CASE used to emit 'Unspecified',
--- merging "the source stated no resolution" (14,185 rows) with "the source
--- stated one and no rule matched" (8,330 rows — 7.34% of every row carrying
--- resolution text, and 8.45% of all CLOSED requests, each one a FALSE in
--- is_actioned). 'Unspecified' now means only the first; 'Undecodable' means the
--- decoder failed, and fct_daily_volume publishes its count beside every
--- percentage taken over the same rows. See dbt/.
+-- 'Unspecified' means the source gave no resolution text. 'Undecodable' means
+-- it gave text and no rule matched; those rows count as is_actioned = FALSE,
+-- so fct_daily_volume publishes their count beside every action rate, and
+-- assert_closure_decode_coverage caps them.
+--
+-- First match wins; ordering constraints are commented inline.
 
 with_closure_type as (
 
     select
         *,
     case
-        -- Input missing. A decoded verdict, not a decode failure.
+        -- Input missing. A decoded verdict, not a decode failure: the source
+        -- supplied no resolution text, and that is worth knowing on its own.
         when resolution_description is null
           or trim(resolution_description) = ''
           or upper(trim(resolution_description)) = 'N/A'                    then 'Unspecified'
@@ -313,12 +322,10 @@ with_closure_type as (
           or resolution_description ilike '%violation was issued%'
           or resolution_description ilike '%office of administrative trials%' then 'Enforcement Action'
 
-        -- Resolved on scene. NYPD's highest-volume template states BOTH "no
-        -- criminal violation existed" AND "the condition was corrected without
-        -- the need to issue a summons" — officers settled it informally. Placed
-        -- ahead of No Violation Found deliberately: the operative outcome is that
-        -- the condition stopped, not that no law was broken. Documented as a
-        -- judgment call because the same sentence supports either reading.
+        -- Resolved on scene. NYPD's most common template says both "no criminal
+        -- violation" and "the condition was corrected without the need to issue
+        -- a summons". A judgment call: it sits ahead of No Violation Found
+        -- because the condition stopped.
         when resolution_description ilike '%condition was corrected%'
           or resolution_description ilike '%was corrected%'                 then 'Resolved on Scene'
 
@@ -373,14 +380,18 @@ with_closure_type as (
           or resolution_description ilike '%has requested the department of%'
           or resolution_description ilike '%out of jurisdiction%'           then 'Referred Elsewhere'
 
-        -- Resolution text WAS supplied and no rule above understood it. Never
-        -- 'Unspecified': the source specified something; this decoder failed.
+        -- Resolution text was supplied and no rule above matched it.
         else 'Undecodable'
     end                                                                                as closure_type
 
     from with_complaint_category
 
 ),
+
+-- ── Step 5: Data quality filter ──────────────────────────────────────────────
+-- Remove rows whose closed_date is before created_date (data-entry errors).
+-- Unreachable while Silver is the pandas transform, which quarantines these
+-- first; kept for a direct Snowflake loader.
 
 quality_filtered as (
 

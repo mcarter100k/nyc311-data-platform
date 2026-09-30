@@ -3,15 +3,12 @@ version: 2
 models:
   - name: stg_data_quality_log
     description: >
-      Thin staging view over the Silver data_quality_log source table, which is
-      written by the Silver transform before the Silver write (one row per quality check
-      per pipeline run date). A pure passthrough — no renames or casts are needed —
-      that exists so fct_data_quality, its only consumer, reads through the staging
-      layer instead of referencing the source directly, keeping source isolation
-      uniform across the project.
+      Passthrough view over the Silver data_quality_log table (one row per
+      quality check per pipeline run date). Exists so fct_data_quality, its only
+      consumer, reads through staging like every other model.
     tests:
-      # Grain guarantee: duplicate (run_date, check_name) rows would silently
-      # corrupt the rolling averages and breach flags in fct_data_quality.
+      # Duplicate (run_date, check_name) rows would corrupt fct_data_quality's
+      # rolling averages.
       - dbt_utils.unique_combination_of_columns:
           arguments:
             combination_of_columns:
@@ -20,8 +17,8 @@ models:
     columns:
       - name: run_date
         description: >
-          Pipeline run date (YYYY-MM-DD string matching the Silver widget value).
-          Together with check_name this forms the grain of the log.
+          UTC date of the pipeline run (YYYY-MM-DD string). With check_name,
+          the grain of the log.
         tests:
           - not_null
 

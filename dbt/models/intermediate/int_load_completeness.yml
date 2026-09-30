@@ -3,34 +3,19 @@ version: 2
 models:
   - name: int_load_completeness
     description: >
-      One row per calendar day present in the loaded source window, carrying
-      the verdict "has the source published this day IN FULL?".
-
-      This is the single definition of a complete day. Nothing downstream
-      re-derives it: fct_complaint_recurrence takes its observation horizon as
+      One row per calendar day in the loaded source window, with the verdict
+      "has the source published this day in full?". The single definition of a
+      complete day: fct_complaint_recurrence takes its observation horizon as
       MAX(load_day) WHERE is_complete_day, and fct_daily_volume joins the flag
-      onto each day so per-day figures (weekend vs weekday volume, for one) can
-      exclude a day the source has only half-published.
+      onto each day.
 
-      The rule is clock coverage, not row count. The source publishes with a
-      ~23.5h lag, so its newest day always stops after the first couple of
-      hours; and its row counts are not stable enough to threshold on (two
-      identical fetches minutes apart returned 65,936 and 54,446 rows for the
-      same window). That gap is a recency lag rather than noise — one replica
-      is behind, never ahead, and settles to zero at 7 days (ADR 016) — which
-      makes a count threshold systematically biased low on exactly the youngest
-      days. A day is complete when its newest request lands within
-      complete_day_tail_minutes of midnight, a property a thin replica of a
-      FINISHED day still has, because the source publishes each day as a time
-      prefix: a replica holds the day to 23:5x or stops hours short, with no
-      intermediate state that could pass this test while materially incomplete.
+      A day is complete when its newest request lands within
+      complete_day_tail_minutes of midnight. Row counts are not used because a
+      lagging source replica serves fewer rows for days younger than 7 (ADR
+      016), which would bias a count threshold low on the youngest days.
 
-      Completeness is judged per day, so an arbitrary number of trailing
-      partial or missing days (the 2026-08-18 upstream stall produced two) is
-      handled by taking the maximum complete day rather than the maximum day.
-
-      A day absent from this table is not "incomplete" — it is outside the
-      currently loaded window and therefore not assessable from this build.
+      A day absent from this table is outside the loaded window, not
+      incomplete.
     columns:
       - name: load_day
         description: "Calendar date of creation. Grain of this table."
@@ -40,10 +25,8 @@ models:
 
       - name: requests_created
         description: >
-          Requests created on this day that are present in the load. Reported
-          for context only — deliberately NOT the completeness rule, because
-          the source is not read-consistent about counts, and its inconsistency
-          is a downward lag on young days rather than symmetric noise.
+          Requests created on this day that are present in the load. Context
+          only; not part of the completeness rule.
         tests:
           - not_null
 
@@ -55,15 +38,14 @@ models:
       - name: requests_in_tail_window
         description: >
           Requests created within complete_day_tail_minutes of midnight. The
-          audit margin behind is_complete_day: 311–695 on every complete day of
-          a 14-day live load, 0 on the partial one.
+          audit margin behind is_complete_day (0 on a partial day).
         tests:
           - not_null
 
       - name: minutes_short_of_midnight
         description: >
-          Minutes between last_created_at and the end of the day. 1 on a
-          complete day; 1,314 on the trailing partial day measured 2026-08-26.
+          Minutes between last_created_at and the end of the day. About 1 on a
+          complete day; hundreds on the trailing partial day.
         tests:
           - not_null
 

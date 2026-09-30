@@ -1,10 +1,7 @@
--- Staging contract for SILVER.service_requests — rename and retype only, zero
--- business logic. Grain: one row per Silver service request (1:1 passthrough).
--- This is the only model allowed to reference the source directly: every
--- downstream model speaks this file's column vocabulary, so an upstream rename
--- or type change is absorbed here in one place instead of rippling through the
--- project. Anything that filters rows or encodes an opinion belongs in
--- int_service_requests_cleaned, not here.
+-- Rename and retype SILVER.service_requests, one row per Silver row, no
+-- business logic. The only model that reads the source, so an upstream rename
+-- or type change is absorbed here. Rules about meaning go in
+-- int_service_requests_cleaned.
 
 with source as (
 
@@ -49,22 +46,10 @@ renamed as (
 
         -- ── Metadata ─────────────────────────────────────────────────────────
         open_data_channel_type::varchar                                         as channel_type,
-        -- Use Silver's own load timestamp, not dbt's run timestamp.
-        -- _silver_timestamp is written by the Silver transform on every write,
-        -- so it reflects when Silver last touched this row — critical for the
-        -- incremental filter in fct_service_requests.
+        -- Silver's write time, not dbt's: the fct_service_requests watermark.
         _silver_timestamp::timestamp_ntz                                         as _loaded_at,
 
-        -- Schema version stamp — the dbt_project.yml var `schema_version` at
-        -- the time this view was compiled. NOTE: because this model is a view,
-        -- the value here is evaluated at query time and always reflects the
-        -- CURRENT var. The stamp only becomes a durable per-row fact in
-        -- fct_service_requests, where the incremental merge writes it into
-        -- physical rows; query that column (not this one) to trace historical
-        -- rows to the schema contract that produced them.
-        -- Increment `schema_version` in dbt_project.yml whenever a breaking
-        -- change is deployed. Additive changes (new columns) do not require a bump.
-        -- See ADR 006 for the full schema evolution contract.
+        -- See schema_version in dbt_project.yml.
         '{{ var("schema_version") }}'::varchar                                  as schema_version
 
     from source
