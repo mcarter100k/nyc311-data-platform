@@ -1,18 +1,5 @@
-"""
-dbt Architecture Tests — NYC 311 Data Platform
-
-Tests the structural correctness of the dbt project by inspecting the compiled
-manifest without needing a live Snowflake connection. Covers:
-
-  1. Schema resolution     — every model lands in the right Snowflake schema
-  2. Materialization       — each layer uses the right strategy
-  3. Lineage               — models depend on the right upstream models
-  4. Layer discipline      — no layer skipping (marts never ref staging directly)
-  5. Test coverage         — no model is untested; key columns have the right tests
-  6. Incremental config    — fct_service_requests is correctly configured
-  7. Source configuration  — freshness field, database, schema
-  8. FK integrity          — relationship tests exist on all foreign keys
-"""
+"""Structural tests of the dbt project, read from the compiled manifest (no
+warehouse connection needed)."""
 
 import re
 
@@ -38,12 +25,8 @@ ALL_MODELS = [
 
 
 def test_all_models_list_matches_manifest(models):
-    """
-    ALL_MODELS must equal the manifest's model set exactly. Without this sync
-    check the list drifts silently: a model added to the project but not to
-    the list escapes every parametrized test below — which happened twice
-    (stg_data_quality_log, then fct_data_quality) before this test existed.
-    """
+    """ALL_MODELS must equal the manifest's model set, or a new model escapes
+    every parametrized test below."""
     assert sorted(ALL_MODELS) == sorted(models.keys()), (
         f"ALL_MODELS is out of sync with the compiled manifest.\n"
         f"  missing from list: {sorted(set(models.keys()) - set(ALL_MODELS))}\n"
@@ -99,9 +82,8 @@ def test_source_database_uses_env_var():
                                        "stg_quarantine"])
 def test_staging_is_view(models, model_name):
     """
-    Staging must be a view, not a table. It is a thin rename/cast layer read by
-    exactly one downstream model — a view costs no storage and always reflects
-    the latest Silver data.
+    Staging must be a view, not a table. It is a thin rename/cast layer, so a
+    view costs no storage and always reflects the latest Silver data.
     """
     materialized = models[model_name]["config"]["materialized"]
     assert materialized == "view", (
@@ -111,10 +93,9 @@ def test_staging_is_view(models, model_name):
 
 def test_intermediate_is_table(models):
     """
-    int_service_requests_cleaned must be a table, not a view. Three models read
-    it (dim_location, agency_snapshot, fct_service_requests) — as a view, its
-    12-branch leading-wildcard ILIKE classification would re-execute over full
-    history three times per run. Materializing computes it once.
+    int_service_requests_cleaned must be a table, not a view. Four models and
+    the agency snapshot read it; as a view, its leading-wildcard ILIKE
+    classification would re-run for each of them.
     """
     materialized = models["int_service_requests_cleaned"]["config"]["materialized"]
     assert materialized == "table", (
@@ -143,15 +124,9 @@ def test_dimension_and_aggregate_facts_are_tables(models, model_name):
 
 def test_dim_location_is_incremental(models):
     """
-    dim_location must be incremental — a RETENTION requirement, not a cost one.
-
-    Rebuilt as a table it was reconstructed each run from
-    int_service_requests_cleaned, which carries only Silver's rolling window,
-    while fct_service_requests accumulates history far past that window. Every
-    location that stopped appearing in the window was dropped from the
-    dimension while fact rows kept pointing at its location_id, so the FK
-    silently dangled and fct_daily_volume reattributed the volume to borough
-    'UNSPECIFIED'. A Kimball dimension grows and never loses members.
+    dim_location must be incremental, for retention rather than cost. Rebuilt
+    from Silver's rolling window, it would drop locations that fact rows still
+    point at, and fct_daily_volume would move their volume to 'UNSPECIFIED'.
     """
     materialized = models["dim_location"]["config"]["materialized"]
     assert materialized == "incremental", (
@@ -248,16 +223,8 @@ def test_staging_depends_only_on_source(models):
     Staging must read from the Silver source, not from other dbt models.
     Staging is the boundary between raw data and the dbt transformation graph.
 
-    Classified on FULL manifest node ids, not the short names `_dep_names`
-    returns. A dbt source id looks like `source.nyc311.silver.service_requests`
-    and a model id like `model.nyc311.int_service_requests_cleaned`; shortening
-    them to the last segment discards exactly the prefix that tells the two
-    apart. The earlier version of this test shortened first and then filtered on
-    `not startswith("source")`, which no short name can ever satisfy — so its
-    `model_deps` set was unconditionally non-empty, and the assertion that would
-    have used it was never written. It asserted only that the model does not
-    depend on itself, which is trivially true for any staging model however
-    wired, and the test passed while checking nothing.
+    Classified on full node ids (`source.…` vs `model.…`): the short names
+    `_dep_names` returns cannot tell a source from a model.
     """
     nodes = models["stg_service_requests"].get("depends_on", {}).get("nodes", [])
     model_deps = sorted(n for n in nodes if n.startswith("model."))
@@ -341,15 +308,8 @@ def test_fct_service_requests_depends_on_all_dims_and_intermediate(models):
 def test_recurrence_horizon_comes_from_load_completeness(models):
     """
     fct_complaint_recurrence must take its observation horizon from
-    int_load_completeness.
-
-    This pins the fix for a defect that reads as obviously correct in the SQL:
-    the horizon used to be max(created_date) over the load. The source publishes
-    on a ~23.5h lag, so the newest created_date is never a whole day — it is the
-    first couple of hours of one — and every observation_days value was inflated
-    by up to a full day against a horizon that did not exist yet. A future edit
-    that drops this dependency has almost certainly re-derived the horizon
-    locally, which is the shape of the original bug.
+    int_load_completeness. The obvious alternative, max(created_date), is always
+    a partial day (the source lags ~23.5h) and over-credits every row.
     """
     deps = _dep_names(models["fct_complaint_recurrence"])
     assert "int_load_completeness" in deps, (
@@ -362,11 +322,9 @@ def test_recurrence_horizon_comes_from_load_completeness(models):
 
 def test_daily_volume_carries_load_completeness(models):
     """
-    fct_daily_volume must also read int_load_completeness. Every figure on that
-    table is a per-day figure, and the newest loaded day is a ~2-hour day; a
-    daily mean taken across it without the flag is contaminated the same way the
-    recurrence horizon was. The point of the shared model is that both consumers
-    read ONE definition — this asserts the second one still does.
+    fct_daily_volume must also read int_load_completeness, so both consumers
+    share one definition of a complete day and per-day means can exclude the
+    partial newest day.
     """
     deps = _dep_names(models["fct_daily_volume"])
     assert "int_load_completeness" in deps, (
@@ -378,30 +336,17 @@ def test_daily_volume_carries_load_completeness(models):
 
 def test_daily_volume_publishes_no_uncensored_rate(manifest):
     """
-    fct_daily_volume must not publish a rate over an open-ended denominator.
+    fct_daily_volume must not publish a rate over an open-ended denominator
+    (right-censored rates read low on recent days and look plausible).
 
-    Two things are asserted, both structural, because the numeric failure is
-    invisible: a censored closure rate is a plausible-looking number, and the
-    same column read 0.7452 at twelve complete days of observation and 0.4003 at
-    zero before this was fixed.
-
-      1. The four measures that had open denominators are GONE by name.
-         pct_resolved / pct_actioned counted closures over every request created
-         that day; avg_resolution_days averaged closures-so-far; and
-         overdue_requests summed a three-valued is_overdue, so a request open
-         for 200 days counted zero.
-
-      2. The eligibility gate is still wired: the model reads the
-         closure_window_days var and the singular test that enforces it is still
-         in the project. That test is the thing that can actually fail on data —
-         this only guarantees it is present to run.
+      1. The four open-denominator measures stay gone by name.
+      2. The gate stays wired: the model reads closure_window_days and the
+         singular test that checks it on data is still in the project.
     """
     node = manifest["nodes"]["model.nyc311.fct_daily_volume"]
     sql = node["raw_code"]
 
-    # \b after the name so the windowed replacements (pct_actioned_within_window)
-    # do not match: '_' is a word character, so the boundary only closes on the
-    # bare old name.
+    # \b so the windowed names (pct_actioned_within_window) do not match.
     for removed in ("pct_resolved", "pct_actioned", "avg_resolution_days",
                     "overdue_requests"):
         assert not re.search(rf"\bas\s+{removed}\b", sql), (
@@ -459,30 +404,10 @@ def test_no_model_references_source_except_staging(models):
 
 
 # ── 5. Test Coverage ──────────────────────────────────────────────────────────
-
-@pytest.mark.parametrize("model_name", ALL_MODELS)
-def test_every_model_has_at_least_one_test(tests_by_model, model_name):
-    """
-    Every model must have at least one schema test. Untested models are invisible
-    to data quality monitoring — a bug in transformation logic produces wrong
-    numbers silently until a stakeholder notices.
-    """
-    tests = tests_by_model.get(model_name, [])
-    assert len(tests) >= 1, (
-        f"{model_name} has zero tests. Add at least not_null + unique on its primary key."
-    )
-
-
-# ── Primary key coverage ──────────────────────────────────────────────────────
 #
-# The declared grain of every model: the column, or tuple of columns, whose
-# uniqueness the model guarantees. This is the thing the tests below verify is
-# actually asserted in the warehouse — so it has to be written down. Reading it
-# out of test NAMES is what made the previous version of this guard inert.
-#
-# Every model in the manifest must appear here or in PRIMARY_KEY_EXEMPTIONS;
-# test_every_model_declares_a_primary_key_or_an_exemption enforces that, so a
-# new model cannot slip past this section by simply not being listed.
+# The declared grain of every model. Every model must appear here or in
+# PRIMARY_KEY_EXEMPTIONS (enforced below), so a new model cannot skip the key
+# checks.
 PRIMARY_KEYS = {
     "stg_service_requests": ("service_request_id",),
     "stg_data_quality_log": ("run_date", "check_name"),
@@ -497,10 +422,7 @@ PRIMARY_KEYS = {
     "fct_complaint_recurrence": ("service_request_id",),
 }
 
-# Exemptions carry their REASON, not just their name. An exemption with no
-# stated reason is indistinguishable from an oversight six months later, and a
-# bare list of names is how exemptions accumulate silently — each new one added
-# because the list already had entries.
+# Each exemption states its reason, so it cannot be mistaken for an oversight.
 PRIMARY_KEY_EXEMPTIONS = {
     "int_service_requests_cleaned": (
         "Uniqueness is asserted at the boundary (stg_service_requests.unique_key) "
@@ -513,12 +435,7 @@ PRIMARY_KEY_EXEMPTIONS = {
 
 
 def _test_type(test_node):
-    """The dbt test TYPE ('unique', 'not_null', 'relationships', ...).
-
-    This is the field the previous version of this guard should have read.
-    Generic tests carry test_metadata.name; singular tests (the hand-written
-    .sql files under dbt/tests/) carry no test_metadata at all and return None.
-    """
+    """The dbt test type ('unique', 'not_null', ...); None for singular tests."""
     return (test_node.get("test_metadata") or {}).get("name")
 
 
@@ -540,17 +457,9 @@ def _tested_columns(test_node):
 def _asserts_uniqueness_of(test_node, key_columns):
     """Does this test node prove `key_columns` is unique?
 
-    Two legitimate shapes, both accepted:
-
-      unique                          on a column of the key
-      unique_combination_of_columns   over the key's columns
-
-    Subset, not equality, and that is deliberate rather than sloppy: uniqueness
-    of any SUBSET of a key implies uniqueness of the whole key. A `unique` test
-    on run_date alone is a strictly stronger claim than one on
-    (run_date, check_name), so refusing it would be a false negative. The
-    subset must be non-empty, which is what stops a singular test (no columns
-    at all) from matching vacuously.
+    Accepts `unique` or `unique_combination_of_columns` over a non-empty SUBSET
+    of the key: a unique subset makes the whole key unique. Non-empty stops a
+    singular test (no columns) from matching.
     """
     if _test_type(test_node) not in ("unique", "unique_combination_of_columns"):
         return False
@@ -560,11 +469,8 @@ def _asserts_uniqueness_of(test_node, key_columns):
 
 def test_every_model_declares_a_primary_key_or_an_exemption(models):
     """
-    PRIMARY_KEYS + PRIMARY_KEY_EXEMPTIONS must cover the manifest exactly.
-
-    Without this, the key guard below is scoped by a hand-written list and a new
-    model escapes it by never being added — which is precisely how the previous
-    six-model list came to omit five of the twelve models in the project.
+    PRIMARY_KEYS + PRIMARY_KEY_EXEMPTIONS must cover the manifest exactly, or a
+    new model escapes the key guard by never being listed.
     """
     declared = set(PRIMARY_KEYS)
     exempt = set(PRIMARY_KEY_EXEMPTIONS)
@@ -594,16 +500,9 @@ def test_primary_key_has_unique_and_not_null(tests_by_model, model_name):
     A key with duplicates breaks every join downstream. A null key means the row
     is invisible to any FK lookup.
 
-    Matched on the manifest's STRUCTURED test data — test_metadata.name for the
-    test's type, column_name / kwargs for the columns it covers — not on
-    substrings of a generated test name. Name matching is why this guard could
-    not fail: `any(name.startswith("unique_"))` is satisfied by the unique test
-    on fct_service_requests.UNIQUE_KEY, so deleting the real uniqueness test on
-    service_request_id left the guard green (verified by mutation). The same
-    held for dim_date, whose PK date_id was shadowed by the unique test on
-    full_date, and for every not_null check on this list — dim_location has
-    three other not_null tests, any one of which satisfied a check that never
-    looked at which column it named.
+    Matched on the manifest's structured test data (test type and covered
+    columns), not on test names: a unique test on another column of the same
+    model must not satisfy it.
     """
     key = set(PRIMARY_KEYS[model_name])
     tests = tests_by_model.get(model_name, [])
@@ -630,19 +529,9 @@ def test_primary_key_has_unique_and_not_null(tests_by_model, model_name):
     )
 
 
-# agency_id and location_id used to be excused from relationships tests on the
-# argument that dim_agency and dim_location are derived from
-# int_service_requests_cleaned — the same source as the fact — so their FKs
-# resolved by construction and the tests could never fail.
-#
-# That argument held only while Gold was rebuilt from scratch every run. It
-# stopped being true when fct_service_requests became incremental: the fact
-# accumulates history, dim_location was rebuilt from Silver's rolling window,
-# and every location aging out of the window was dropped while fact rows kept
-# pointing at it (88 dangling rows on the production artifact, growing daily,
-# and nothing noticed because the excused test was the only thing that would
-# have looked). Shared lineage is not a referential-integrity guarantee; equal
-# RETENTION is. Every FK on the fact now carries a relationships test.
+# Every FK on the fact carries a relationships test. Sharing a source with the
+# fact does not keep an FK valid once the fact outlives Silver's window; equal
+# retention does.
 @pytest.mark.parametrize("column,dimension", [
     ("created_date_id", "dim_date"),
     ("location_id", "dim_location"),
@@ -675,10 +564,8 @@ def test_fct_has_relationship_test_on_every_foreign_key(tests_by_model, models,
 
 def test_intermediate_has_accepted_values_on_borough_clean(tests_by_model):
     """
-    borough_clean in int_service_requests_cleaned must have an accepted_values test.
-    This is the only automated check that the borough CASE WHEN logic produces
-    valid output. Without it, a new raw variant silently becomes UNSPECIFIED
-    and borough-level reporting becomes wrong.
+    borough_clean must have an accepted_values test: the only automated check
+    that the borough mapping produces valid output.
     """
     test_names = [t["name"] for t in tests_by_model.get("int_service_requests_cleaned", [])]
     assert any("accepted_values" in t and "borough_clean" in t for t in test_names), (
@@ -688,9 +575,8 @@ def test_intermediate_has_accepted_values_on_borough_clean(tests_by_model):
 
 def test_intermediate_has_accepted_values_on_complaint_category(tests_by_model):
     """
-    complaint_category must have an accepted_values test. The classification
-    CASE WHEN has an else->'Undecodable' bucket, but the categories should
-    be a closed set — this test catches typos or renamed categories.
+    complaint_category must have an accepted_values test, so a typo or renamed
+    category fails instead of widening the set.
     """
     test_names = [t["name"] for t in tests_by_model.get("int_service_requests_cleaned", [])]
     assert any("accepted_values" in t and "complaint_category" in t for t in test_names), (
@@ -700,8 +586,8 @@ def test_intermediate_has_accepted_values_on_complaint_category(tests_by_model):
 
 def test_resolution_days_non_negative_test_exists(tests_by_model):
     """
-    resolution_days must be tested as >= 0 (where not null). This is the dbt-layer
-    defence against negative resolution times that should have been filtered by Silver.
+    fct_service_requests.resolution_days must be tested as >= 0 (where not
+    null), the Gold-layer guard against closed-before-opened rows.
     """
     test_names = [t["name"] for t in tests_by_model.get("fct_service_requests", [])]
     assert any("expression_is_true" in t and "resolution_days" in t for t in test_names), (
@@ -744,40 +630,3 @@ def test_source_freshness_error_threshold_is_48h(sources):
         f"Source freshness error_after is {error} — expected 48 hours."
     )
 
-
-# ── 7. Generate Schema Name Macro ─────────────────────────────────────────────
-
-def test_generate_schema_name_macro_exists():
-    """
-    The generate_schema_name macro must exist. Without it, dbt appends custom
-    schema names to the target schema (gold + gold = gold_gold), which doesn't
-    exist in Snowflake and breaks every dbt run.
-    """
-    import os
-    macro_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "dbt", "macros", "generate_schema_name.sql"
-    )
-    assert os.path.exists(macro_path), (
-        "macros/generate_schema_name.sql does not exist. "
-        "dbt will concatenate schemas incorrectly without this override."
-    )
-
-
-def test_generate_schema_name_macro_has_override_logic():
-    """
-    The macro must implement the override pattern (return custom_schema_name as-is
-    when provided). A file that exists but contains the default behavior is just
-    as broken as no file at all.
-    """
-    import os
-    macro_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "dbt", "macros", "generate_schema_name.sql"
-    )
-    with open(macro_path) as f:
-        content = f.read()
-    assert "custom_schema_name | trim" in content, (
-        "generate_schema_name.sql doesn't implement the override pattern. "
-        "It must return custom_schema_name as-is when provided."
-    )

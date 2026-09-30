@@ -1,13 +1,8 @@
 """
-Fixtures for the local-gold behavioral tests.
+Fixtures for the local behavioral tests: the real local/ dbt project built
+against seeded DuckDB databases, and a runner for the real Silver stage.
 
-Builds the real dbt project in local/ against a seeded DuckDB database, twice,
-so the tests can assert incremental semantics that structural tests cannot:
-the _loaded_at watermark with its 1-hour lookback, snapshot rename detection,
-and the SCD2 point-in-time agency join.
-
-Skips wholesale when duckdb or the dbt-duckdb adapter is not installed
-(mirrors the importorskip pattern used by the unit tier).
+Skips wholesale when duckdb or the dbt-duckdb adapter is not installed.
 """
 
 import os
@@ -23,10 +18,8 @@ pytest.importorskip("dbt.adapters.duckdb", reason="dbt-duckdb not installed — 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LOCAL_PROJECT = os.path.join(ROOT, "local")
 
-# `python -m dbt` does not work; local/dbt_exec.py holds the single definition
-# of how the dbt console script is resolved, shared with local/local_runner.py
-# and run_tests.sh. local/ is not a package, hence the sys.path idiom used by
-# test_module_imports.py and test_live_fetch.py.
+# local/dbt_exec.py resolves the dbt executable (`python -m dbt` does not
+# work). local/ is not a package, hence the sys.path insert.
 if LOCAL_PROJECT not in sys.path:
     sys.path.insert(0, LOCAL_PROJECT)
 from dbt_exec import dbt_executable  # noqa: E402
@@ -55,15 +48,10 @@ TODAY_UTC = datetime.now(timezone.utc).date().isoformat()
 def _row(unique_key, created, closed, agency, agency_name, status, ts,
          address="100 MAIN STREET", complaint="Noise - Residential",
          borough="BROOKLYN", community_board="02 BROOKLYN", incident_zip="11201"):
-    """One silver row. address and complaint default to a shared pair so most
-    rows land at the same location — fct_complaint_recurrence keys on
-    (address, complaint_type), and a fixture with NULL addresses would build an
-    empty table and silently pass any test written against it.
-
-    borough / community_board / incident_zip are the dim_location grain. They
-    default to a single shared combination for the same reason, and are
-    overridable so the retention fixture below can put a row at a SECOND
-    location and then take that location out of the window."""
+    """One silver row. Address, complaint and location default to one shared
+    value so fct_complaint_recurrence and dim_location have rows to test (NULL
+    addresses would build an empty table that passes anything). The location
+    columns are overridable so the retention fixture can use a second one."""
     return (
         f"('{unique_key}', TIMESTAMP '{created}', "
         + (f"TIMESTAMP '{closed}'" if closed else "NULL")
@@ -93,31 +81,11 @@ def _dbt(args, profiles_dir, check=True):
     return result
 
 
-@pytest.fixture(scope="module")
-def gold_db(tmp_path_factory):
-    """Seed silver → dbt build → mutate silver → dbt build (incremental) →
-    dbt build --full-refresh. Returns a dict of captured result sets."""
-    workdir = tmp_path_factory.mktemp("localdbt")
-    # The file stem is the DuckDB catalog name; sources.yml expects nyc311_local.
-    db_path = workdir / "nyc311_local.duckdb"
-
-    (workdir / "profiles.yml").write_text(
-        "nyc311_local:\n"
-        "  target: local\n"
-        "  outputs:\n"
-        "    local:\n"
-        "      type: duckdb\n"
-        f"      path: \"{db_path}\"\n"
-        "      schema: gold\n"
-        "      threads: 1\n"
-    )
-
-    con = duckdb.connect(str(db_path))
+def _seed_silver(con):
+    """The three Silver tables the local dbt project reads, plus a DQ log row
+    dated today so assert_dq_log_is_current passes."""
     con.execute("CREATE SCHEMA IF NOT EXISTS silver")
     con.execute(f"CREATE TABLE silver.service_requests ({SILVER_COLUMNS})")
-    # Empty in phase 1: r9 is a valid row that Silver rejects in phase 2, which
-    # is the case the dbt quality filter CANNOT model — a Silver-quarantined row
-    # never reaches staging at all.
     con.execute("""
         CREATE TABLE silver.quarantine (
             unique_key VARCHAR, created_date TIMESTAMP, closed_date TIMESTAMP,
@@ -129,14 +97,63 @@ def gold_db(tmp_path_factory):
             run_date VARCHAR, check_name VARCHAR, records_checked BIGINT,
             records_failed BIGINT, failure_rate DOUBLE, pipeline_stage VARCHAR)
     """)
-    # Seeded at TODAY so the mirrored singular test assert_dq_log_is_current
-    # (max(run_date) within a day) passes during every dbt build below.
     con.execute(f"""
         INSERT INTO silver.data_quality_log
         VALUES ('{TODAY_UTC}', 'null_rate_unique_key', 100, 0, 0.0, 'silver')
     """)
 
-    # ── Phase 1: three requests — r6 is valid now, corrected-invalid later ────
+
+def _write_profile(workdir, db_path):
+    """A DuckDB profile for local/ pointing at db_path. The file stem is the
+    DuckDB catalog name, which sources.yml expects to be nyc311_local."""
+    (workdir / "profiles.yml").write_text(
+        "nyc311_local:\n"
+        "  target: local\n"
+        "  outputs:\n"
+        "    local:\n"
+        "      type: duckdb\n"
+        f"      path: \"{db_path}\"\n"
+        "      schema: gold\n"
+        "      threads: 1\n"
+    )
+
+
+@pytest.fixture(scope="session")
+def run_stage3():
+    """Return a function that runs the real local_runner.stage3_silver() against
+    temp paths. local_runner reads its paths from module constants, so they are
+    rebound for the call and restored afterwards; the developer's own
+    local/data/ database is never touched."""
+    def _run(workdir, raw_file, db_path, source_count_file):
+        import local_runner
+
+        names = ("RAW_FILE", "DUCKDB_PATH", "DATA_DIR", "RAW_DIR", "SOURCE_COUNT_FILE")
+        saved = {n: getattr(local_runner, n) for n in names}
+        local_runner.RAW_FILE = raw_file
+        local_runner.DUCKDB_PATH = db_path
+        local_runner.DATA_DIR = workdir
+        local_runner.RAW_DIR = workdir
+        local_runner.SOURCE_COUNT_FILE = source_count_file
+        try:
+            local_runner.stage3_silver()
+        finally:
+            for n, v in saved.items():
+                setattr(local_runner, n, v)
+    return _run
+
+
+@pytest.fixture(scope="module")
+def gold_db(tmp_path_factory):
+    """Seed silver → dbt build → mutate silver → dbt build (incremental) →
+    dbt build --full-refresh. Returns a dict of captured result sets."""
+    workdir = tmp_path_factory.mktemp("localdbt")
+    db_path = workdir / "nyc311_local.duckdb"
+    _write_profile(workdir, db_path)
+
+    con = duckdb.connect(str(db_path))
+    _seed_silver(con)  # quarantine stays empty until phase 2 rejects r9
+
+    # ── Phase 1: r6 and r9 are valid now and become invalid in phase 2 ───────
     con.execute("INSERT INTO silver.service_requests VALUES " + ",".join([
         _row("r1", "2024-01-02 10:00:00", "2024-01-03 01:00:00",
              "HPD", "Housing Preservation And Development", "Closed", T1),
@@ -147,15 +164,9 @@ def gold_db(tmp_path_factory):
         # Recurrence pair: r7 closes on Jan 2; r8 reports the SAME complaint at
         # the SAME address on Jan 4. fct_complaint_recurrence must measure 2 days.
         #
-        # r8's time of day is load-bearing, not decoration. int_load_completeness
-        # judges a day COMPLETE by whether the source's coverage of it reaches
-        # the last complete_day_tail_minutes (60) of that day, and the recurrence
-        # horizon is the newest complete day. 23:50 makes Jan 4 the only complete
-        # day in this fixture, which is what gives the timeline a horizon at all
-        # — and it deliberately leaves Jan 1-3 and the TODAY row incomplete, so
-        # the tests below are asserting against a horizon that is NOT simply the
-        # newest loaded day. Under the old max(created_date) horizon every
-        # observation_days here would be ~950 (TODAY minus Jan 2), not 1 and 2.
+        # r8 at 23:50 makes Jan 4 the only complete day (within the 60-minute
+        # tail), so the recurrence horizon is Jan 4 and NOT the newest loaded
+        # day (TODAY, incomplete).
         _row("r7", "2024-01-01 09:00:00", "2024-01-02 09:00:00",
              "DSNY", "Department of Sanitation", "Closed", T1,
              address="9 RECURRING WAY", complaint="Dirty Condition"),
@@ -213,11 +224,8 @@ def gold_db(tmp_path_factory):
             _silver_timestamp = TIMESTAMP '{T2}'
         WHERE unique_key = 'r6'
     """)
-    # r9 is QUARANTINED BY SILVER: the pandas transform drops it before dbt sees
-    # anything, so unlike r6 it leaves silver.service_requests completely. The
-    # original post_hook (present in staging, absent from int) is structurally
-    # blind to this, which is why the quarantine table and the second post_hook
-    # exist. Its stale fact row must still disappear.
+    # r9 is QUARANTINED BY SILVER: unlike r6 it leaves silver.service_requests
+    # completely, so only the quarantine post_hook can delete its fact row.
     con.execute("""
         INSERT INTO silver.quarantine
         SELECT unique_key, created_date, closed_date, -1,
@@ -278,15 +286,9 @@ def gold_db(tmp_path_factory):
     con.close()
 
     # ── Non-vacuity guards for the two horizon tests ─────────────────────────
-    # The tests they replace could not fail. `observation_days >= 0` sat on a
-    # column produced by GREATEST(0, ...), so sabotaging the horizon to
-    # DATE '1999-01-01' drove every raw value thousands of days negative and the
-    # test still reported PASS. Anything written to replace that has to be shown
-    # failing on the thing it guards, in both directions, and then recovering.
-    #
-    # The sabotage is applied to the BUILT TABLE rather than to the model file:
-    # it isolates what the tests can detect from how the model happens to be
-    # written today, and it leaves the repo untouched if the run dies midway.
+    # Each must fail on the thing it guards, in both directions, then recover.
+    # The sabotage edits the built table, not the model file, so the repo is
+    # untouched if the run dies midway.
     horizon_tests = ["assert_recurrence_horizon_is_last_complete_day",
                      "assert_observation_days_floor_is_explained"]
 
@@ -295,9 +297,8 @@ def gold_db(tmp_path_factory):
 
     guards = {"clean": run_horizon_tests()}
 
-    # Horizon one day too far forward — literally the defect: the newest loaded
-    # day is partial, and treating it as the horizon over-credits every row.
-    # Chosen because it floors NOTHING, so only the horizon test can catch it.
+    # Horizon one day too far forward. It floors nothing, so only the horizon
+    # test can catch it.
     con = duckdb.connect(str(db_path))
     con.execute("UPDATE gold.fct_complaint_recurrence "
                 "SET observation_days = observation_days + 1")
@@ -311,9 +312,8 @@ def gold_db(tmp_path_factory):
     con.close()
     guards["all_floored"] = run_horizon_tests()
 
-    # And back: rebuilding the model from source must restore both to green,
-    # so the failures above are attributable to the sabotage and not to drift
-    # accumulated by this fixture.
+    # Rebuilding the model must restore both to green, so the failures above
+    # are attributable to the sabotage.
     _dbt(["build", "--select", "fct_complaint_recurrence"], workdir)
     guards["reverted"] = run_horizon_tests()
 
@@ -326,68 +326,21 @@ def gold_db(tmp_path_factory):
     }
 
 
-# The second location, used only by location_retention_db below. It exists in
-# phase 1 and leaves Silver's window in phase 2 WITHOUT being quarantined —
-# which is what a rolling window does every single day, and the one case the
-# gold_db fixture above cannot express (every row there shares one location).
+# A second location for location_retention_db: present in phase 1, then out
+# of Silver's window in phase 2 without being quarantined.
 QUEENS = {"borough": "QUEENS", "community_board": "04 QUEENS", "incident_zip": "11373"}
-
-
-def _seed_silver(con):
-    """The three Silver tables the local dbt project reads, plus a current DQ
-    log row so the mirrored singular test assert_dq_log_is_current passes."""
-    con.execute("CREATE SCHEMA IF NOT EXISTS silver")
-    con.execute(f"CREATE TABLE silver.service_requests ({SILVER_COLUMNS})")
-    con.execute("""
-        CREATE TABLE silver.quarantine (
-            unique_key VARCHAR, created_date TIMESTAMP, closed_date TIMESTAMP,
-            resolution_days BIGINT, quarantine_reason VARCHAR,
-            _silver_timestamp VARCHAR)
-    """)
-    con.execute("""
-        CREATE TABLE silver.data_quality_log (
-            run_date VARCHAR, check_name VARCHAR, records_checked BIGINT,
-            records_failed BIGINT, failure_rate DOUBLE, pipeline_stage VARCHAR)
-    """)
-    con.execute(f"""
-        INSERT INTO silver.data_quality_log
-        VALUES ('{TODAY_UTC}', 'null_rate_unique_key', 100, 0, 0.0, 'silver')
-    """)
-
-
-def _write_profile(workdir, db_path):
-    (workdir / "profiles.yml").write_text(
-        "nyc311_local:\n"
-        "  target: local\n"
-        "  outputs:\n"
-        "    local:\n"
-        "      type: duckdb\n"
-        f"      path: \"{db_path}\"\n"
-        "      schema: gold\n"
-        "      threads: 1\n"
-    )
 
 
 @pytest.fixture(scope="module")
 def location_retention_db(tmp_path_factory):
     """Referential integrity of fct_service_requests.location_id across a
-    MOVING Silver window — the condition that produced silent decay in
-    production and that no other fixture reaches.
+    moving Silver window.
 
-    fct_service_requests is incremental and accumulates history. dim_location
-    was `materialized: table`, rebuilt every run from
-    int_service_requests_cleaned, which carries only Silver's rolling window.
-    So a location whose rows aged out of the window was dropped from the
-    dimension while fact rows kept pointing at it.
-
-    Phase 1 puts rows at two locations. Phase 2 removes one of those locations
-    from Silver the way the window does — deleted, NOT quarantined, so the
-    reconciliation post_hooks correctly leave its fact rows alone. Its
-    dimension member must survive.
-
-    The last step is the non-vacuity guard: it drops a dim_location member by
-    hand and records that `dbt test` then FAILS. Without it, deleting the
-    relationships test from marts.yml would leave every assertion here green.
+    Phase 1 puts rows at two locations. Phase 2 removes one location from
+    Silver the way the window does (deleted, not quarantined, so the
+    reconciliation post_hooks leave its fact rows alone); its dim_location
+    member must survive. The last step drops a member by hand and records that
+    `dbt test` then fails, so the relationships test is proven live.
     """
     workdir = tmp_path_factory.mktemp("locretention")
     db_path = workdir / "nyc311_local.duckdb"
@@ -399,11 +352,9 @@ def location_retention_db(tmp_path_factory):
     con.execute("INSERT INTO silver.service_requests VALUES " + ",".join([
         _row("k1", "2024-01-02 10:00:00", "2024-01-03 01:00:00",
              "HPD", "Housing Preservation And Development", "Closed", T1),
-        # 23:50 makes Jan 3 a COMPLETE day for int_load_completeness, which is
-        # what gives fct_complaint_recurrence a horizon here. k2 is the row that
-        # carries it because k2 survives phase 2 — the Queens rows do not, and a
-        # fixture whose only complete day is deleted mid-run has no horizon in
-        # its second half and fails on a null observation_days.
+        # 23:50 makes Jan 3 complete, giving fct_complaint_recurrence a
+        # horizon. It is k2 because k2 survives phase 2; without a complete
+        # day, observation_days is NULL and the build fails.
         _row("k2", "2024-01-03 23:50:00", None,
              "NYPD", "New York City Police Dept", "Open", T1),
         _row("q1", "2024-01-02 11:00:00", "2024-01-03 02:00:00",
@@ -443,11 +394,9 @@ def location_retention_db(tmp_path_factory):
     con.close()
 
     # ── Phase 2: the window moves past Queens ────────────────────────────────
-    # Deleted, not quarantined: these rows are simply no longer inside the
-    # trailing window Silver reloads. Nothing in the pipeline rejected them, so
-    # their accumulated fact rows must stay — and their dimension member with
-    # them. A fresh Brooklyn row keeps the incremental run non-empty, exactly
-    # as a real daily run would.
+    # Deleted, not quarantined: the rows just left the window, so their fact
+    # rows and dimension member must stay. A fresh Brooklyn row keeps the
+    # incremental run non-empty.
     con = duckdb.connect(str(db_path))
     con.execute("INSERT INTO silver.service_requests VALUES " + ",".join([
         _row("k3", f"{TODAY_UTC} 09:00:00", None,
@@ -462,9 +411,7 @@ def location_retention_db(tmp_path_factory):
     phase2 = snapshot(con)
     con.close()
 
-    # ── Non-vacuity guard ────────────────────────────────────────────────────
-    # Drop a dimension member by hand — precisely what the old table rebuild
-    # did on its own every run — and confirm dbt notices.
+    # ── Non-vacuity guard: drop a dimension member and confirm dbt notices ───
     con = duckdb.connect(str(db_path))
     con.execute("""
         DELETE FROM gold.dim_location
