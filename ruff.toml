@@ -1,19 +1,9 @@
-# ruff — Python linting for the pipeline, checkers, DAG and tests.
+# ruff lint config. A ruff.toml, not pyproject.toml: this repo is not an
+# installable package, and a pyproject.toml would also change pytest's rootdir.
 #
-# Kept as ruff.toml rather than pyproject.toml deliberately: this repo is not a
-# installable package, and a pyproject.toml would additionally become pytest's
-# rootdir anchor and pip's build surface. This file configures one tool.
-#
-# The rule set is CURATED, not ruff's default. The default run over this repo
-# produced 51 findings, of which the great majority were style opinions about
-# deliberate house formatting and two were flatly wrong (see below). A linter
-# whose output is mostly noise gets ignored, which costs more than not having
-# one. What is selected here is the set that found real defects on first run:
-# dead imports left by a refactor, a discarded subprocess exit code, a naive
-# datetime in a scheduled DAG, and shebangs on non-executable files.
-#
-# Formatting is NOT enforced. `ruff format` would rewrite 15 files and fight
-# the hand-alignment used throughout for comment tables and SQL blocks.
+# Curated rule set: only rules that catch real defects here, not style.
+# Formatting is not enforced; `ruff format` would undo the hand-aligned
+# comment tables and SQL blocks.
 
 target-version = "py310"
 line-length = 100        # advisory; E501 is deliberately not selected
@@ -37,7 +27,7 @@ select = [
     "DTZ",   # naive datetimes; a scheduled pipeline must be explicit about UTC
     "EXE",   # shebang present iff the file is executable
     "PLW",   # pylint warnings, incl. subprocess.run without an explicit check
-    "UP",    # pyupgrade — keep syntax current with the pinned interpreter
+    "UP",    # pyupgrade — modern syntax for target-version above
     "FURB",  # refurb — dated idioms with clearer modern equivalents
 ]
 
@@ -52,12 +42,11 @@ ignore = [
 #                   comment tables and SQL, and wrapping them loses the shape
 #   I001            import sorting; several import blocks are anchored to
 #                   explanatory comments that a re-sort would separate
-#   SIM115          open() without a context manager; every instance is a
-#                   one-shot open(path).read() in a checker script
+#   SIM115          open() without a context manager; used for one-shot reads
 #   RUF100          "unused noqa"; the directives here document intent and
 #                   should survive a rule being toggled off
-#   BLE001          blind except; the two instances are deliberate top-level
-#                   handlers that report and exit
+#   BLE001          blind except; used for deliberate top-level report-and-exit
+#                   handlers
 
 [lint.per-file-ignores]
 # Tests assert on exact boolean identity to pin numpy/pandas bool semantics,

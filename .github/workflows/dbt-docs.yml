@@ -1,9 +1,7 @@
 name: Deploy dbt Docs to GitHub Pages
 
-# Triggers on every push to main that touches dbt models, macros, or this
-# workflow file. The workflow_dispatch trigger allows a manual run from the
-# GitHub Actions UI without a code push (useful after enabling Pages for the
-# first time or after changing the profiles.yml mock).
+# Publishes the dbt docs site on pushes to main that touch dbt/ or this file,
+# or on a manual run.
 on:
   push:
     branches: [main]
@@ -12,33 +10,22 @@ on:
       - '.github/workflows/dbt-docs.yml'
   workflow_dispatch:
 
-# ── Permissions ───────────────────────────────────────────────────────────────
-# Workflow default is read-only; the deploy job elevates itself to
-# pages: write + id-token: write at the JOB level, so the build job (which
-# runs pip install and dbt parse on the checked-out ref) never holds a
-# token that can publish.
+# Read-only by default. Only the deploy job gets pages: write, so the build
+# job, which installs packages and runs dbt, never holds a publishing token.
 permissions:
   contents: read
 
-# Prevent concurrent Pages deployments. If a second push arrives while a
-# deploy is in progress, cancel the in-progress run rather than queueing.
+# A newer push cancels an in-progress deploy.
 concurrency:
   group: pages
   cancel-in-progress: true
 
-# ── Jobs ──────────────────────────────────────────────────────────────────────
-# Two-job structure (build + deploy) matches the GitHub Pages deployment model:
-# the artifact upload must complete before the Pages deployment can start, and
-# the deploy job has its own environment context (github-pages) for audit trails.
-
 jobs:
 
-  # ── build ──────────────────────────────────────────────────────────────────
   build:
     name: Build dbt docs site
     runs-on: ubuntu-latest
-    # Default is 6 hours. Measured max over the last 11 runs: 0.7m. A hang here
-    # holds the `pages` concurrency group, so every later push queues behind it.
+    # A hang would hold the `pages` group; normal runs take under a minute.
     timeout-minutes: 10
 
     steps:
@@ -50,48 +37,11 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.11'
-          # Cache pip dependencies keyed on requirements to speed up re-runs.
           cache: pip
 
-      # Install the exact versions pinned in dbt/requirements.txt so CI, docs,
-      # and local environments all run identical dbt versions. The supported
-      # range is declared once, in dbt_project.yml's require-dbt-version.
       - name: Install dbt-core and dbt-snowflake
         run: pip install -r dbt/requirements.txt
 
-      # ── IMPORTANT: why this uses `dbt parse`, not `dbt compile` ─────────────
-      # Every dbt command that resolves SQL opens a warehouse connection —
-      # including `dbt compile` and `dbt docs generate --no-compile`. With the
-      # placeholder profile below that fails:
-      #     Database Error 290404 (08001): 404 Not Found:
-      #     post placeholder.us-east-1.snowflakecomputing.com/session/v1/login-request
-      # This workflow used `dbt compile` and had therefore failed on EVERY run
-      # since the workflow was added; ci.yml already used `dbt parse` for the
-      # same reason but the fix was never carried across.
-      #
-      # `dbt parse` validates the whole project, resolves ref()/source() and
-      # macros, and writes manifest.json with zero network calls. The CI docs
-      # site is therefore assembled from three pieces:
-      #
-      #   1. `dbt parse`     — manifest.json: full DAG, node metadata, model
-      #                        and column descriptions, declared tests, and the
-      #                        raw (pre-Jinja-render) model SQL.
-      #   2. Stub catalog.json — structurally valid, accepted by the docs UI;
-      #                        omits warehouse column statistics.
-      #   3. Copy index.html — the static asset `dbt docs generate` would copy
-      #                        from the installed dbt-core package.
-      #
-      # Accepted trade-off, consistent with the stub catalog: the docs site
-      # shows lineage, descriptions, tests and raw model SQL, but the
-      # "Compiled" tab is empty because compiled_code is only populated by a
-      # command that connects. Restoring it requires real credentials.
-
-      # The mock CI profile lives at dbt/ci-profile/profiles.yml — committed,
-      # credential-free, and shared with ci.yml and run_tests.sh. It replaces a
-      # heredoc here that was duplicated verbatim in ci.yml. The placeholder
-      # values satisfy dbt's profile schema validator; `dbt parse` never opens a
-      # connection, but any command that RESOLVES SQL does (and fails), which is
-      # why this workflow parses rather than compiles.
       - name: Install dbt packages (dbt deps)
         working-directory: dbt
         run: |
@@ -99,11 +49,10 @@ jobs:
             --profiles-dir ci-profile \
             --project-dir .
 
-      # dbt parse resolves the full model DAG (ref(), source(), macros, Jinja)
-      # and writes manifest.json to target/ with no warehouse connection.
-      # Snowflake-specific SQL (DATEDIFF, TIMESTAMP_NTZ, ZORDER) is treated as
-      # opaque text — parse validates project and template structure, not the
-      # SQL dialect. Dialect errors surface only against a real warehouse.
+      # dbt parse, not compile: every command that resolves SQL opens a
+      # Snowflake connection, and CI has no credentials. The site is
+      # manifest.json + a stub catalog.json + dbt's bundled index.html, so the
+      # Compiled tab is empty and column statistics are missing.
       - name: Parse dbt project (generates manifest.json, no DB connection)
         working-directory: dbt
         run: |
@@ -113,10 +62,6 @@ jobs:
             --target ci \
             --no-version-check
 
-      # Assemble the three files that make up the dbt docs static site:
-      #   manifest.json  — already in target/ from the parse step above
-      #   catalog.json   — stub (no warehouse column stats; full lineage preserved)
-      #   index.html     — copied from the dbt-core package's bundled static asset
       - name: Assemble dbt docs site
         working-directory: dbt
         run: |
@@ -126,7 +71,7 @@ jobs:
           target_dir = "target"
           os.makedirs(target_dir, exist_ok=True)
 
-          # ── 1. Verify manifest.json from compile step ─────────────────────────
+          # ── 1. Verify manifest.json from the parse step ───────────────────────
           manifest_path = os.path.join(target_dir, "manifest.json")
           if not os.path.exists(manifest_path):
               print("ERROR: target/manifest.json not found — did dbt parse succeed?",
@@ -139,17 +84,14 @@ jobs:
           print(f"manifest.json: {node_count} nodes, {source_count} sources")
 
           # ── 2. Write stub catalog.json ─────────────────────────────────────────
-          # Full catalog generation queries the warehouse's information_schema
-          # (column names, data types, row counts). An empty nodes/sources dict
-          # is a valid catalog — the dbt docs UI renders the lineage graph,
-          # model descriptions, and test coverage from manifest.json; it
-          # displays 'N/A' for column statistics when catalog entries are absent.
+          # A real catalog queries the warehouse. Empty nodes/sources is valid;
+          # the UI shows N/A for column statistics.
           catalog = {
               "metadata": {
                   "dbt_schema_version":
                       "https://schemas.getdbt.com/dbt/catalog/v1/updated.json",
-                  "dbt_version": manifest.get("metadata", {}).get("dbt_version", "1.7.0"),
-                  "generated_at": datetime.datetime.utcnow().strftime(
+                  "dbt_version": manifest["metadata"]["dbt_version"],
+                  "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime(
                       "%Y-%m-%dT%H:%M:%S.%fZ"
                   ),
                   "errors": None,
@@ -163,14 +105,12 @@ jobs:
           print(f"catalog.json: wrote stub ({os.path.getsize(catalog_path):,} bytes)")
 
           # ── 3. Copy the bundled index.html from the dbt-core package ───────────
-          # `dbt docs generate` copies this file from the installed dbt-core package
-          # to target/index.html. We replicate that step without the DB connection.
+          # What `dbt docs generate` would copy. dbt-core ships it at
+          # dbt/task/docs/index.html; the glob survives a move within the
+          # package, and finding nothing fails the job.
           import dbt
           dbt_pkg_dir = os.path.dirname(dbt.__file__)
 
-          # Search recursively under the dbt package directory. In dbt-core 1.x the
-          # file lives at dbt/include/index.html; the glob handles minor variations
-          # across patch versions without hard-coding the exact path.
           candidates = sorted(
               glob.glob(
                   os.path.join(dbt_pkg_dir, "**", "index.html"),
@@ -212,39 +152,28 @@ jobs:
           print("\nDocs site ready for GitHub Pages deployment.")
           PYEOF
 
-      # Configure the Pages upload context. Must run before upload-pages-artifact.
       - name: Configure GitHub Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
-      # Upload dbt/target/ as the Pages artifact. The deploy job picks this up.
-      # The artifact name is always 'github-pages' (fixed by the Pages API).
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          # Path is relative to the repository root.
           path: dbt/target
 
-  # ── deploy ─────────────────────────────────────────────────────────────────
   deploy:
     name: Deploy to GitHub Pages
     needs: build
-    # Publish from main only. workflow_dispatch has no branch guard of its
-    # own, so without this condition ANY branch containing this file could be
-    # dispatched straight onto the production docs site — unreviewed and
-    # without passing CI. Dispatching from a branch still runs the build job
-    # as a dry-run; only the publish is gated.
+    # Publish from main only; a manual run from a branch builds but does not
+    # deploy.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    # Measured max: 0.2m. The Pages API can legitimately queue a deployment,
-    # so 10m rather than something tighter.
+    # The Pages API can queue a deployment, so allow some minutes.
     timeout-minutes: 10
     permissions:
       contents: read
       pages: write     # publish to GitHub Pages
       id-token: write  # OIDC auth with the Pages API
 
-    # The github-pages environment records every deployment in the repository's
-    # Environments tab and provides the published URL as a deployment status.
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -254,7 +183,6 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
 
-      # Print the published URL to the Actions summary for quick access.
       - name: Print published URL
         run: |
           echo "### dbt Docs Published" >> $GITHUB_STEP_SUMMARY
