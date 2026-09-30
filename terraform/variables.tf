@@ -1,16 +1,9 @@
-# terraform/variables.tf
-# Last validated: 2026-06-05 (terraform fmt + validate pass clean)
+# Non-secret inputs only. Passwords, keys and access keys come from
+# environment variables read by the provider (see main.tf).
 #
-# Root-level input variable declarations for the NYC 311 Data Platform.
-#
-# Sensitive values (passwords, private keys, storage access keys) must NEVER
-# be declared here — pass them via environment variables consumed directly by
-# the provider. Only non-secret configuration belongs in this file.
-#
-# Recommended usage:
-#   export TF_VAR_environment=dev
+# Usage:
 #   export SNOWFLAKE_ACCOUNT=MYORG-MYACCOUNT
-#   terraform plan -var-file=envs/dev.tfvars
+#   terraform plan -var environment=dev
 
 # ---------------------------------------------------------------------------
 # Shared
@@ -53,17 +46,4 @@ variable "auto_suspend_seconds" {
   description = "Seconds of warehouse inactivity before auto-suspend. 60s is appropriate for dev; 300s (5 min) absorbs bursty BI query patterns in prod without excessive cold-start latency."
   type        = number
   default     = 60
-}
-
-# ---------------------------------------------------------------------------
-# Azure — remote state backend only (see backend.tf). The azure-infra module
-# that consumed these was deleted with the Databricks path; they are retained
-# because backend.tf still stores state in Azure Blob.
-# ---------------------------------------------------------------------------
-
-
-variable "resource_group_name" {
-  description = "Name of the Azure resource group. Must already exist; nothing in this configuration creates it."
-  type        = string
-  default     = "nyc311-data-platform-rg"
 }

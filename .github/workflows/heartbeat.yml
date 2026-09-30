@@ -1,35 +1,20 @@
 name: Daily Run Heartbeat
 
-# Nothing watched the watcher. scripts/check_slos.py runs as a STEP INSIDE
-# daily-run.yml, so it can only report on a run that happened; a run that never
-# fires produces no failure, no issue, and no red badge — the Actions tab looks
-# perfectly healthy while the data ages. Three real mechanisms cause exactly
-# that: GitHub disables scheduled workflows on public repos after 60 days
-# without repository activity, a maintainer can disable one by hand, and cron
-# delivery is explicitly best-effort.
+# Checks from outside daily-run.yml that it is still enabled and has
+# succeeded on main recently. check_slos.py runs inside the daily run, so it
+# cannot report a run that never starts: GitHub disables scheduled workflows
+# after 60 days without repository activity, a maintainer can disable one, and
+# cron delivery is best-effort. Only successes on main count, because a branch
+# run saves to that branch's cache and never refreshes main's database. The
+# decision logic is in scripts/check_daily_run_heartbeat.py.
 #
-# This workflow asks the Actions API, from outside daily-run.yml, whether that
-# workflow is still active and when it last concluded successfully ON MAIN.
-# Successes on other branches are deliberately not counted: Actions cache
-# scoping means a branch run saves into that branch's cache and never advances
-# main's accumulated DuckDB, so counting it would silence the alert without the
-# data having been refreshed. The verdict and its threshold live in
-# scripts/check_daily_run_heartbeat.py (unit-tested decision function); this
-# file is the schedule, the permissions, and the issue plumbing.
+# The threshold is 30h because GitHub starts the daily cron 3-8h late, so gaps
+# between healthy runs already reach 27h. Runs roughly every 4h; GitHub may
+# delay or skip scheduled runs.
 #
-# Cadence vs threshold — two different numbers doing two different jobs.
-# The THRESHOLD is 26h, the same number as SLO-1, so the external watcher fires
-# at the moment the internal SLO would have (rationale in the script docstring).
-# The CADENCE is every 4 hours and is only detection granularity: worst-case
-# alert latency is threshold + cadence = 30h, comfortably before a second
-# missed cycle (~34h after the last success) could pass unremarked. Four API
-# reads a day cost nothing.
-#
-# Known blind spot, stated rather than papered over: this workflow is itself
-# scheduled, so the 60-day inactivity rule disables it at the same instant it
-# disables daily-run.yml. It catches a manual disable, a cron miss, and a run
-# that fails silently forever; it cannot catch its own silencing. Detecting
-# that needs a prober outside GitHub, which this repo does not have.
+# Blind spot: this workflow is scheduled too, so the 60-day rule disables it
+# at the same moment as daily-run.yml. Catching that needs a prober outside
+# GitHub.
 on:
   schedule:
     - cron: "0 */4 * * *"
@@ -38,10 +23,8 @@ on:
 permissions:
   contents: read
 
-# Same reasoning as daily-run.yml: the issue dedup below is list-then-create,
-# which is not atomic, so two overlapping runs could file duplicates. Queue
-# rather than cancel — but with a 5-minute job timeout, overlap is only
-# possible if the API itself is hanging.
+# The issue dedup below is list-then-create, so overlapping runs could file
+# duplicates. Queue rather than cancel.
 concurrency:
   group: heartbeat
   cancel-in-progress: false
@@ -51,18 +34,18 @@ jobs:
     name: Check the daily run is still alive
     runs-on: ubuntu-latest
 
-    # A hung job holds the concurrency group and would silence the very check
-    # that exists to detect silence. Two API reads take seconds.
+    # A hung job would hold the queue and silence the check. It takes seconds.
     timeout-minutes: 5
 
-    # Least privilege, per-job elevation over the read-only workflow default:
-    #   actions: read  — read workflow state and run conclusions
-    #   issues: write  — file or update the breach issue
-    # Nothing else. This job never touches code, packages, or Pages.
+    # actions: read for workflow state and run results; issues: write to file
+    # the breach issue. Nothing else.
     permissions:
       contents: read
       actions: read
       issues: write
+
+    env:
+      THRESHOLD_HOURS: "30"
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -70,11 +53,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
-          # No `cache: pip` on purpose — the script is stdlib-only, so there is
-          # nothing to install and nothing to cache.
+          # No pip cache: the script uses only the standard library.
 
-      # Exit 1 = breach (disabled workflow, or no success inside the threshold).
-      # The report is written either way and picked up by the step below.
+      # Exit 1 = breach or check error; the next step files the issue.
       - name: Check daily-run heartbeat
         env:
           GH_TOKEN: ${{ github.token }}
@@ -83,7 +64,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --workflow daily-run.yml \
             --branch main \
-            --threshold-hours 26 \
+            --threshold-hours "$THRESHOLD_HOURS" \
             --report heartbeat_report.md
 
       - name: File or update heartbeat breach issue
@@ -107,21 +88,15 @@ jobs:
             fi
           } > heartbeat_body.md
 
-          # Reuses the daily-run-breach label rather than declaring a second
-          # stream. The label is declared in terraform/github (this workflow
-          # must not create labels as a job side effect), and the two signals
-          # are the same operational fact from two angles: "the daily run did
-          # not deliver". Sharing the label also shares the dedup, so a
-          # pipeline that fails AND then stops firing produces one thread
-          # instead of two competing ones. Splitting them later means adding a
-          # github_issue_label resource in Terraform first.
+          # Shares the daily-run-breach label (declared in terraform/github)
+          # so a pipeline that fails and then goes silent gives one thread.
           existing=$(gh issue list --label daily-run-breach --state open \
                        --json number --jq '.[0].number // empty')
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body-file heartbeat_body.md
           else
             gh issue create \
-              --title "Daily run heartbeat: no successful run in 26h ($(date -u +%F))" \
+              --title "Daily run heartbeat: no successful run in ${THRESHOLD_HOURS}h ($(date -u +%F))" \
               --label daily-run-breach \
               --body-file heartbeat_body.md
           fi
