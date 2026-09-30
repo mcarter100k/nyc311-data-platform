@@ -1,6 +1,6 @@
 # ADR 006: Schema Evolution Strategy
 
-**Status:** Accepted
+**Status:** Accepted. Amended 2026-09-29: the Bronze and Silver implementation below was removed with Databricks; the policy holds (see the end).
 **Date:** 2026-05-31
 
 ## Context
@@ -84,7 +84,7 @@ single PR that adds the column to a `.sql` file.
 
 The specific implementation at each layer:
 
-### Bronze (`02_bronze.py`)
+### Bronze (`02_bronze.py`, a Databricks notebook, since deleted)
 
 Auto Loader handles schema inference via `cloudFiles.schemaLocation`. New API columns are
 written to Bronze automatically via `mergeSchema=true` on the Delta write. After each
@@ -102,7 +102,7 @@ New columns do not fail the Bronze job. Failing on a new nullable column would b
 ingestion of all valid records in that batch — a disproportionate response to what is almost
 always a safe change.
 
-### Silver (`03_silver.py`)
+### Silver (`03_silver.py`, a Databricks notebook, since deleted)
 
 The MERGE SET and VALUES expressions are built at runtime from the actual columns present in
 the quality-filtered DataFrame (`df_quality.columns`), rather than being hardcoded. This
@@ -194,3 +194,23 @@ the current version.)
 Breaking changes at Gold also require incrementing `schema_version` in `dbt_project.yml`.
 Additive changes at Gold (adding a new column to a mart model) require a PR but do not
 require a version bump.
+
+
+---
+
+## Amendment 2026-09-29 — graduated trust without Databricks
+
+The Databricks notebooks were deleted on 2026-08-20 (ADR 008 amendment,
+ADR 014), and with them Auto Loader, `mergeSchema`, `autoMerge` and the
+schema registry. No schema registry exists today. The policy (Option C) still
+holds, through simpler means:
+
+| Layer  | How new columns are handled today |
+|--------|-----------------------------------|
+| Bronze | a DuckDB view over the raw JSON (`read_json_auto`), so every field the API sends is visible |
+| Silver | pandas keeps every field of the fetched JSON, and stage 3 rewrites `silver.service_requests` with `CREATE OR REPLACE TABLE ... AS SELECT *`, so a new field arrives with no code change |
+| Gold   | unchanged: `stg_service_requests` lists its columns explicitly, and `schema_version` works as described above |
+
+One consequence above changed: the quarantine table (`silver.quarantine`) is now
+a dbt source. `stg_quarantine` reads it so `fct_service_requests` can delete
+rows Silver rejected.

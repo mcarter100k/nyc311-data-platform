@@ -1,6 +1,6 @@
 # ADR 009: Reporter Grants Under Schema-Swap Publishing
 
-**Status:** Accepted
+**Status:** Accepted. Snowflake specification only: nothing is provisioned ([ADR 008](008-prototype-scope.md)), and the DuckDB pipeline that runs daily builds straight into `gold` with no write-audit-publish.
 **Date:** 2026-08-17
 
 ## Context
@@ -9,7 +9,8 @@ Two showcased decisions in this repo currently cancel each other out.
 
 1. **Grants as code, future-proofed.** The Terraform grant matrix gives
    `NYC311_REPORTER` `USAGE` on the GOLD schema plus `SELECT ON FUTURE TABLES/VIEWS`
-   (`terraform/modules/snowflake-foundation/main.tf:380-411`), so any table dbt creates
+   (`reporter_gold_schema_usage`, `reporter_gold_future_tables` and
+   `reporter_gold_future_views` in `terraform/modules/snowflake-foundation/main.tf`), so any table dbt creates
    automatically becomes readable by BI without a re-apply.
 
 2. **Write-audit-publish.** The dbt stage builds and tests everything in `GOLD_AUDIT`,

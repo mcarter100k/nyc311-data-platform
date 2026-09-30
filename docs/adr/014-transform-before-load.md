@@ -99,8 +99,11 @@ SELECT * FROM read_json_auto('nyc311_raw.json');   -- Bronze, portably
 The view is a convenience for the machine that produced it. The raw file is the
 layer, and it travels.
 
-**Idempotency has a sharp edge worth recording.** `DROP TABLE IF EXISTS`
-does *not* tolerate the object already being a view: `IF EXISTS` suppresses
-"not found", not "wrong type". The first conversion run passed and every run
-after it raised `CatalogException` until the drop was made type-aware. Found
-by running the stage twice, which is the only way this class of bug surfaces.
+**The drop is type-aware.** `DROP TABLE IF EXISTS` raises when the object is
+a view (`IF EXISTS` suppresses "not found", not "wrong type"), so stage 2 looks
+up the object's type before dropping it. Only a second run of the stage shows
+this bug.
+
+**Amendment, 2026-09-29.** The fetch window is now 37 days
+([ADR 010](010-scheduled-operation.md)), so the raw file, and Bronze with it,
+is a rolling 37-day window.
