@@ -5,8 +5,9 @@ Tests for the non-dbt pieces of the pipeline. No cloud credentials needed.
   2. Terraform             — outputs and the LOADER grants on Bronze
   3. GitHub Actions        — dbt-docs.yml structure
   4. profiles.yml.example  — connection config
-  5. Workflow operations   — timeouts, SHA pinning, evidence on failure, and
-                             the daily-run heartbeat's decision logic
+  5. Workflow operations   — timeouts, SHA pinning, evidence on failure, the
+                             daily run's unattended contract, the history
+                             check, and the heartbeat's decision logic
 """
 
 import ast
@@ -709,6 +710,101 @@ def test_heartbeat_dedups_issues_instead_of_filing_a_new_one_each_run():
     assert file_contains(path, "gh issue comment"), (
         "heartbeat.yml never comments on an existing issue — it can only create"
     )
+
+
+# ── 5a. The daily run's unattended contract ───────────────────────────────────
+# What makes the pipeline run and raise alarms with nobody watching: a cron,
+# an SLO gate, a breach issue on failure, and the history check around the
+# pipeline step (ADR 017). Deleting any of these must fail CI.
+
+def _daily_steps():
+    return load_workflow("daily-run.yml")["jobs"]["daily-run"]["steps"]
+
+
+def _step_index(steps, needle):
+    """Index of the one step whose `run` or `uses` contains needle."""
+    hits = [i for i, s in enumerate(steps) if needle in (s.get("run", "") + s.get("uses", ""))]
+    assert len(hits) == 1, f"expected one daily-run step containing {needle!r}, found {len(hits)}"
+    return hits[0]
+
+
+def test_daily_run_is_scheduled():
+    wf = load_workflow("daily-run.yml")
+    triggers = wf.get("on", wf.get(True))  # PyYAML reads a bare `on` as True
+    crons = [e.get("cron") for e in (triggers.get("schedule") or [])]
+    assert any(crons), "daily-run.yml has no cron schedule, so it never runs unattended"
+
+
+def test_daily_run_gates_on_both_slos():
+    steps = _daily_steps()
+    slo = steps[_step_index(steps, "scripts/check_slos.py")]
+    assert "if" not in slo and not slo.get("continue-on-error"), (
+        "the SLO step must run on every successful build and fail the run on a breach"
+    )
+    assert _step_index(steps, "scripts/check_slos.py") > _step_index(steps, "local/local_runner.py --live")
+
+
+def test_daily_run_files_a_breach_issue_when_it_fails():
+    steps = _daily_steps()
+    breach = next((s for s in steps if "--label daily-run-breach" in s.get("run", "")), None)
+    assert breach is not None, "no daily-run step files a daily-run-breach issue"
+    assert breach.get("if") == "failure()", f"breach step runs on {breach.get('if')!r}, not failure()"
+    assert "gh issue list --label daily-run-breach --state open" in breach["run"], "breach step does not dedup"
+
+
+def test_history_check_brackets_the_pipeline_step():
+    """The snapshot must see the restored database before the pipeline writes
+    to it, and the compare must see the result (ADR 017)."""
+    steps = _daily_steps()
+    restore = _step_index(steps, "actions/cache/restore@")
+    snap = _step_index(steps, "check_history.py snapshot")
+    pipeline = _step_index(steps, "local/local_runner.py --live")
+    compare = _step_index(steps, "check_history.py compare")
+    assert restore < snap < pipeline < compare, (restore, snap, pipeline, compare)
+    assert steps[compare].get("id") == "history"
+    notice = next((s for s in steps if "--label history-loss" in s.get("run", "")), None)
+    assert notice is not None and notice.get("if") == "steps.history.outputs.lost == 'true'"
+
+
+def test_every_issue_label_a_workflow_uses_is_declared_in_terraform():
+    """gh issue create fails on an unknown label, which would turn a warning
+    into a red run. Labels live in terraform/github (ADR 012)."""
+    with open(os.path.join(ROOT, "terraform", "github", "main.tf")) as f:
+        declared = set(re.findall(r'resource "github_issue_label"[^{]*\{[^}]*name\s*=\s*"([^"]+)"', f.read()))
+    used = set()
+    for name in os.listdir(WORKFLOW_DIR):
+        with open(os.path.join(WORKFLOW_DIR, name)) as f:
+            used |= set(re.findall(r"--label\s+([\w-]+)", f.read()))
+    assert used, "found no --label uses at all; the pattern is broken"
+    assert used <= declared, f"labels used but not declared in terraform/github: {sorted(used - declared)}"
+
+
+# ── 5a-ii. History check decision logic ───────────────────────────────────────
+
+history = importlib.import_module("check_history")
+BEFORE = {"exists": True, "rows": 522_464, "first_day": "2026-08-11", "last_day": "2026-09-29"}
+
+
+def test_history_lost_when_nothing_was_restored():
+    lost, reasons = history.verdict({"exists": False}, BEFORE)
+    assert lost and "no previous database" in reasons[0]
+
+
+def test_history_lost_when_gold_shrinks_past_the_tolerance():
+    after = {**BEFORE, "rows": 384_992}
+    lost, reasons = history.verdict(BEFORE, after)
+    assert lost and "down from 522,464" in reasons[0]
+
+
+def test_history_lost_when_the_earliest_day_moves_later():
+    lost, reasons = history.verdict(BEFORE, {**BEFORE, "first_day": "2026-08-24"})
+    assert lost and "2026-08-11 to 2026-08-24" in reasons[0]
+
+
+def test_history_intact_on_normal_growth_and_small_quarantine_drops():
+    assert history.verdict(BEFORE, {**BEFORE, "rows": 522_572}) == (False, [])
+    small_drop = int(BEFORE["rows"] * (1 - history.ROW_DROP_TOLERANCE)) + 1
+    assert history.verdict(BEFORE, {**BEFORE, "rows": small_drop}) == (False, [])
 
 
 # ── 5b. Heartbeat decision logic ──────────────────────────────────────────────

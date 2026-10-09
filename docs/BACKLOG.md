@@ -14,10 +14,10 @@ when it is done; git history and the ADRs keep the record. Layers
 **Problem.** The daily run re-pulls only requests created in the last 37 days
 ([ADR 010](adr/010-scheduled-operation.md)), and a row in Gold changes only
 when it is re-pulled. A request still open when it leaves the window keeps that
-status in Gold, even after the city closes it. Once the rows stored under the
-old 7-day window are refreshed (next item), Gold's 30-day metrics are not
+status in Gold, even after the city closes it. Gold's 30-day metrics are not
 affected: 37 days is the 30-day closure window plus the 7 days the source takes
-to settle, so every 30-day outcome is final before a request leaves. What is
+to settle, so every 30-day outcome is final before a request leaves. (Rows
+stored under the old 7-day window were refreshed by a wide run on 2026-09-30.) What is
 wrong is the current state of slow requests: `status`, `closed_date` and
 `resolution_days` for anything that closes after day 37.
 
@@ -32,22 +32,6 @@ than the window, by `unique_key` (batched `$where unique_key in (...)`). That
 set is small, and the query does not touch `:updated_at`, which the source
 re-stamps on ~540k rows a night. Until then, read a row's status as "as of day
 37 at the latest".
-
----
-
-## Refresh the rows stored under the 7-day window
-
-**Problem.** Gold accumulates across runs and holds requests back to
-2026-08-12 (498,458 rows in the 2026-09-29 database). Rows that left the window
-while it was 7 days wide keep the status they had about a week after creation,
-so their 30-day closure rates read low (68.4% instead of 89.5% on the same
-cohorts). The 37-day window refreshes only requests created in the last 37
-days; older cohorts never re-enter it.
-
-**Proposed fix.** Run `daily-run.yml` once by hand with the `window_days`
-input wide enough to reach 2026-08-12 (48 days on 2026-09-29; roughly 500k
-rows, under the 800k cap). The run upserts every re-fetched row; the
-only rows it removes from Gold are ones Silver quarantines. After that, the daily 37-day window keeps new cohorts current.
 
 ---
 

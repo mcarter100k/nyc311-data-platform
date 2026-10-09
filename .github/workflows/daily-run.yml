@@ -59,6 +59,11 @@ jobs:
           restore-keys: |
             nyc311-duckdb-
 
+      # Record what the restored database holds (or that nothing was
+      # restored), so a lost cache can be noticed after the run (ADR 017).
+      - name: Record history before the run
+        run: python scripts/check_history.py snapshot local/data/nyc311_local.duckdb --out history_before.json
+
       # Fetches every request created in the trailing 37 days, so 30-day
       # closure rates see closures up to day 30 plus the source's settling lag.
       # Transient HTTP errors (429, 5xx) are retried; any other failure,
@@ -134,6 +139,38 @@ jobs:
               --title "Upstream publish stall: $(date -u +%F)" \
               --label upstream-stall \
               --body-file stall_body.md
+          fi
+
+      # Warning only (exits 0): a run that did not build on the previous
+      # database passes both SLOs, so this is what notices lost history.
+      - name: Check history survived (warning only)
+        id: history
+        run: python scripts/check_history.py compare history_before.json local/data/nyc311_local.duckdb --report history_report.md
+
+      - name: File or update history-loss notice
+        if: steps.history.outputs.lost == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+
+          {
+            echo "## History lost — $(date -u +%F)"
+            echo ""
+            echo "Run: $RUN_URL (green: the fetch window loaded correctly)"
+            echo ""
+            cat history_report.md
+          } > history_body.md
+
+          existing=$(gh issue list --label history-loss --state open \
+                       --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file history_body.md
+          else
+            gh issue create \
+              --title "History lost: $(date -u +%F)" \
+              --label history-loss \
+              --body-file history_body.md
           fi
 
       - name: File or update breach issue
