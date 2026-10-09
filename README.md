@@ -10,10 +10,10 @@ A data pipeline over New York City's 311 service requests (the city's non-emerge
 |---|---|
 | **Stack** | Python · pandas · DuckDB · dbt · Airflow · Terraform · GitHub Actions |
 | **Model** | Star schema: <!--claim:fct_models-->4<!--/claim--> fact tables, <!--claim:dim_models-->3<!--/claim--> dimensions |
-| **Scale** | ~385k requests re-fetched daily (the last 37 days); accumulating since 12 Aug 2026 |
-| **Tests** | <!--claim:test_count-->227<!--/claim--> pytest tests + <!--claim:dbt_test_count-->131<!--/claim--> dbt data tests |
+| **Scale** | ~385k requests re-fetched daily (the last 37 days); history since 11 Aug 2026, carried run to run in the GitHub Actions cache ([ADR 017](docs/adr/017-history-lives-in-the-actions-cache.md)) |
+| **Tests** | <!--claim:test_count-->237<!--/claim--> pytest tests + <!--claim:dbt_test_count-->131<!--/claim--> dbt data tests |
 | **Runs** | Daily (cron 10:00 UTC; GitHub usually starts it 3–8 hours late), gated by 2 SLOs |
-| **Decisions** | <!--claim:adr_count-->16<!--/claim--> decision records and a postmortem |
+| **Decisions** | <!--claim:adr_count-->17<!--/claim--> decision records and a postmortem |
 
 ## What it does
 
@@ -59,7 +59,7 @@ A failed run or broken SLO opens a `daily-run-breach` issue with the measured nu
 - **Upstream stall warning.** If the city stops publishing, the run stays green (the loss is not ours) but an `upstream-stall` issue opens. When the city's publishing stalled on 2026-08-18, every pipeline stage ran green and only a check on the loaded volume noticed ([postmortem](docs/postmortems/2026-08-18-upstream-publish-stall.md)).
 - **Heartbeat.** A check inside the daily run cannot report a run that never starts. A separate [heartbeat](.github/workflows/heartbeat.yml), scheduled every 4 hours (GitHub may delay or skip it), alerts if the daily run is disabled or has not succeeded in 30 hours. Not 24: GitHub starts the daily run late, and gaps between healthy runs reach 27 hours.
 
-**Tests.** <!--claim:test_count-->227<!--/claim--> pytest tests run in CI as three required jobs, split by what each needs installed: <!--claim:structural_test_count-->144<!--/claim--> structural (dbt config, the Airflow DAG's task order, Terraform grants, workflows, the docs checker), <!--claim:unit_test_count-->9<!--/claim--> unit (the pandas cleaning), and <!--claim:behavioral_test_count-->74<!--/claim--> behavioral (real dbt builds on seeded data, the SLO queries, the fetcher against a fake API). A model can be configured perfectly and still compute the wrong number, which is why the behavioral tier checks output rows. Any skipped test fails its job, because a skip shows green. Separately, <!--claim:dbt_test_count-->131<!--/claim--> dbt tests (<!--claim:dbt_generic_tests-->121<!--/claim--> generic, <!--claim:dbt_singular_tests-->10<!--/claim--> hand-written) check the data inside every build.
+**Tests.** <!--claim:test_count-->237<!--/claim--> pytest tests run in CI as three required jobs, split by what each needs installed: <!--claim:structural_test_count-->153<!--/claim--> structural (dbt config, the Airflow DAG's task order, Terraform grants, workflows, the docs checker), <!--claim:unit_test_count-->9<!--/claim--> unit (the pandas cleaning), and <!--claim:behavioral_test_count-->75<!--/claim--> behavioral (real dbt builds on seeded data, the SLO queries, the fetcher against a fake API). A model can be configured perfectly and still compute the wrong number, which is why the behavioral tier checks output rows. Any skipped test fails its job, because a skip shows green. Separately, <!--claim:dbt_test_count-->131<!--/claim--> dbt tests (<!--claim:dbt_generic_tests-->121<!--/claim--> generic, <!--claim:dbt_singular_tests-->10<!--/claim--> hand-written) check the data inside every build.
 
 **Docs checked against code.** [`scripts/check_claims.py`](scripts/check_claims.py) fails CI when this README or `docs/` disagrees with the repo: counts, DAG task names, the model list, links, and quoted code. [docs/CLAIMS.md](docs/CLAIMS.md) maps each claim to its code and test. The checks are themselves tested by breaking what they guard ([tests/test_doc_guards.py](tests/test_doc_guards.py)).
 
@@ -103,7 +103,7 @@ Volume: weekdays average 10,955 requests a day and weekends 9,903, while noise c
 
 </details>
 
-**What was corrected.** A claim that "nothing there" closures recur least was withdrawn: it came from 7 days of data and reversed on 12. A weekday/weekend volume comparison was reported backwards (both totals had been divided by the same number of days). Both are registered in the claim checker so they cannot return. And the daily run first fetched only 7 days, so Gold never saw a request close after day 7: for requests created 24–28 Aug, the 30-day closure rate read 68.4% instead of 89.5%. The window is now 37 days; rows stored before the change keep their old status until one wide run (`--live --days N`, N larger than their age) refreshes them. The 800,000-row cap limits one run to roughly 75 days.
+**What was corrected.** A claim that "nothing there" closures recur least was withdrawn: it came from 7 days of data and reversed on 12. A weekday/weekend volume comparison was reported backwards (both totals had been divided by the same number of days). Both are registered in the claim checker so they cannot return. And the daily run first fetched only 7 days, so Gold never saw a request close after day 7: for requests created 24–28 Aug, the 30-day closure rate read 68.4% instead of 89.5%. The window is now 37 days, and one wide run on 30 Sep refreshed the rows stored before the change.
 
 ## Run it
 
@@ -164,7 +164,7 @@ Expect different numbers: `--live` fetches the 37 days ending today, not 13–24
 ## Architecture Decision Records
 
 <details>
-<summary><b>All <!--claim:adr_count-->16<!--/claim--> decisions</b></summary>
+<summary><b>All <!--claim:adr_count-->17<!--/claim--> decisions</b></summary>
 
 | ADR | Decision |
 |---|---|
@@ -184,6 +184,7 @@ Expect different numbers: `--live` fetches the 37 days ending today, not 13–24
 | [014](docs/adr/014-transform-before-load.md) | Transform before load: Bronze is the raw file, not a warehouse table |
 | [015](docs/adr/015-slo2-population-is-complete-days.md) | SLO-2 checks the days the data shows are complete, not a fixed offset from today |
 | [016](docs/adr/016-source-settling-horizon.md) | NYC 311 data settles after 7 days |
+| [017](docs/adr/017-history-lives-in-the-actions-cache.md) | Gold's history lives in the GitHub Actions cache; losing it files an issue |
 
 </details>
 

@@ -359,6 +359,9 @@ with_closure_type as (
           or resolution_description ilike '%meets its standards%'           then 'No Violation Found'
 
         -- Nothing there: the agency looked and found no condition at all.
+        -- In "couldn%t" and "didn%t", % stands for the apostrophe on purpose:
+        -- it matches a straight or curly apostrophe, or none ("couldnt"),
+        -- without escaping a quote inside the SQL string.
         when resolution_description ilike '%found no condition%'
           or resolution_description ilike '%could not find%'
           or resolution_description ilike '%couldn%t find%'

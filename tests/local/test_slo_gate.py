@@ -292,3 +292,25 @@ def test_stall_warning_does_not_fire_merely_for_lacking_a_comparison(tmp_path):
     stall, reasons = verdict(row)
     assert row["volume_ok"] is None, row
     assert not stall, reasons
+
+
+# ── History check: snapshot against real DuckDB files (ADR 017) ──────────────
+
+def test_history_snapshot_reads_gold_and_reports_a_missing_database(tmp_path):
+    import check_history
+
+    assert check_history.snapshot(str(tmp_path / "absent.duckdb")) == {"exists": False}
+
+    db = tmp_path / "warehouse.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE SCHEMA gold")
+    con.execute("CREATE TABLE gold.fct_service_requests (created_date TIMESTAMP)")
+    con.execute("INSERT INTO gold.fct_service_requests VALUES "
+                "('2026-08-11 09:00'), ('2026-09-29 23:00'), ('2026-09-01 12:00')")
+    con.close()
+    assert check_history.snapshot(str(db)) == {
+        "exists": True, "rows": 3, "first_day": "2026-08-11", "last_day": "2026-09-29"}
+
+    empty = tmp_path / "no_gold.duckdb"
+    duckdb.connect(str(empty)).close()
+    assert check_history.snapshot(str(empty))["rows"] == 0

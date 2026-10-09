@@ -85,6 +85,13 @@ resource "github_issue_label" "upstream_stall" {
   description = "Source feed published abnormally little data — not a pipeline failure"
 }
 
+resource "github_issue_label" "history_loss" {
+  repository  = github_repository.this.name
+  name        = "history-loss"
+  color       = "FBCA04"
+  description = "A daily run did not build on the previous database (ADR 017)"
+}
+
 # Requires the three CI tiers from ADR 011 before a merge to main.
 
 resource "github_branch_protection" "main" {

@@ -94,7 +94,7 @@ Silver is replaced on every run (`CREATE OR REPLACE`), so it always equals the l
 
 ### Gold — dbt models
 
-dbt builds the star schema from Silver. The list below is checked against the dbt manifest by `scripts/check_claims.py`: a model missing from the list, or a listed model that no longer exists, fails CI.
+dbt builds the star schema from Silver. Gold keeps history beyond the fetch window because each daily run builds on the previous run's database, which the workflow carries in the GitHub Actions cache. A run that starts without it still passes both SLOs, so `scripts/check_history.py` warns when that happens ([ADR 017](adr/017-history-lives-in-the-actions-cache.md)). The list below is checked against the dbt manifest by `scripts/check_claims.py`: a model missing from the list, or a listed model that no longer exists, fails CI.
 
 <!--model-inventory-->
 **staging** — one view per source table, rename and cast only:
