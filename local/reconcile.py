@@ -98,7 +98,7 @@ def main() -> int:
     con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
 
     def one(q):
-        return con.sql(q).fetchone()[0]
+        return con.execute(q).fetchone()[0]
 
     # Preflight: a database left by a run that failed in dbt has no Gold.
     missing = _missing_tables(con)
@@ -146,7 +146,7 @@ def main() -> int:
 
     # Gold accumulates history; Silver holds only the current window. So check
     # containment, and equality inside the window, not total equality.
-    window_lo, window_hi = con.sql(
+    window_lo, window_hi = con.execute(
         "SELECT min(cast(created_date AS date)), max(cast(created_date AS date)) "
         "FROM silver.service_requests"
     ).fetchone()
@@ -254,7 +254,7 @@ def main() -> int:
 
         for k in sample:
             a, probes = _lookup(k)
-            ours = con.sql(f"""
+            ours = con.execute(f"""
                 SELECT f.complaint_type, l.borough, f.created_date
                 FROM gold.fct_service_requests f
                 JOIN gold.dim_location l USING (location_id)
