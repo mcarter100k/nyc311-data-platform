@@ -141,14 +141,15 @@ jobs:
               --body-file stall_body.md
           fi
 
-      # Warning only (exits 0): a run that did not build on the previous
-      # database passes both SLOs, so this is what notices lost history.
+      # Warning only (exits 0, even if the check itself breaks): a run that did
+      # not build on the previous database passes both SLOs, so this is what
+      # notices lost history. lost=error (the check could not run) files too.
       - name: Check history survived (warning only)
         id: history
         run: python scripts/check_history.py compare history_before.json local/data/nyc311_local.duckdb --report history_report.md
 
       - name: File or update history-loss notice
-        if: steps.history.outputs.lost == 'true'
+        if: steps.history.outputs.lost != 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
