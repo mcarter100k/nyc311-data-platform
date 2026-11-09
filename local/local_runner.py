@@ -29,6 +29,7 @@ import requests
 # unit-tested without a database; this module owns I/O.
 from dbt_exec import dbt_executable
 from ingest_config import PAGE_SIZE, SOCRATA_URL, build_page_params
+import wap
 from silver_transformations import (
     compute_dq_metrics,
     compute_resolution_days,
@@ -465,7 +466,7 @@ def _run_dbt(args: list[str]) -> int:
 
 
 def stage4_gold(incremental: bool = False) -> None:
-    _banner("Stage 4 — Gold  (dbt build: models + snapshot + tests in DAG order)")
+    _banner("Stage 4 — Gold  (write-audit-publish: build + test in gold_audit, then publish)")
 
     print("\n  Installing dbt packages...")
     # A failed deps would otherwise surface later as a missing macro in a model.
@@ -474,20 +475,19 @@ def stage4_gold(incremental: bool = False) -> None:
         print(f"\n  ERROR: dbt deps exited {rc_deps} — packages not installed")
         sys.exit(rc_deps)
 
-    # `dbt build` runs models, the snapshot and tests in DAG order. On an
-    # existing database it is incremental: the fact merges fresh rows and
-    # snapshot history accumulates across runs.
-    if incremental:
-        print("\n  Building Gold (incremental — existing database)...")
-        rc_build = _run_dbt(["build"])
-    else:
-        print("\n  Building Gold (full refresh — fresh database)...")
-        rc_build = _run_dbt(["build", "--full-refresh"])
+    # Write-audit-publish (ADR 018): `dbt build` runs models, the snapshot and
+    # tests into gold_audit / snapshots_audit, seeded with a copy of Gold so the
+    # incremental fact and the SCD2 snapshot build on real history. Gold changes
+    # only if every test passes, in one transaction.
+    mode = "incremental — existing database" if incremental else "full refresh — fresh database"
+    print(f"\n  Building and testing in gold_audit ({mode})...")
+    rc_build = wap.run(DUCKDB_PATH, _run_dbt, full_refresh=not incremental)
     if rc_build != 0:
-        print(f"\n  ERROR: dbt build exited {rc_build} — see output above")
+        print(f"\n  ERROR: dbt build exited {rc_build} — see output above. Gold is unchanged;"
+              f"\n  gold_audit and snapshots_audit are kept for debugging.")
         sys.exit(rc_build)
-    print("\n  Gold built; all dbt tests passed (model, source, and singular"
-          " tests run inside dbt build — see local/models/*.yml and local/tests/).")
+    print("\n  All dbt tests passed in gold_audit; published to Gold in one transaction"
+          " (model, source and singular tests — see local/models/*.yml and local/tests/).")
 
 
 # ── Stage 5: Results ───────────────────────────────────────────────────────────

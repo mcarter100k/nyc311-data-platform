@@ -2,12 +2,14 @@
 
 {{
     config(
-        target_schema = 'snapshots',
+        target_schema = 'snapshots' ~ var('audit_suffix', ''),
         unique_key    = 'agency_abbreviation',
         strategy      = 'check',
         check_cols    = ['agency_name'],
     )
 }}
+
+-- target_schema becomes snapshots_audit during write-audit-publish (ADR 018).
 
 -- One row per agency_abbreviation with its title-cased name. The check
 -- strategy opens a new version when agency_name changes; a new abbreviation
