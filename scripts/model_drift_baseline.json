@@ -30,7 +30,7 @@
     "models/staging/stg_service_requests.yml": "",
     "package-lock.yml": "",
     "packages.yml": "",
-    "snapshots/agency_snapshot.sql": "-    initcap(trim(agency_name)) as agency_name\n+    array_to_string(\n+        list_transform(\n+            string_split(lower(trim(agency_name)), ' '),\n+            lambda x: upper(x[1]) || x[2:]\n+        ),\n+        ' '\n+    ) as agency_name",
+    "snapshots/agency_snapshot.sql": "-        target_schema = 'snapshots',\n+        target_schema = 'snapshots' ~ var('audit_suffix', ''),\n+\n+-- target_schema becomes snapshots_audit during write-audit-publish (ADR 018).\n-    initcap(trim(agency_name)) as agency_name\n+    array_to_string(\n+        list_transform(\n+            string_split(lower(trim(agency_name)), ' '),\n+            lambda x: upper(x[1]) || x[2:]\n+        ),\n+        ' '\n+    ) as agency_name",
     "tests/assert_address_key_is_normalised.sql": "",
     "tests/assert_closure_decode_coverage.sql": "",
     "tests/assert_complaint_classification_coverage.sql": "",
