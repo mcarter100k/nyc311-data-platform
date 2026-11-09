@@ -76,8 +76,8 @@ def run_gate(path, *extra):
 
 def stall_row(path):
     con = duckdb.connect(str(path), read_only=True)
-    rel = con.sql(STALL_QUERY)
-    row = dict(zip(rel.columns, rel.fetchone(), strict=True))
+    cur = con.execute(STALL_QUERY)
+    row = dict(zip([d[0] for d in cur.description], cur.fetchone(), strict=True))
     con.close()
     return row
 

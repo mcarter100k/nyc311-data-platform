@@ -51,9 +51,9 @@ def main(argv: list[str] | None = None) -> int:
     for sql_file in sql_files:
         name = os.path.basename(sql_file)
         with open(sql_file) as fh:
-            rel = con.sql(fh.read())
-        cols = rel.columns
-        row = rel.fetchone()
+            cur = con.execute(fh.read())
+        cols = [d[0] for d in cur.description]
+        row = cur.fetchone()
         values = dict(zip(cols, row, strict=True)) if row else {}
         ok = values.get("pass") is True  # NULL and missing both count as breach
 

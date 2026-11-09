@@ -105,8 +105,8 @@ def main(argv: list[str] | None = None) -> int:
     db_path, report_path = args.db_path, args.report
 
     con = duckdb.connect(db_path, read_only=True)
-    rel = con.sql(QUERY)
-    row = dict(zip(rel.columns, rel.fetchone(), strict=True))
+    cur = con.execute(QUERY)
+    row = dict(zip([d[0] for d in cur.description], cur.fetchone(), strict=True))
 
     stall, reasons = verdict(row)
     label = "UPSTREAM STALL SUSPECTED" if stall else "upstream publishing normal"

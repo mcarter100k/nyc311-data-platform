@@ -763,7 +763,8 @@ def test_history_check_brackets_the_pipeline_step():
     assert restore < snap < pipeline < compare, (restore, snap, pipeline, compare)
     assert steps[compare].get("id") == "history"
     notice = next((s for s in steps if "--label history-loss" in s.get("run", "")), None)
-    assert notice is not None and notice.get("if") == "steps.history.outputs.lost == 'true'"
+    # != 'false' so a check that could not run (lost=error) is reported too.
+    assert notice is not None and notice.get("if") == "steps.history.outputs.lost != 'false'"
 
 
 def test_every_issue_label_a_workflow_uses_is_declared_in_terraform():
@@ -805,6 +806,48 @@ def test_history_intact_on_normal_growth_and_small_quarantine_drops():
     assert history.verdict(BEFORE, {**BEFORE, "rows": 522_572}) == (False, [])
     small_drop = int(BEFORE["rows"] * (1 - history.ROW_DROP_TOLERANCE)) + 1
     assert history.verdict(BEFORE, {**BEFORE, "rows": small_drop}) == (False, [])
+
+
+def test_history_check_that_cannot_run_reports_instead_of_failing_the_run(tmp_path, monkeypatch):
+    """A crash in this warning-only check stopped every daily run from
+    2026-10-21 to 2026-11-08. It must exit 0 and report lost=error instead."""
+    out, report = tmp_path / "gh_output", tmp_path / "report.md"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    rc = history.main(["compare", str(tmp_path / "missing.json"), str(tmp_path / "x.duckdb"),
+                       "--report", str(report)])
+    assert rc == 0
+    assert out.read_text() == "lost=error\n"
+    assert "COULD NOT RUN" in report.read_text()
+
+
+# ── 5a-iii. Dependencies the pipeline imports are pinned ──────────────────────
+
+def test_every_third_party_package_the_pipeline_imports_is_pinned_exactly():
+    """dbt-duckdb pinned dbt but not DuckDB, so DuckDB 2.0 arrived unannounced on
+    2026-10-21 and broke the daily run. Anything local/ or scripts/ imports
+    directly must have its own == pin."""
+    own = {os.path.splitext(f)[0] for d in ("local", "scripts")
+           for f in os.listdir(os.path.join(ROOT, d)) if f.endswith(".py")}
+    imported = set()
+    for d in ("local", "scripts"):
+        for f in os.listdir(os.path.join(ROOT, d)):
+            if f.endswith(".py"):
+                for node in ast.walk(parse_python(os.path.join(ROOT, d, f))):
+                    if isinstance(node, ast.Import):
+                        imported |= {a.name.split(".")[0] for a in node.names}
+                    elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                        imported.add(node.module.split(".")[0])
+    third_party = imported - set(sys.stdlib_module_names) - own - {"__future__"}
+    assert third_party, "found no third-party imports; the scan is broken"
+    pins = {}
+    for req in ("local/requirements.txt", "requirements-dev.txt"):
+        with open(os.path.join(ROOT, req)) as f:
+            for line in f:
+                m = re.match(r"([A-Za-z0-9_.-]+)==", line.strip())
+                if m:
+                    pins[m.group(1).lower().replace("-", "_")] = req
+    unpinned = sorted(p for p in third_party if p.lower() not in pins)
+    assert not unpinned, f"imported by local/ or scripts/ but not pinned with ==: {unpinned}"
 
 
 # ── 5b. Heartbeat decision logic ──────────────────────────────────────────────

@@ -17,9 +17,12 @@ Two commands, run around the pipeline step:
                                   rows, or when its earliest created_date
                                   moved later
 
-Exit code is 0 either way. The verdict goes to $GITHUB_OUTPUT as
-`lost=true|false` when that is set, and is always printed. A deliberate reset
-(deleting the database by hand) also warns; that is intended.
+Exit code is 0 every time, including when the check itself breaks: a
+warning-only step must never fail the run (a crash here stopped every daily
+run from 2026-10-21 to 2026-11-08). The verdict goes to $GITHUB_OUTPUT as
+`lost=true|false|error` when that is set, and is always printed; `error` means
+the check could not run, and the workflow files an issue for it too. A
+deliberate reset (deleting the database by hand) also warns; that is intended.
 
 Usage:
   python scripts/check_history.py snapshot DB --out before.json
@@ -52,7 +55,7 @@ def snapshot(db_path: str) -> dict:
 
     con = duckdb.connect(db_path, read_only=True)
     try:
-        rows, first_day, last_day = con.sql(QUERY).fetchone()
+        rows, first_day, last_day = con.execute(QUERY).fetchone()
     except duckdb.CatalogException:  # a file with no Gold layer yet
         return {"exists": True, "rows": 0, "first_day": None, "last_day": None}
     finally:
@@ -75,7 +78,31 @@ def verdict(before: dict, after: dict) -> tuple[bool, list[str]]:
     return bool(reasons), reasons
 
 
+def _output(lost: str) -> None:
+    gh_out = os.environ.get("GITHUB_OUTPUT")
+    if gh_out:
+        with open(gh_out, "a") as fh:
+            fh.write(f"lost={lost}\n")
+
+
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except Exception as exc:  # noqa: BLE001 - any failure is reported, never raised
+        msg = f"history check could not run: {type(exc).__name__}: {exc}"
+        print(f"::warning::{msg}")
+        args = sys.argv[1:] if argv is None else argv
+        report = args[args.index("--report") + 1] if "--report" in args[:-1] else None
+        if report:
+            with open(report, "w") as fh:
+                fh.write(f"# History check\n\n- **Verdict:** COULD NOT RUN\n- {msg}\n\n"
+                         "Whether history survived this run is unknown. Fix the check "
+                         "(scripts/check_history.py); recovery is in ADR 017.\n")
+        _output("error")
+        return 0
+
+
+def _main(argv: list[str] | None) -> int:
     ap = argparse.ArgumentParser(description="Warn when a run did not build on the previous database.")
     sub = ap.add_subparsers(dest="command", required=True)
     snap = sub.add_parser("snapshot")
@@ -115,10 +142,7 @@ def main(argv: list[str] | None = None) -> int:
                 "only in the GitHub Actions cache. Recovery is in ADR 017.\n"
             )
 
-    gh_out = os.environ.get("GITHUB_OUTPUT")
-    if gh_out:
-        with open(gh_out, "a") as fh:
-            fh.write(f"lost={'true' if lost else 'false'}\n")
+    _output("true" if lost else "false")
     return 0
 
 
