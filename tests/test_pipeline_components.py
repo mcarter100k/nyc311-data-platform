@@ -850,6 +850,19 @@ def test_every_third_party_package_the_pipeline_imports_is_pinned_exactly():
     assert not unpinned, f"imported by local/ or scripts/ but not pinned with ==: {unpinned}"
 
 
+def test_stage4_builds_gold_through_write_audit_publish():
+    """Stage 4 must build through wap.run, never dbt build straight into Gold,
+    or a failed test leaves its tables in Gold (ADR 018). Read from the AST:
+    fast-gate has no duckdb to import local_runner."""
+    tree = parse_python(os.path.join(ROOT, "local", "local_runner.py"))
+    stage4 = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "stage4_gold")
+    calls = [n for n in ast.walk(stage4) if isinstance(n, ast.Call)]
+    assert any(ast.unparse(c.func) == "wap.run" for c in calls), "stage4_gold does not call wap.run"
+    direct = [ast.unparse(c) for c in calls if ast.unparse(c.func) == "_run_dbt"
+              and "build" in ast.unparse(c)]
+    assert not direct, f"stage4_gold runs dbt build directly: {direct}"
+
+
 # ── 5b. Heartbeat decision logic ──────────────────────────────────────────────
 # check_daily_run_heartbeat.evaluate() takes the API facts, a clock and a
 # threshold, and returns a verdict with no I/O.
