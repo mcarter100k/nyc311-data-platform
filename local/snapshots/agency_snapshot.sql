@@ -21,7 +21,7 @@ select
     array_to_string(
         list_transform(
             string_split(lower(trim(agency_name)), ' '),
-            x -> upper(x[1]) || x[2:]
+            lambda x: upper(x[1]) || x[2:]
         ),
         ' '
     ) as agency_name
