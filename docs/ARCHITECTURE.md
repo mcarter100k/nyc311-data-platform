@@ -94,7 +94,7 @@ Silver is replaced on every run (`CREATE OR REPLACE`), so it always equals the l
 
 ### Gold — dbt models
 
-dbt builds the star schema from Silver. Gold keeps history beyond the fetch window because each daily run builds on the previous run's database, which the workflow carries in the GitHub Actions cache. A run that starts without it still passes both SLOs, so `scripts/check_history.py` warns when that happens ([ADR 017](adr/017-history-lives-in-the-actions-cache.md)). The list below is checked against the dbt manifest by `scripts/check_claims.py`: a model missing from the list, or a listed model that no longer exists, fails CI.
+dbt builds the star schema from Silver, by write-audit-publish: it builds and tests in `gold_audit` and `snapshots_audit`, and Gold changes only if every test passes, in one transaction ([ADR 018](adr/018-write-audit-publish-on-duckdb.md)). Gold keeps history beyond the fetch window because each daily run builds on the previous run's database, which the workflow carries in the GitHub Actions cache. A run that starts without it still passes both SLOs, so `scripts/check_history.py` warns when that happens ([ADR 017](adr/017-history-lives-in-the-actions-cache.md)). The list below is checked against the dbt manifest by `scripts/check_claims.py`: a model missing from the list, or a listed model that no longer exists, fails CI.
 
 <!--model-inventory-->
 **staging** — one view per source table, rename and cast only:
@@ -142,7 +142,7 @@ Design choices in the fact table:
 | `cluster_by` config | removed (DuckDB has no clustering) |
 | `merge` incremental strategy | `delete+insert` (same upsert, update-or-insert, on the unique key) |
 | `initcap(name)` in the agency snapshot | split-and-capitalise on spaces. **Known difference:** Snowflake's `initcap` also capitalises after hyphens and brackets, so such agency names differ |
-| `publish_gold` macro (schema swap) | absent: the DuckDB path builds straight into Gold, with no write-audit-publish |
+| `publish_gold` macro (schema swap) | `local/wap.py`: build and test in `gold_audit`, then copy into Gold in one transaction (DuckDB cannot swap or rename schemas; [ADR 018](adr/018-write-audit-publish-on-duckdb.md)) |
 | Snowflake database and schema in `sources.yml` | the local DuckDB file |
 
 Both `sources.yml` files declare dbt source-freshness thresholds, but nothing in the repo runs `dbt source freshness`; the daily run measures freshness with [SLO-1](SLO.md#slo-1--freshness) instead.

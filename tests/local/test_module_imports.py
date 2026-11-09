@@ -22,6 +22,7 @@ LOCAL_MODULES = [
     "local_runner",
     "reconcile",
     "silver_transformations",
+    "wap",
 ]
 
 
