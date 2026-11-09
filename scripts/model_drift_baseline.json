@@ -6,7 +6,7 @@
   "pairs": {
     "dbt_project.yml": "-name: 'nyc311'\n+name: 'nyc311_local'\n-profile: 'nyc311'\n+profile: 'nyc311_local'\n-  nyc311:\n+  nyc311_local:",
     "macros/generate_date_spine.sql": "-            end_date   = \"dateadd('day', 1, cast('\" ~ end_date ~ \"' as date))\"\n+            end_date   = \"(cast('\" ~ end_date ~ \"' as date) + INTERVAL '1 day')\"",
-    "macros/generate_schema_name.sql": "",
+    "macros/generate_schema_name.sql": "-    Write-audit-publish (Snowflake only): passing the `audit_suffix` var builds\n-    and tests every model in GOLD_AUDIT, and publish_gold then swaps it into\n-    GOLD. Nothing in this repo sets audit_suffix; run the two commands by hand:\n-\n-        dbt build --vars '{\"audit_suffix\": \"_audit\"}'\n-        dbt run-operation publish_gold\n+    Write-audit-publish: the `audit_suffix` var builds and tests every model in\n+    GOLD_AUDIT. On this DuckDB path, local/wap.py passes it and then copies the\n+    audited build into GOLD in one transaction (ADR 018).",
     "models/intermediate/int_load_completeness.sql": "",
     "models/intermediate/int_load_completeness.yml": "",
     "models/intermediate/int_service_requests_cleaned.sql": "",

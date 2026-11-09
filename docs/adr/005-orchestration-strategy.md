@@ -1,6 +1,6 @@
 # ADR 005: Orchestration Strategy
 
-**Status:** Accepted. Amended 2026-08-20 and 2026-09-29: the Databricks DAG was deleted; a local DAG runs (see the end).
+**Status:** Accepted. Amended 2026-08-20, 2026-09-29 and 2026-11-08: the Databricks DAG was deleted, a local DAG runs, and the DuckDB path now has its own write-audit-publish ([ADR 018](018-write-audit-publish-on-duckdb.md)); see the end.
 **Date:** 2026-05-27
 
 ## Context
@@ -180,3 +180,12 @@ Two parts of the design above do not exist in what runs.
   when the fetch and build succeed.
 
 The daily schedule is GitHub Actions, not Airflow ([ADR 010](010-scheduled-operation.md)).
+
+## Amendment 2026-11-08 — write-audit-publish on DuckDB
+
+The 2026-09-29 amendment's second point no longer holds. The DuckDB path now builds and tests in
+`gold_audit` and `snapshots_audit`, and publishes to Gold in one transaction only when every test
+passes. DuckDB cannot swap or rename schemas, so publishing copies the audited tables instead of
+swapping ([ADR 018](018-write-audit-publish-on-duckdb.md)). The Snowflake swap above is still
+specification only.
+

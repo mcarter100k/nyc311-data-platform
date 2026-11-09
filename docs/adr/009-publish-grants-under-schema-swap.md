@@ -1,6 +1,6 @@
 # ADR 009: Reporter Grants Under Schema-Swap Publishing
 
-**Status:** Accepted. Snowflake specification only: nothing is provisioned ([ADR 008](008-prototype-scope.md)), and the DuckDB pipeline that runs daily builds straight into `gold` with no write-audit-publish.
+**Status:** Accepted. Snowflake specification only: nothing is provisioned ([ADR 008](008-prototype-scope.md)), and the DuckDB pipeline that runs daily publishes by copying inside a transaction, not by schema swap ([ADR 018](018-write-audit-publish-on-duckdb.md)), so these grants do not apply to it.
 **Date:** 2026-08-17
 
 ## Context

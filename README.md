@@ -11,9 +11,9 @@ A data pipeline over New York City's 311 service requests (the city's non-emerge
 | **Stack** | Python · pandas · DuckDB · dbt · Airflow · Terraform · GitHub Actions |
 | **Model** | Star schema: <!--claim:fct_models-->4<!--/claim--> fact tables, <!--claim:dim_models-->3<!--/claim--> dimensions |
 | **Scale** | ~385k requests re-fetched daily (the last 37 days); history since 11 Aug 2026, carried run to run in the GitHub Actions cache ([ADR 017](docs/adr/017-history-lives-in-the-actions-cache.md)) |
-| **Tests** | <!--claim:test_count-->239<!--/claim--> pytest tests + <!--claim:dbt_test_count-->131<!--/claim--> dbt data tests |
+| **Tests** | <!--claim:test_count-->245<!--/claim--> pytest tests + <!--claim:dbt_test_count-->131<!--/claim--> dbt data tests |
 | **Runs** | Daily (cron 10:00 UTC; GitHub usually starts it 3–8 hours late), gated by 2 SLOs |
-| **Decisions** | <!--claim:adr_count-->17<!--/claim--> decision records and a postmortem |
+| **Decisions** | <!--claim:adr_count-->18<!--/claim--> decision records and a postmortem |
 
 ## What it does
 
@@ -30,7 +30,7 @@ Socrata API ─► raw JSON (Bronze) ─► pandas (Silver) ─► dbt (Gold) �
 1. **Fetch.** [`local/local_runner.py`](local/local_runner.py) downloads every request created in the last 37 days into one JSON file, and asks the city how many requests it holds for each day. Zero rows, or more than 800,000, fails the run.
 2. **Bronze.** DuckDB puts a view over the raw file. Nothing is copied.
 3. **Silver.** pandas removes duplicates, maps 24 spellings of borough names to five, and sets aside ("quarantines") rows closed before they were created.
-4. **Gold.** `dbt build` builds the star schema and runs every dbt test. The fact table is **incremental**: each run inserts new requests and updates changed ones, so Gold keeps every request ever loaded.
+4. **Gold.** `dbt build` builds the star schema and runs every dbt test in an audit schema; Gold is replaced only if every test passes, in one transaction ([ADR 018](docs/adr/018-write-audit-publish-on-duckdb.md)). The fact table is **incremental**: each run inserts new requests and updates changed ones, so Gold keeps every request ever loaded.
 5. **Check.** Two SQL queries test the result against the SLOs.
 
 **Why 37 days.** The pipeline only sees a request's status change while the request is inside the fetch window, because it only sees what it re-fetches. NYC's closure standard is 30 days, and the city's data for a day keeps shifting for about 7 more ([ADR 016](docs/adr/016-source-settling-horizon.md)), so the window is 30 + 7. A request older than 37 days keeps the status it had when it left the window: fine for 30-day metrics, wrong for longer ones ([ADR 010](docs/adr/010-scheduled-operation.md)). Fetching whatever changed (`:updated_at`) was measured and rejected: the city re-stamps about half a million rows a night.
@@ -59,11 +59,11 @@ A failed run or broken SLO opens a `daily-run-breach` issue with the measured nu
 - **Upstream stall warning.** If the city stops publishing, the run stays green (the loss is not ours) but an `upstream-stall` issue opens. When the city's publishing stalled on 2026-08-18, every pipeline stage ran green and only a check on the loaded volume noticed ([postmortem](docs/postmortems/2026-08-18-upstream-publish-stall.md)).
 - **Heartbeat.** A check inside the daily run cannot report a run that never starts. A separate [heartbeat](.github/workflows/heartbeat.yml), scheduled every 4 hours (GitHub may delay or skip it), alerts if the daily run is disabled or has not succeeded in 30 hours. Not 24: GitHub starts the daily run late, and gaps between healthy runs reach 27 hours.
 
-**Tests.** <!--claim:test_count-->239<!--/claim--> pytest tests run in CI as three required jobs, split by what each needs installed: <!--claim:structural_test_count-->155<!--/claim--> structural (dbt config, the Airflow DAG's task order, Terraform grants, workflows, the docs checker), <!--claim:unit_test_count-->9<!--/claim--> unit (the pandas cleaning), and <!--claim:behavioral_test_count-->75<!--/claim--> behavioral (real dbt builds on seeded data, the SLO queries, the fetcher against a fake API). A model can be configured perfectly and still compute the wrong number, which is why the behavioral tier checks output rows. Any skipped test fails its job, because a skip shows green. Separately, <!--claim:dbt_test_count-->131<!--/claim--> dbt tests (<!--claim:dbt_generic_tests-->121<!--/claim--> generic, <!--claim:dbt_singular_tests-->10<!--/claim--> hand-written) check the data inside every build.
+**Tests.** <!--claim:test_count-->245<!--/claim--> pytest tests run in CI as three required jobs, split by what each needs installed: <!--claim:structural_test_count-->156<!--/claim--> structural (dbt config, the Airflow DAG's task order, Terraform grants, workflows, the docs checker), <!--claim:unit_test_count-->9<!--/claim--> unit (the pandas cleaning), and <!--claim:behavioral_test_count-->80<!--/claim--> behavioral (real dbt builds on seeded data, the SLO queries, the fetcher against a fake API). A model can be configured perfectly and still compute the wrong number, which is why the behavioral tier checks output rows. Any skipped test fails its job, because a skip shows green. Separately, <!--claim:dbt_test_count-->131<!--/claim--> dbt tests (<!--claim:dbt_generic_tests-->121<!--/claim--> generic, <!--claim:dbt_singular_tests-->10<!--/claim--> hand-written) check the data inside every build.
 
 **Docs checked against code.** [`scripts/check_claims.py`](scripts/check_claims.py) fails CI when this README or `docs/` disagrees with the repo: counts, DAG task names, the model list, links, and quoted code. [docs/CLAIMS.md](docs/CLAIMS.md) maps each claim to its code and test. The checks are themselves tested by breaking what they guard ([tests/test_doc_guards.py](tests/test_doc_guards.py)).
 
-**Real versus specified.** What runs: the DuckDB pipeline, the daily run, an Airflow demo (a 7-task DAG), three required CI checks, and Terraform for this repo's own GitHub settings ([terraform/github/](terraform/github/), applied). What is only specified: a Snowflake warehouse with 5 schemas, 4 roles and least-privilege grants ([terraform/](terraform/), validated in CI, never applied), and **write-audit-publish**, where dbt builds and tests in an audit schema and then swaps it into Gold so readers never see untested data ([ADR 005](docs/adr/005-orchestration-strategy.md)). The DuckDB path builds straight into Gold: a failed dbt test fails the run but leaves the new tables in place, and the next run starts from the last good database.
+**Real versus specified.** What runs: the DuckDB pipeline, the daily run, an Airflow demo (a 7-task DAG), three required CI checks, and Terraform for this repo's own GitHub settings ([terraform/github/](terraform/github/), applied). What is only specified: a Snowflake warehouse with 5 schemas, 4 roles and least-privilege grants ([terraform/](terraform/), validated in CI, never applied), and the Snowflake form of **write-audit-publish**, a one-statement schema swap ([ADR 005](docs/adr/005-orchestration-strategy.md)). The DuckDB path runs its own write-audit-publish: a failed dbt test fails the run and leaves Gold exactly as it was ([ADR 018](docs/adr/018-write-audit-publish-on-duckdb.md)).
 
 ## What the data shows
 
@@ -164,7 +164,7 @@ Expect different numbers: `--live` fetches the 37 days ending today, not 13–24
 ## Architecture Decision Records
 
 <details>
-<summary><b>All <!--claim:adr_count-->17<!--/claim--> decisions</b></summary>
+<summary><b>All <!--claim:adr_count-->18<!--/claim--> decisions</b></summary>
 
 | ADR | Decision |
 |---|---|
@@ -172,7 +172,7 @@ Expect different numbers: `--live` fetches the 37 days ending today, not 13–24
 | [002](docs/adr/002-transformation-tool.md) | dbt over hand-written transform code for Gold |
 | [003](docs/adr/003-iac-approach.md) | Terraform as the one infrastructure-as-code tool |
 | [004](docs/adr/004-medallion-vs-elt.md) | Medallion layering over direct ELT |
-| [005](docs/adr/005-orchestration-strategy.md) | Airflow, one DAG, write-audit-publish dbt stage (Snowflake only; not used on the DuckDB path) |
+| [005](docs/adr/005-orchestration-strategy.md) | Airflow, one DAG, write-audit-publish dbt stage (Snowflake schema swap; specified only) |
 | [006](docs/adr/006-schema-evolution.md) | A schema version stamp on each fact row, not runtime column detection |
 | [007](docs/adr/007-scd-type-2-dim-agency.md) | Agency history as SCD Type 2 via a dbt snapshot, so a 2021 request keeps its 2021 agency name |
 | [008](docs/adr/008-prototype-scope.md) | Cloud services specified, not provisioned |
@@ -185,6 +185,7 @@ Expect different numbers: `--live` fetches the 37 days ending today, not 13–24
 | [015](docs/adr/015-slo2-population-is-complete-days.md) | SLO-2 checks the days the data shows are complete, not a fixed offset from today |
 | [016](docs/adr/016-source-settling-horizon.md) | NYC 311 data settles after 7 days |
 | [017](docs/adr/017-history-lives-in-the-actions-cache.md) | Gold's history lives in the GitHub Actions cache; losing it files an issue |
+| [018](docs/adr/018-write-audit-publish-on-duckdb.md) | Write-audit-publish on DuckDB: build and test in an audit schema, publish by copy in one transaction |
 
 </details>
 
