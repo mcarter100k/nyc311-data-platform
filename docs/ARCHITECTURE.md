@@ -1,6 +1,6 @@
 # Architecture
 
-How the pipeline is built, layer by layer. The [README](../README.md) covers what it does, how it is operated, and what the data shows.
+How the pipeline is built, layer by layer. The [README](../README.md) is the short version; [FINDINGS.md](FINDINGS.md) covers what the data shows.
 
 ---
 
@@ -170,6 +170,24 @@ The order is tested by [tests/test_pipeline_components.py](../tests/test_pipelin
 
 ---
 
+## Testing
+
+<!--claim:test_count-->245<!--/claim--> pytest tests run in CI as three required jobs, split by what each needs installed:
+
+| Tier | Tests | What it checks |
+|---|---|---|
+| Structural | <!--claim:structural_test_count-->156<!--/claim--> | dbt config, the Airflow DAG's task order, Terraform grants, workflows, the docs checker |
+| Unit | <!--claim:unit_test_count-->9<!--/claim--> | the pandas cleaning |
+| Behavioral | <!--claim:behavioral_test_count-->80<!--/claim--> | real dbt builds on seeded data, the SLO queries, the fetcher against a fake API |
+
+A model can be configured perfectly and still compute the wrong number, which is why the behavioral tier checks output rows. Any skipped test fails its job, because a skip shows green. Separately, <!--claim:dbt_test_count-->131<!--/claim--> dbt tests (<!--claim:dbt_generic_tests-->121<!--/claim--> generic, <!--claim:dbt_singular_tests-->10<!--/claim--> hand-written) check the data inside every build.
+
+**Docs checked against code.** [`scripts/check_claims.py`](../scripts/check_claims.py) fails CI when the README or `docs/` disagrees with the repo: counts, DAG task names, the model list, links, and quoted code. [CLAIMS.md](CLAIMS.md) maps each claim to its code and test. The checks are themselves tested by breaking what they guard ([tests/test_doc_guards.py](../tests/test_doc_guards.py)).
+
+**Against the source.** `local/reconcile.py` checks what tests cannot: it accounts for every fetched row across layers, recomputes key numbers from the raw JSON without DuckDB or dbt, and compares a sample against the live API.
+
+---
+
 ## Infrastructure — Terraform (specified, validated in CI, never applied)
 
 The Snowflake module would create five schemas (BRONZE, SILVER, GOLD, GOLD_AUDIT, SNAPSHOTS) and four roles:
@@ -185,7 +203,8 @@ The applied module, `terraform/github/`, manages this repository's labels, branc
 
 ## Where to go next
 
-- [README](../README.md) — what it does, how it is operated, what the data shows
+- [README](../README.md) — what it does and how it is operated, in short
+- [docs/FINDINGS.md](FINDINGS.md) — what the data shows, and how to reproduce it
 - [docs/SLO.md](SLO.md) — the two SLOs, with their exact queries
 - [docs/adr/](adr/) — the decision records
 - [docs/CLAIMS.md](CLAIMS.md) — each claim, the code that enforces it, and the test that checks it

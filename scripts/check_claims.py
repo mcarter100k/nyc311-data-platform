@@ -92,7 +92,6 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-README = os.path.join(ROOT, "README.md")
 ARCHITECTURE = os.path.join(ROOT, "docs", "ARCHITECTURE.md")
 SLO_DOC = os.path.join(ROOT, "docs", "SLO.md")
 MANIFEST = os.path.join(ROOT, "dbt", "target", "manifest.json")

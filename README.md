@@ -1,119 +1,68 @@
 # NYC 311 Data Platform
 
 [![CI](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/ci.yml)
-[![Terraform](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/terraform.yml/badge.svg)](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/terraform.yml)
 [![Daily Live Run](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/daily-run.yml/badge.svg)](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/daily-run.yml)
+[![Terraform](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/terraform.yml/badge.svg)](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/terraform.yml)
 
-A data pipeline over New York City's 311 service requests (the city's non-emergency complaint line). Every day it downloads recent requests from the city's open-data API, cleans them, builds analysis tables, and checks two written promises about the result. When a promise is broken, it opens a GitHub issue. It also runs on a laptop in a couple of minutes, with no cloud account.
+**New York City logs about 10,000 non-emergency complaints a day (noise, potholes, illegal parking) through its 311 line. This project downloads them every day, cleans them, tests them, and turns them into tables anyone can analyze. When a run fails or misses one of its targets, it opens a GitHub issue on itself.**
 
-|  |  |
+| | |
 |---|---|
-| **Stack** | Python · pandas · DuckDB · dbt · Airflow · Terraform · GitHub Actions |
-| **Model** | Star schema: <!--claim:fct_models-->4<!--/claim--> fact tables, <!--claim:dim_models-->3<!--/claim--> dimensions |
-| **Scale** | ~385k requests re-fetched daily (the last 37 days); history since 11 Aug 2026, carried run to run in the GitHub Actions cache ([ADR 017](docs/adr/017-history-lives-in-the-actions-cache.md)) |
-| **Tests** | <!--claim:test_count-->245<!--/claim--> pytest tests + <!--claim:dbt_test_count-->131<!--/claim--> dbt data tests |
-| **Runs** | Daily (cron 10:00 UTC; GitHub usually starts it 3–8 hours late), gated by 2 SLOs |
-| **Decisions** | <!--claim:adr_count-->18<!--/claim--> decision records and a postmortem |
+| 🎯 **Problem** | The city's public data has traps: complaints "closed" before they were opened, each day's numbers keep changing for a week, and publishing can stall without any error. Analysis built on it as-is can be quietly wrong. |
+| 🛠️ **Solution** | A pipeline that runs every day with no one touching it: download → clean → model → test → publish. |
+| 🛡️ **Safety net** | <!--claim:dbt_test_count-->131<!--/claim--> data tests check every build. If one fails, the last good data stays live and a GitHub issue opens. |
+| 🔍 **Insight** | Only **35–44%** of closures record the city acting on the problem (Aug 2026 sample) → [findings](#what-it-found) |
+| 🧰 **Stack** | Python · pandas · SQL · dbt · DuckDB · Airflow · Terraform · GitHub Actions |
 
-## What it does
+## How it works
 
-The pipeline uses the **medallion** pattern: data passes through three layers, each with one job. **Bronze** is the data exactly as the source sent it. **Silver** is the same data cleaned. **Gold** is the data shaped for analysis as a **star schema**: one central *fact* table (one row per request) joined to *dimension* tables that describe it (agency, date, location). When a Gold number looks wrong, check Silver, then Bronze; two queries find the layer that broke.
-
-The source is NYC Open Data's **Socrata** API. Python and pandas build Bronze and Silver. **dbt**, a tool that builds tables from version-controlled SQL and tests them, builds Gold. Everything lives in **DuckDB**, a database stored in one file. A Snowflake version of the warehouse is written and validated but has never been deployed, so the dbt project exists twice: `local/` for DuckDB, which runs, and `dbt/` for Snowflake. CI fails if they differ in anything but SQL dialect.
-
-## How data flows
-
+```mermaid
+flowchart TD
+    API["🌐 NYC Open Data<br/>last 37 days of complaints"] --> B["🥉 Bronze<br/>raw copy, untouched"]
+    B --> S["🥈 Silver<br/>cleaned (pandas)"]
+    S --> G["🥇 Gold<br/>analysis tables (dbt)"]
+    G --> T{"✅ Every step and<br/>test passes?"}
+    T -->|yes| P["📊 Published"]
+    T -->|"no: old data stays live"| I["🚨 GitHub issue"]
+    P --> SLO{"📏 Fresh and<br/>complete?"}
+    SLO -->|no| I
 ```
-Socrata API ─► raw JSON (Bronze) ─► pandas (Silver) ─► dbt (Gold) ─► SLO checks
-```
 
-1. **Fetch.** [`local/local_runner.py`](local/local_runner.py) downloads every request created in the last 37 days into one JSON file, and asks the city how many requests it holds for each day. Zero rows, or more than 800,000, fails the run.
-2. **Bronze.** DuckDB puts a view over the raw file. Nothing is copied.
-3. **Silver.** pandas removes duplicates, maps 24 spellings of borough names to five, and sets aside ("quarantines") rows closed before they were created.
-4. **Gold.** `dbt build` builds the star schema and runs every dbt test in an audit schema; Gold is replaced only if every test passes, in one transaction ([ADR 018](docs/adr/018-write-audit-publish-on-duckdb.md)). The fact table is **incremental**: each run inserts new requests and updates changed ones, so Gold keeps every request ever loaded.
-5. **Check.** Two SQL queries test the result against the SLOs.
+Data moves through three layers, like ore → refined metal → finished part: **Bronze** keeps exactly what the city sent, **Silver** fixes it, **Gold** shapes it for questions. When a number looks wrong, you can trace it back one layer at a time.
 
-**Why 37 days.** The pipeline only sees a request's status change while the request is inside the fetch window, because it only sees what it re-fetches. NYC's closure standard is 30 days, and the city's data for a day keeps shifting for about 7 more ([ADR 016](docs/adr/016-source-settling-horizon.md)), so the window is 30 + 7. A request older than 37 days keeps the status it had when it left the window: fine for 30-day metrics, wrong for longer ones ([ADR 010](docs/adr/010-scheduled-operation.md)). Fetching whatever changed (`:updated_at`) was measured and rejected: the city re-stamps about half a million rows a night.
+## Skills demonstrated
 
-Layer detail, the model list and the design trade-offs: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-**Where things live**
-- [`local/`](local/): the pipeline (`local_runner.py`) and the DuckDB dbt project, which is what runs
-- [`dbt/`](dbt/): the Snowflake dbt project (spec, never run against a warehouse)
-- [`airflow/dags/`](airflow/dags/): the Airflow demo DAG
-- [`terraform/`](terraform/): the Snowflake spec (never applied); [`terraform/github/`](terraform/github/): this repo's GitHub settings (applied)
-- [`scripts/`](scripts/): the SLO queries, the heartbeat and stall checks, the docs and model-drift checks
-- [`config/`](config/): the borough-name mapping · [`tests/`](tests/): pytest · [`docs/`](docs/): architecture, SLOs, ADRs, postmortem
-
-## How it is operated and checked
-
-An **SLO** (service level objective) is a written, measured promise. [`daily-run.yml`](.github/workflows/daily-run.yml) runs the pipeline daily, then checks two:
-
-| SLO | Question | Threshold |
-|---|---|---|
-| **SLO-1 freshness** | Did a run recently load rows? | newest load < 26 hours old |
-| **SLO-2 completeness** | Did we load what the city published? | ≥ 98% of the city's own count, on every day the city has finished publishing (a *complete* day) |
-
-A failed run or broken SLO opens a `daily-run-breach` issue with the measured numbers. [docs/SLO.md](docs/SLO.md) explains the thresholds. Two more checks cover what the SLOs cannot see:
-
-- **Upstream stall warning.** If the city stops publishing, the run stays green (the loss is not ours) but an `upstream-stall` issue opens. When the city's publishing stalled on 2026-08-18, every pipeline stage ran green and only a check on the loaded volume noticed ([postmortem](docs/postmortems/2026-08-18-upstream-publish-stall.md)).
-- **Heartbeat.** A check inside the daily run cannot report a run that never starts. A separate [heartbeat](.github/workflows/heartbeat.yml), scheduled every 4 hours (GitHub may delay or skip it), alerts if the daily run is disabled or has not succeeded in 30 hours. Not 24: GitHub starts the daily run late, and gaps between healthy runs reach 27 hours.
-
-**Tests.** <!--claim:test_count-->245<!--/claim--> pytest tests run in CI as three required jobs, split by what each needs installed: <!--claim:structural_test_count-->156<!--/claim--> structural (dbt config, the Airflow DAG's task order, Terraform grants, workflows, the docs checker), <!--claim:unit_test_count-->9<!--/claim--> unit (the pandas cleaning), and <!--claim:behavioral_test_count-->80<!--/claim--> behavioral (real dbt builds on seeded data, the SLO queries, the fetcher against a fake API). A model can be configured perfectly and still compute the wrong number, which is why the behavioral tier checks output rows. Any skipped test fails its job, because a skip shows green. Separately, <!--claim:dbt_test_count-->131<!--/claim--> dbt tests (<!--claim:dbt_generic_tests-->121<!--/claim--> generic, <!--claim:dbt_singular_tests-->10<!--/claim--> hand-written) check the data inside every build.
-
-**Docs checked against code.** [`scripts/check_claims.py`](scripts/check_claims.py) fails CI when this README or `docs/` disagrees with the repo: counts, DAG task names, the model list, links, and quoted code. [docs/CLAIMS.md](docs/CLAIMS.md) maps each claim to its code and test. The checks are themselves tested by breaking what they guard ([tests/test_doc_guards.py](tests/test_doc_guards.py)).
-
-**Real versus specified.** What runs: the DuckDB pipeline, the daily run, an Airflow demo (a 7-task DAG), three required CI checks, and Terraform for this repo's own GitHub settings ([terraform/github/](terraform/github/), applied). What is only specified: a Snowflake warehouse with 5 schemas, 4 roles and least-privilege grants ([terraform/](terraform/), validated in CI, never applied), and the Snowflake form of **write-audit-publish**, a one-statement schema swap ([ADR 005](docs/adr/005-orchestration-strategy.md)). The DuckDB path runs its own write-audit-publish: a failed dbt test fails the run and leaves Gold exactly as it was ([ADR 018](docs/adr/018-write-audit-publish-on-duckdb.md)).
-
-## What the data shows
-
-Measured on the 127,255 requests created in the twelve complete days **13–24 Aug 2026**.
-
-**"Closed" usually does not mean "fixed."** Of 89,506 closures, between **35% and 44%** describe the city doing something. The rest closed as *no violation found*, *nothing there*, duplicate, or handed off. It is a range because 8.5% of closures carry text no rule can classify, and per category the width is itself the finding:
-
-| Category | Actioned | Uncertainty (points) |
-|---|---|---|
-| Illegal Parking | 42–43% | 0.7 |
-| Noise | 40–41% | 1.5 |
-| **Homeless Services** | **17–20%** | 3.6 |
-| Street Condition | 28–46% | 17.9 |
-| Water & Sewer | 17–40% | 22.3 |
-
-**A closure the city couldn't complete is the one that comes back.** After an *Access Failed* closure, the same complaint returns to the same address within 3 days 13.8% of the time. That ranks first in **all eight** specifications tried (windows of 2–5 days, with and without *chronic* locations: addresses that file the same complaint again and again), 1.1–5.8 points ahead of the runner-up.
-
-<details>
-<summary><b>Methodology, and what does not survive it</b></summary>
-
-Absolute recurrence rates do not travel: *Work Performed* ranges from 4.2% to 15.8% on the same data depending only on the window and whether chronic locations are included. Only the Access Failed *ranking* is stable, and only among closure types whose text could be decoded. A repeat is evidence, not proof: the fix may have failed, or the condition may be legal and keep being reported. Both guards are columns on [`fct_complaint_recurrence`](dbt/models/marts/fct_complaint_recurrence.sql).
-
-3-day recurrence, every decoded closure type with at least 200 closures:
-
-| Closed as | Recurred within 3 days |
+| Skill | Evidence |
 |---|---|
-| **Access Failed** | **13.8%** |
-| Resolved on Scene | 10.5% |
-| Duplicate | 10.4% |
-| Enforcement Action | 10.4% |
-| Referred Elsewhere | 10.2% |
-| No Violation Found | 9.7% |
-| No Condition Found | 6.7% |
-| Work Performed | 5.7% |
+| **Data modeling** | Star schema with <!--claim:fct_models-->4<!--/claim--> fact tables and <!--claim:dim_models-->3<!--/claim--> dimensions, incremental loads, and an agency table that keeps its history → [models](local/models/marts/) |
+| **Data quality** | <!--claim:test_count-->245<!--/claim--> automated tests on top of the data tests above; bad rows are set aside, not silently dropped → [tests](tests/) |
+| **Reliability** | Two written targets (SLOs) checked daily, a heartbeat monitor, and a postmortem of a real incident where every step ran green and only a volume check caught it → [SLOs](docs/SLO.md) · [postmortem](docs/postmortems/2026-08-18-upstream-publish-stall.md) |
+| **Orchestration** | Runs daily on GitHub Actions; the same pipeline can also run on a laptop as a 7-task DAG in Airflow (demo) → [workflow](.github/workflows/daily-run.yml) · [DAG](airflow/dags/nyc311_local.py) |
+| **Infrastructure as code** | Terraform for a Snowflake warehouse (5 schemas, 4 roles, least-privilege access; designed and validated, not deployed) and for this repo's own GitHub settings (live) → [terraform](terraform/) |
+| **Decision-making** | <!--claim:adr_count-->18<!--/claim--> written decision records, each weighing the options → [ADRs](#architecture-decision-records) |
+| **Honest docs** | CI fails if a count, link, task name or quoted query in the docs drifts from the code → [claims register](docs/CLAIMS.md) |
 
-Volume: weekdays average 10,955 requests a day and weekends 9,903, while noise complaints more than double at weekends (1,730 → 3,589 a day).
+## What it found
 
-</details>
+- **"Closed" usually doesn't mean "fixed."** In 12 days of Aug 2026 data (89,506 closures), most closures record *no violation found*, *nothing there*, a duplicate, or a hand-off rather than the city acting. For homeless-services complaints, only 17–20% record action.
+- **Failed visits come back.** When the city couldn't get access, the same complaint returns to the same address within 3 days 13.8% of the time. The exact rate varies with how it's measured, but it ranks first among identifiable closure types in all eight ways tried.
 
-**What was corrected.** A claim that "nothing there" closures recur least was withdrawn: it came from 7 days of data and reversed on 12. A weekday/weekend volume comparison was reported backwards (both totals had been divided by the same number of days). Both are registered in the claim checker so they cannot return. And the daily run first fetched only 7 days, so Gold never saw a request close after day 7: for requests created 24–28 Aug, the 30-day closure rate read 68.4% instead of 89.5%. The window is now 37 days, and one wide run on 30 Sep refreshed the rows stored before the change.
+Full numbers, methodology, and the mistakes found and corrected along the way: [docs/FINDINGS.md](docs/FINDINGS.md).
 
 ## Run it
 
-Needs Python 3.11+ and internet access; no credentials. Run from the repo root. CI runs this exact install from a clean checkout on every push to `main` and every pull request (the `front-door` job).
+Needs Python 3.11+ and internet access. No accounts or keys. Run from the repo root.
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r local/requirements.txt -r dbt/requirements.txt -r requirements-dev.txt
+python local/local_runner.py     # download 10,000 recent complaints and build everything (1-2 min)
+```
 
-python local/local_runner.py            # 10,000 newest requests, all 5 stages (1-2 min, mostly download)
+<details>
+<summary><b>More commands</b></summary>
+
+```bash
 python local/local_runner.py --live     # what the daily run does: 37 days, ~385k rows, ~8 min
 python local/local_runner.py --stage 4  # resume from a stage (1 fetch ... 5 print results)
 python local/reconcile.py               # check Gold against the raw file and the live API
@@ -121,43 +70,83 @@ python local/reconcile.py               # check Gold against the raw file and th
 python scripts/check_claims.py          # the docs-vs-code check
 ```
 
-Three requirements files, because the pipeline runs dbt on DuckDB while the tests parse the Snowflake project. `reconcile.py` checks what tests cannot: it accounts for every fetched row across layers, recomputes key numbers from the raw JSON without DuckDB or dbt, and compares a sample against the live API. The Airflow demo has its own setup in [`scripts/airflow_local.sh`](scripts/airflow_local.sh).
+CI runs the install above from a clean checkout on every push to `main` and every pull request.
+
+**Skip the build:** every [daily run](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/daily-run.yml) attaches its finished database and the raw download as an artifact, kept for 14 days (downloading needs a GitHub sign-in). To query the results, see [Reproduce it](docs/FINDINGS.md#reproduce-it). The Airflow demo has its own setup in [`scripts/airflow_local.sh`](scripts/airflow_local.sh).
+
+</details>
+
+## Learn more
 
 <details>
-<summary><b>Query the data and reproduce the findings</b></summary>
+<summary><b>📖 New to data engineering? A plain-English glossary</b></summary>
 
-`pip install duckdb` gives the Python library, not the `duckdb` command-line tool, so query from Python:
+| Term | Meaning |
+|---|---|
+| **311** | New York's phone line and app for non-emergency complaints |
+| **API** | A web address a program can ask for data; here, NYC Open Data's Socrata API |
+| **Pipeline** | A chain of steps that moves data from where it starts to where it's useful |
+| **Bronze / Silver / Gold** | Raw → cleaned → ready to analyze (the "medallion" pattern) |
+| **Star schema** | One central table of events (a *fact*: one row per complaint) linked to lookup tables that describe it (*dimensions*: agency, date, location) |
+| **dbt** | A tool that builds tables from SQL files kept in version control, and tests them |
+| **DuckDB** | A database that lives in a single file, so the whole project runs on a laptop |
+| **Snowflake** | A cloud data warehouse; designed here but not deployed |
+| **SLO** | A written, measured target, such as "a run loaded new rows in the last 26 hours"; missing it raises an alert |
+| **Write-audit-publish** | Build new tables off to the side, test them, and swap them in only if every test passes |
+| **Airflow** | A scheduler that runs pipeline steps in order and shows which one failed |
+| **DAG** | The ordered list of steps Airflow runs |
+| **Terraform** | Describes infrastructure (databases, permissions, repo settings) as code |
+| **CI** | Checks that run automatically on every code change |
+| **ADR** | Architecture Decision Record: a short note on why one option was chosen over others |
+| **Postmortem** | A blameless write-up of what went wrong and what changed afterwards |
 
-```python
-import duckdb
-con = duckdb.connect("local/data/nyc311_local.duckdb", read_only=True)
+</details>
 
-# Share of closed requests the city acted on, and the share it could not decode.
-con.sql("""
-    select count(*) filter (where is_actioned) * 1.0 / count(*)                 as pct_actioned_of_closed,
-           count(*) filter (where closure_type = 'Undecodable') * 1.0 / count(*) as pct_undecodable
-    from gold.fct_service_requests
-    where is_resolved
-""").show()
+<details>
+<summary><b>⚙️ How it runs, and how failures get caught</b></summary>
 
-# Closure rates stay NULL until 30 complete days follow a day (is_denominator_closed).
-con.sql("""
-    select is_denominator_closed, count(*) as groups,
-           count(pct_closed_within_window) as groups_publishing_a_rate
-    from gold.fct_daily_volume group by 1
-""").show()
+[`daily-run.yml`](.github/workflows/daily-run.yml) runs the pipeline every day (cron 10:00 UTC; GitHub usually starts it 3–8 hours late). Each run re-downloads about 385,000 requests from the last 37 days. History since 11 Aug 2026 carries over between runs in the GitHub Actions cache ([ADR 017](docs/adr/017-history-lives-in-the-actions-cache.md)).
 
-# 3-day recurrence, excluding chronic locations and closures too recent to judge.
-con.sql("""
-    select closure_type,
-           avg(case when days_to_next_same_complaint <= 3 then 1.0 else 0.0 end) as recurred_3d
-    from gold.fct_complaint_recurrence
-    where not is_chronic_location and observation_days >= 3
-    group by 1 order by 2 desc
-""").show()
-```
+After each run, two promises are checked:
 
-Expect different numbers: `--live` fetches the 37 days ending today, not 13–24 Aug. On a fresh `--live` database, closure rates publish only for the oldest five or so days of the window; the rest stay NULL. Only the Access Failed ranking has held across specifications. In the recurrence query, leave out `Unspecified` (no resolution text) and `Undecodable` (text no rule matches): they are an absence of information, not something the city did, and `Unspecified` can top the ranking.
+| SLO | Question | Threshold |
+|---|---|---|
+| **SLO-1 freshness** | Did a run recently load rows? | newest load < 26 hours old |
+| **SLO-2 completeness** | Did we load what the city published? | ≥ 98% of the city's own count, on every day the city has finished publishing |
+
+A failed run or broken SLO opens a `daily-run-breach` issue with the measured numbers ([docs/SLO.md](docs/SLO.md)). Two more checks cover what the SLOs can't see:
+
+- **Upstream stall.** If the city stops publishing, the run stays green (the loss isn't ours) but an `upstream-stall` issue opens. This came out of a real incident ([postmortem](docs/postmortems/2026-08-18-upstream-publish-stall.md)).
+- **Heartbeat.** A check inside the daily run can't report a run that never starts. A separate [heartbeat](.github/workflows/heartbeat.yml) alerts if the daily run is disabled or hasn't succeeded in 30 hours.
+
+**Why 37 days.** The pipeline only sees a complaint's status change while the complaint is inside the download window. NYC's closure standard is 30 days, and the city's data for a day keeps shifting for about 7 more ([ADR 016](docs/adr/016-source-settling-horizon.md)), so the window is 30 + 7. Fetching only what changed (`:updated_at`) was measured and rejected: the city re-stamps about half a million rows a night ([ADR 010](docs/adr/010-scheduled-operation.md)).
+
+Layer-by-layer detail and the model list: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The test tiers: [Testing](docs/ARCHITECTURE.md#testing).
+
+</details>
+
+<details>
+<summary><b>🧭 What runs vs. what is only designed</b></summary>
+
+**Runs:** the DuckDB pipeline, the daily run, an Airflow demo (a 7-task DAG), three required CI checks, and Terraform for this repo's own GitHub settings ([terraform/github/](terraform/github/)). Gold is published by write-audit-publish: a failed dbt test fails the run and leaves Gold exactly as it was ([ADR 018](docs/adr/018-write-audit-publish-on-duckdb.md)).
+
+**Designed, not deployed:** a Snowflake warehouse with 5 schemas, 4 roles and least-privilege grants ([terraform/](terraform/), validated in CI, never applied), and its one-statement schema-swap publish ([ADR 005](docs/adr/005-orchestration-strategy.md)). The dbt project therefore exists twice: [`local/`](local/) for DuckDB, which runs, and [`dbt/`](dbt/) for Snowflake. CI fails if they differ in anything but SQL dialect.
+
+</details>
+
+<details>
+<summary><b>🗂️ Where things live</b></summary>
+
+| Folder | What's in it |
+|---|---|
+| [`local/`](local/) | The pipeline (`local_runner.py`) and the DuckDB dbt project: what runs |
+| [`dbt/`](dbt/) | The Snowflake dbt project (designed, never run against a warehouse) |
+| [`airflow/dags/`](airflow/dags/) | The Airflow demo DAG |
+| [`terraform/`](terraform/) | Snowflake infrastructure (never applied) · [`github/`](terraform/github/): this repo's settings (applied) |
+| [`scripts/`](scripts/) | SLO queries, heartbeat and stall checks, docs and drift checks |
+| [`tests/`](tests/) | pytest suites |
+| [`docs/`](docs/) | Architecture, findings, SLOs, decision records, postmortem |
+| [`config/`](config/) | The borough-name mapping |
 
 </details>
 
@@ -191,5 +180,4 @@ Expect different numbers: `--live` fetches the 37 days ending today, not 13–24
 
 ---
 
-**Marquis Carter** · Data Engineer
-marq.dcarter@gmail.com · [LinkedIn](https://www.linkedin.com/in/marquis-c-45132325b/) · [GitHub](https://github.com/mcarter100k)
+**Marquis Carter** · Data Engineer · marq.dcarter@gmail.com · [LinkedIn](https://www.linkedin.com/in/marquis-c-45132325b/) · [GitHub](https://github.com/mcarter100k)
