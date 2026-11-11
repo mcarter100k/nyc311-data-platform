@@ -4,6 +4,8 @@
 [![Daily Live Run](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/daily-run.yml/badge.svg)](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/daily-run.yml)
 [![Terraform](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/terraform.yml/badge.svg)](https://github.com/mcarter100k/nyc311-data-platform/actions/workflows/terraform.yml)
 
+**🔎 [Explore the live data model](https://mcarter100k.github.io/nyc311-data-platform/)**: every table, column and test, and how they connect.
+
 **New York City logs about 10,000 non-emergency complaints a day (noise, potholes, illegal parking) through its 311 line. This project downloads them every day, cleans them, tests them, and turns them into tables anyone can analyze. When a run fails or misses one of its targets, it opens a GitHub issue on itself.**
 
 | | |
@@ -34,7 +36,7 @@ Data moves through three layers, like ore → refined metal → finished part: *
 
 | Skill | Evidence |
 |---|---|
-| **Data modeling** | Star schema with <!--claim:fct_models-->4<!--/claim--> fact tables and <!--claim:dim_models-->3<!--/claim--> dimensions, incremental loads, and an agency table that keeps its history → [models](local/models/marts/) |
+| **Data modeling** | Star schema with <!--claim:fct_models-->4<!--/claim--> fact tables and <!--claim:dim_models-->3<!--/claim--> dimensions, incremental loads, and an agency table that keeps its history → [models](local/models/marts/) · [live docs](https://mcarter100k.github.io/nyc311-data-platform/) |
 | **Data quality** | <!--claim:test_count-->245<!--/claim--> automated tests on top of the data tests above; bad rows are set aside, not silently dropped → [tests](tests/) |
 | **Reliability** | Two written targets (SLOs) checked daily, a heartbeat monitor, and a postmortem of a real incident where every step ran green and only a volume check caught it → [SLOs](docs/SLO.md) · [postmortem](docs/postmortems/2026-08-18-upstream-publish-stall.md) |
 | **Orchestration** | Runs daily on GitHub Actions; the same pipeline can also run on a laptop as a 7-task DAG in Airflow (demo) → [workflow](.github/workflows/daily-run.yml) · [DAG](airflow/dags/nyc311_local.py) |
