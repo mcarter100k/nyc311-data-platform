@@ -1,7 +1,7 @@
 # Claims Register
 
-Each load-bearing claim in the README, the code that makes it true, and what checks it. A claim
-that cannot fill both columns is not made in the README. Counts and links are also checked in CI
+Each load-bearing claim in the README and `docs/`, the code that makes it true, and what checks it. A claim
+that cannot fill both columns is not made. Counts and links are also checked in CI
 by [`scripts/check_claims.py`](../scripts/check_claims.py).
 
 **How to read a citation.** `` `path/to/file.ext#"a unique string"` `` means that string occurs in
@@ -14,7 +14,7 @@ number goes stale on every edit above it.
 |---|---|---|
 | Pipeline runs end-to-end locally on DuckDB | `local/local_runner.py` (5 stages) | `tests/local/test_local_gold.py` (dbt build against seeded DuckDB) |
 | The daily run re-fetches the last 37 days; scheduled runs, manual runs and the runner agree | `local/local_runner.py#"LIVE_DAYS    = 37"` | `tests/test_pipeline_components.py::test_daily_run_scheduled_and_manual_windows_agree` |
-| Live fetch is capped, retries transient faults twice, and fails on zero rows: red or fully loaded, never partly loaded | `local/local_runner.py::fetch_live_records` | `tests/local/test_live_fetch.py` (mocked at the HTTP boundary, no network) |
+| Live fetch is capped, retries transient faults up to five times, and fails on zero rows: red or fully loaded, never partly loaded | `local/local_runner.py::fetch_live_records` | `tests/local/test_live_fetch.py` (mocked at the HTTP boundary, no network) |
 | Write-audit-publish on the DuckDB path: dbt builds and tests in `gold_audit`; Gold changes only if every test passes, in one transaction | `local/wap.py#"BEGIN TRANSACTION"`, `local/local_runner.py#"rc_build = wap.run(DUCKDB_PATH, _run_dbt, full_refresh=not incremental)"` | `tests/local/test_wap.py::test_a_failing_test_leaves_gold_exactly_as_it_was`, `tests/local/test_wap.py::test_a_passing_build_publishes_exactly_the_audited_build`, `tests/local/test_wap.py::test_incremental_and_snapshot_history_survive_a_publish`, `tests/local/test_wap.py::test_a_publish_that_fails_midway_rolls_back`, `tests/test_pipeline_components.py::test_stage4_builds_gold_through_write_audit_publish` |
 | Write-audit-publish on Snowflake (spec): build and test in GOLD_AUDIT, then swap into GOLD | `dbt/macros/generate_schema_name.sql#"{{ base_schema ~ var('audit_suffix', '') }}"`, `dbt/macros/publish_gold.sql#"alter schema"` | `tests/test_dbt_architecture.py::test_all_models_land_in_gold_schema` covers the schema-name override. **The swap itself has no test**; it needs a warehouse |
 | Every model lands in the GOLD schema (no `gold_gold`) | `dbt/macros/generate_schema_name.sql` | `tests/test_dbt_architecture.py::test_all_models_land_in_gold_schema` |
