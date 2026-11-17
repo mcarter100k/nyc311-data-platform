@@ -1,7 +1,7 @@
 requests==2.34.2
-pandas==3.0.6
-dbt-core==1.12.5
-dbt-duckdb==1.11.0
+pandas==3.1.1
+dbt-core==1.12.6
+dbt-duckdb==1.11.1
 # Pinned: dbt-duckdb does not pin it, and DuckDB 2.0 (2026-10-21) removed
 # fetchone() from relations, which failed every daily run until this pin.
 duckdb==1.5.6
